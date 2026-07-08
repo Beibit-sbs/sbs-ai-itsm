@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+backend/.coverage
+frontend/node_modules/
+frontend/dist/
+.DS_Store
+.idea/
+.vscode/

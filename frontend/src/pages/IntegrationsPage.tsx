@@ -1,0 +1,441 @@
+import { useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import AppShell from '../components/AppShell'
+import HealthBadge from '../components/HealthBadge'
+import {
+  createIntegrationImportJob,
+  fetchAnalyticsOverview,
+  fetchIntegrationEvents,
+  fetchIntegrationImportJobs,
+  fetchIntegrationMappings,
+  fetchIntegrationProviders,
+  fetchIntegrationSystems,
+  fetchIntegrationWebhooks,
+  runIntegrationHealthCheck,
+  runIntegrationTestConnection,
+  runMockLdapPullUsers,
+  runMockMoodlePullUsers,
+  runMockPlatonusPullUsers,
+  runMockWebhookReceive,
+  runMockZimbraPullMailboxes,
+  simulateIntegrationWebhook,
+} from '../api/client'
+import { useAuth } from '../auth/AuthContext'
+
+const tabs = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'systems', label: 'Systems' },
+  { key: 'providers', label: 'Providers' },
+  { key: 'jobs', label: 'Import Jobs' },
+  { key: 'webhooks', label: 'Webhooks' },
+  { key: 'events', label: 'Events' },
+  { key: 'mappings', label: 'Mappings' },
+  { key: 'mock', label: 'Mock Actions' },
+] as const
+
+type TabKey = (typeof tabs)[number]['key']
+
+function formatDateTime(value: string | null) {
+  if (!value) return '—'
+  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+}
+
+function statusBadge(status: string) {
+  if (['ok', 'completed', 'accepted', 'demo', 'planned', 'logged_only', 'mocked'].includes(status)) return 'badge-positive'
+  if (['degraded', 'running', 'warning'].includes(status)) return 'badge-warning'
+  return 'badge-danger'
+}
+
+export default function IntegrationsPage() {
+  const { session } = useAuth()
+  const queryClient = useQueryClient()
+  const [activeTab, setActiveTab] = useState<TabKey>('overview')
+  const [typeFilter, setTypeFilter] = useState('ALL')
+  const [statusFilter, setStatusFilter] = useState('ALL')
+  const [previewResult, setPreviewResult] = useState('')
+
+  const overviewQuery = useQuery({
+    queryKey: ['integration-analytics-overview', session?.access_token],
+    queryFn: () => fetchAnalyticsOverview(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+  })
+  const systemsQuery = useQuery({
+    queryKey: ['integration-systems', session?.access_token, typeFilter, statusFilter],
+    queryFn: () => fetchIntegrationSystems(session?.access_token ?? '', { system_type: typeFilter, status: statusFilter }),
+    enabled: Boolean(session?.access_token),
+  })
+  const providersQuery = useQuery({
+    queryKey: ['integration-providers', session?.access_token],
+    queryFn: () => fetchIntegrationProviders(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+  })
+  const jobsQuery = useQuery({
+    queryKey: ['integration-jobs', session?.access_token],
+    queryFn: () => fetchIntegrationImportJobs(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+  })
+  const eventsQuery = useQuery({
+    queryKey: ['integration-events', session?.access_token],
+    queryFn: () => fetchIntegrationEvents(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+  })
+  const webhooksQuery = useQuery({
+    queryKey: ['integration-webhooks', session?.access_token],
+    queryFn: () => fetchIntegrationWebhooks(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+  })
+  const mappingsQuery = useQuery({
+    queryKey: ['integration-mappings', session?.access_token],
+    queryFn: () => fetchIntegrationMappings(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+  })
+
+  const refetchCore = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['integration-systems'] })
+    await queryClient.invalidateQueries({ queryKey: ['integration-events'] })
+    await queryClient.invalidateQueries({ queryKey: ['integration-jobs'] })
+    await queryClient.invalidateQueries({ queryKey: ['integration-analytics-overview'] })
+  }
+
+  const healthMutation = useMutation({
+    mutationFn: async (systemId: string) => {
+      if (!session?.access_token) throw new Error('No session')
+      return runIntegrationHealthCheck(session.access_token, systemId)
+    },
+    onSuccess: async (data) => {
+      setPreviewResult(JSON.stringify(data, null, 2))
+      await refetchCore()
+    },
+  })
+
+  const testMutation = useMutation({
+    mutationFn: async (systemId: string) => {
+      if (!session?.access_token) throw new Error('No session')
+      return runIntegrationTestConnection(session.access_token, systemId)
+    },
+    onSuccess: async (data) => {
+      setPreviewResult(JSON.stringify(data, null, 2))
+      await refetchCore()
+    },
+  })
+
+  const importMutation = useMutation({
+    mutationFn: async (payload: { external_system_id: string; job_type: string }) => {
+      if (!session?.access_token) throw new Error('No session')
+      return createIntegrationImportJob(session.access_token, payload)
+    },
+    onSuccess: async (data) => {
+      setPreviewResult(JSON.stringify(data, null, 2))
+      await refetchCore()
+    },
+  })
+
+  const simulateMutation = useMutation({
+    mutationFn: async (webhookId: string) => {
+      if (!session?.access_token) throw new Error('No session')
+      return simulateIntegrationWebhook(session.access_token, webhookId, { payload: { source: 'ui-demo', severity: 'high' }, create_demo_ticket: true })
+    },
+    onSuccess: async (data) => {
+      setPreviewResult(JSON.stringify(data, null, 2))
+      await refetchCore()
+    },
+  })
+
+  const mockActionMutation = useMutation({
+    mutationFn: async (action: 'ldap' | 'zimbra' | 'platonus' | 'moodle' | 'webhook') => {
+      if (!session?.access_token) throw new Error('No session')
+      if (action === 'ldap') return runMockLdapPullUsers(session.access_token)
+      if (action === 'zimbra') return runMockZimbraPullMailboxes(session.access_token, true)
+      if (action === 'platonus') return runMockPlatonusPullUsers(session.access_token)
+      if (action === 'moodle') return runMockMoodlePullUsers(session.access_token)
+      return runMockWebhookReceive(session.access_token, true)
+    },
+    onSuccess: async (data) => {
+      setPreviewResult(JSON.stringify(data, null, 2))
+      await refetchCore()
+    },
+  })
+
+  const overview = overviewQuery.data?.integrations
+  const systems = systemsQuery.data ?? []
+  const providers = providersQuery.data ?? []
+  const jobs = jobsQuery.data ?? []
+  const events = eventsQuery.data ?? []
+  const webhooks = webhooksQuery.data ?? []
+  const mappings = mappingsQuery.data ?? []
+
+  const systemTypes = useMemo(() => ['ALL', ...Array.from(new Set(systems.map((item) => item.system_type)))], [systems])
+  const statusTypes = useMemo(() => ['ALL', ...Array.from(new Set(systems.map((item) => item.status)))], [systems])
+
+  return (
+    <AppShell title="Интеграции" subtitle="Mock/demo foundation для Zimbra, LDAP/AD, SMTP, Platonus, Moodle, webhooks и future connectors.">
+      <section className="foundation-card">
+        <div>
+          <p className="eyebrow">INTEGRATION FOUNDATION</p>
+          <h2>Внешние системы и readiness layer</h2>
+          <p>Архитектура готова к будущему подключению без хранения реальных секретов и без реальных внешних вызовов на этом этапе.</p>
+        </div>
+        <div className="status-column">
+          <HealthBadge />
+          <div className="status-list">
+            <span>✓ Mock providers only</span>
+            <span>✓ Integration event log</span>
+            <span>✓ Import preview jobs</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="metric-grid dashboard-metrics">
+        <article className="metric-card"><span>Enabled systems</span><strong>{overviewQuery.isPending ? '…' : overview?.enabled_systems ?? 0}</strong><p>Активные integration connectors.</p></article>
+        <article className="metric-card"><span>Systems with errors</span><strong>{overviewQuery.isPending ? '…' : overview?.systems_with_errors ?? 0}</strong><p>Ошибки health/status.</p></article>
+        <article className="metric-card"><span>Events count</span><strong>{overviewQuery.isPending ? '…' : overview?.integration_events_count ?? 0}</strong><p>Все integration events.</p></article>
+        <article className="metric-card"><span>Failed events</span><strong>{overviewQuery.isPending ? '…' : overview?.failed_integration_events ?? 0}</strong><p>Неуспешные integration events.</p></article>
+        <article className="metric-card"><span>Active import jobs</span><strong>{overviewQuery.isPending ? '…' : overview?.active_import_jobs ?? 0}</strong><p>Очередь preview import jobs.</p></article>
+        <article className="metric-card"><span>Import success rate</span><strong>{overviewQuery.isPending ? '…' : `${overview?.import_success_rate ?? 0}%`}</strong><p>Доля успешной mock обработki.</p></article>
+      </section>
+
+      <section className="foundation-card admin-panel">
+        <div>
+          <p className="eyebrow">INTEGRATION TABS</p>
+          <h2>Управление connectors</h2>
+        </div>
+        <div className="notification-tabs">
+          {tabs.map((tab) => (
+            <button type="button" className={activeTab === tab.key ? 'admin-tab-active' : 'ghost-button'} key={tab.key} onClick={() => setActiveTab(tab.key)}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {activeTab === 'overview' ? (
+        <section className="foundation-card dashboard-split admin-panel">
+          <div>
+            <p className="eyebrow">SYSTEM LANDSCAPE</p>
+            <h2>Статусы систем</h2>
+            <div className="mini-bars">
+              {(overview?.systems_by_status ?? []).map((item) => (
+                <div className="mini-bar-row" key={item.status}>
+                  <span>{item.status}</span>
+                  <div className="mini-bar-track"><div className="mini-bar-fill" style={{ width: `${Math.max(10, item.count * 15)}%` }} /></div>
+                  <strong>{item.count}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="eyebrow">RECENT EVENTS</p>
+            <h2>Последние integration события</h2>
+            <div className="activity-list">
+              {(overview?.recent_integration_events ?? []).map((item) => (
+                <article className="activity-item" key={item.id}>
+                  <header><strong>{item.event_type}</strong><span className={`badge ${statusBadge(item.status)}`}>{item.status}</span></header>
+                  <p>{item.correlation_id ?? 'No correlation id'}</p>
+                  <small>{formatDateTime(item.created_at)}</small>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'systems' ? (
+        <>
+          <section className="foundation-card tickets-toolbar">
+            <div className="tickets-toolbar-group">
+              <label className="inline-field">
+                <span>Type</span>
+                <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+                  {systemTypes.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label className="inline-field">
+                <span>Status</span>
+                <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                  {statusTypes.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+            </div>
+          </section>
+          <section className="foundation-card admin-panel">
+            <div className="ticket-table-wrap">
+              <table className="ticket-table">
+                <thead><tr><th>System</th><th>Type</th><th>Status</th><th>Last health</th><th>Capabilities</th><th /></tr></thead>
+                <tbody>
+                  {systems.map((item) => (
+                    <tr key={item.id}>
+                      <td><strong>{item.name}</strong><p className="table-subtext">{item.code}</p></td>
+                      <td>{item.system_type}</td>
+                      <td><span className={`badge ${statusBadge(item.status)}`}>{item.status}</span></td>
+                      <td>{item.last_health_status ?? '—'}<p className="table-subtext">{formatDateTime(item.last_health_checked_at)}</p></td>
+                      <td>{item.capabilities.join(', ')}</td>
+                      <td>
+                        <div className="analytics-actions">
+                          <button type="button" className="ghost-button" onClick={() => healthMutation.mutate(item.id)}>Health check</button>
+                          <button type="button" className="ghost-button" onClick={() => testMutation.mutate(item.id)}>Test connection</button>
+                          {(item.system_type === 'ldap' || item.system_type === 'zimbra' || item.system_type === 'platonus' || item.system_type === 'moodle') ? (
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => importMutation.mutate({ external_system_id: item.id, job_type: `${item.system_type}_preview` })}
+                            >
+                              Import preview
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      {activeTab === 'providers' ? (
+        <section className="foundation-card dashboard-split admin-panel">
+          <div>
+            <p className="eyebrow">PROVIDER REGISTRY</p>
+            <h2>Провайдеры</h2>
+            <div className="activity-list">
+              {providers.map((item) => (
+                <article className="activity-item" key={item.code}>
+                  <header><strong>{item.name}</strong><span className={`badge ${statusBadge(item.status)}`}>{item.status}</span></header>
+                  <p>{item.capabilities.join(', ')}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="eyebrow">READINESS</p>
+            <h2>Mock / planned / future</h2>
+            <div className="mini-bars">
+              {['mock', 'planned', 'future'].map((status) => {
+                const count = providers.filter((item) => item.status === status).length
+                return (
+                  <div className="mini-bar-row" key={status}>
+                    <span>{status}</span>
+                    <div className="mini-bar-track"><div className="mini-bar-fill" style={{ width: `${Math.max(10, count * 20)}%` }} /></div>
+                    <strong>{count}</strong>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'jobs' ? (
+        <section className="foundation-card admin-panel">
+          <div className="ticket-table-wrap">
+            <table className="ticket-table">
+              <thead><tr><th>Job type</th><th>Status</th><th>Total</th><th>Success</th><th>Failed</th><th>Started</th><th>Finished</th><th>Error</th></tr></thead>
+              <tbody>
+                {jobs.map((item) => (
+                  <tr key={item.id}>
+                    <td>{item.job_type}</td>
+                    <td><span className={`badge ${statusBadge(item.status)}`}>{item.status}</span></td>
+                    <td>{item.records_total}</td>
+                    <td>{item.records_success}</td>
+                    <td>{item.records_failed}</td>
+                    <td>{formatDateTime(item.started_at)}</td>
+                    <td>{formatDateTime(item.finished_at)}</td>
+                    <td>{item.error_message ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'webhooks' ? (
+        <section className="foundation-card admin-panel">
+          <div className="ticket-table-wrap">
+            <table className="ticket-table">
+              <thead><tr><th>Name</th><th>Path</th><th>Target</th><th>Status</th><th>Secret ref</th><th /></tr></thead>
+              <tbody>
+                {webhooks.map((item) => (
+                  <tr key={item.id}>
+                    <td>{item.name}</td>
+                    <td>{item.path}</td>
+                    <td>{item.target_system}</td>
+                    <td><span className={`badge ${item.is_active ? 'badge-positive' : 'badge-danger'}`}>{item.is_active ? 'active' : 'inactive'}</span></td>
+                    <td>{item.secret_ref ?? '—'}</td>
+                    <td><button type="button" className="ghost-button" onClick={() => simulateMutation.mutate(item.id)}>Simulate</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'events' ? (
+        <section className="foundation-card admin-panel">
+          <div className="ticket-table-wrap">
+            <table className="ticket-table">
+              <thead><tr><th>Date</th><th>Direction</th><th>Type</th><th>Status</th><th>External system</th><th>Correlation</th><th>Error</th></tr></thead>
+              <tbody>
+                {events.map((item) => (
+                  <tr key={item.id}>
+                    <td>{formatDateTime(item.created_at)}</td>
+                    <td>{item.direction}</td>
+                    <td>{item.event_type}</td>
+                    <td><span className={`badge ${statusBadge(item.status)}`}>{item.status}</span></td>
+                    <td>{item.external_system_id ?? 'custom'}</td>
+                    <td>{item.correlation_id ?? '—'}</td>
+                    <td>{item.error_message ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'mappings' ? (
+        <section className="foundation-card admin-panel">
+          <div className="ticket-table-wrap">
+            <table className="ticket-table">
+              <thead><tr><th>Source</th><th>Target</th><th>External system</th><th>Mapping</th><th>Status</th></tr></thead>
+              <tbody>
+                {mappings.map((item) => (
+                  <tr key={item.id}>
+                    <td>{item.source_entity}</td>
+                    <td>{item.target_entity}</td>
+                    <td>{item.external_system_id ?? '—'}</td>
+                    <td><pre className="mapping-preview">{JSON.stringify(item.mapping_json, null, 2)}</pre></td>
+                    <td><span className={`badge ${item.is_active ? 'badge-positive' : 'badge-danger'}`}>{item.is_active ? 'active' : 'inactive'}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'mock' ? (
+        <section className="foundation-card dashboard-split admin-panel">
+          <div>
+            <p className="eyebrow">MOCK ACTIONS</p>
+            <h2>Preview сценарии</h2>
+            <div className="analytics-actions">
+              <button type="button" onClick={() => mockActionMutation.mutate('ldap')}>Pull LDAP users</button>
+              <button type="button" onClick={() => mockActionMutation.mutate('zimbra')}>Pull Zimbra mailboxes</button>
+              <button type="button" onClick={() => mockActionMutation.mutate('platonus')}>Pull Platonus users</button>
+              <button type="button" onClick={() => mockActionMutation.mutate('moodle')}>Pull Moodle users</button>
+              <button type="button" onClick={() => mockActionMutation.mutate('webhook')}>Simulate webhook event</button>
+            </div>
+          </div>
+          <div>
+            <p className="eyebrow">PREVIEW RESULT</p>
+            <h2>Последний mock ответ</h2>
+            <pre className="analytics-export-preview">{previewResult || 'Результат появится после запуска mock action.'}</pre>
+          </div>
+        </section>
+      ) : null}
+    </AppShell>
+  )
+}
