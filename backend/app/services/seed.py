@@ -30,6 +30,7 @@ from app.models.ticket import Ticket
 from app.services.analytics import seed_reporting_demo_data
 from app.services.asset_sla import seed_asset_sla_demo_data
 from app.services.audit import log_audit
+from app.services.automation import seed_workflow_automation_data
 from app.services.integrations.providers import create_integration_event
 from app.services.knowledge_ai import seed_knowledge_ai_demo_data
 from app.services.notifications import seed_demo_notifications, seed_notification_templates
@@ -87,6 +88,18 @@ PERMISSIONS = [
     ("integrations.events.read", "Read integration events", "integrations", "Read integration event logs"),
     ("integrations.mappings.read", "Read integration mappings", "integrations", "Read integration mappings"),
     ("integrations.mappings.manage", "Manage integration mappings", "integrations", "Create and update integration mappings"),
+    ("automation.rules.read", "Read automation rules", "automation", "Read workflow automation rules"),
+    ("automation.rules.manage", "Manage automation rules", "automation", "Create and update workflow automation rules"),
+    ("automation.rules.execute", "Execute automation rules", "automation", "Run manual and trigger-based automation"),
+    ("automation.runs.read", "Read automation runs", "automation", "Read automation execution runs"),
+    ("automation.logs.read", "Read automation logs", "automation", "Read automation action logs"),
+    ("automation.runbooks.read", "Read runbooks", "automation", "Read workflow runbooks"),
+    ("automation.runbooks.manage", "Manage runbooks", "automation", "Create and update workflow runbooks"),
+    ("automation.executions.read", "Read runbook executions", "automation", "Read runbook execution timeline"),
+    ("automation.executions.manage", "Manage runbook executions", "automation", "Start and update runbook executions"),
+    ("automation.approvals.read", "Read approval requests", "automation", "Read workflow approval requests"),
+    ("automation.approvals.manage", "Manage approval requests", "automation", "Approve and reject workflow requests"),
+    ("automation.suggestions.read", "Read automation suggestions", "automation", "Read runbook and automation suggestions"),
     ("tenant.read", "Read tenants", "tenant", "Read tenants"),
     ("tenant.manage", "Manage tenants", "tenant", "Manage tenants"),
 ]
@@ -152,6 +165,18 @@ ROLE_DEFS = {
             "integrations.events.read",
             "integrations.mappings.read",
             "integrations.mappings.manage",
+            "automation.rules.read",
+            "automation.rules.manage",
+            "automation.rules.execute",
+            "automation.runs.read",
+            "automation.logs.read",
+            "automation.runbooks.read",
+            "automation.runbooks.manage",
+            "automation.executions.read",
+            "automation.executions.manage",
+            "automation.approvals.read",
+            "automation.approvals.manage",
+            "automation.suggestions.read",
         ],
     },
     "it_manager": {
@@ -187,6 +212,18 @@ ROLE_DEFS = {
             "integrations.events.read",
             "integrations.mappings.read",
             "integrations.mappings.manage",
+            "automation.rules.read",
+            "automation.rules.manage",
+            "automation.rules.execute",
+            "automation.runs.read",
+            "automation.logs.read",
+            "automation.runbooks.read",
+            "automation.runbooks.manage",
+            "automation.executions.read",
+            "automation.executions.manage",
+            "automation.approvals.read",
+            "automation.approvals.manage",
+            "automation.suggestions.read",
         ],
     },
     "it_agent": {
@@ -194,7 +231,22 @@ ROLE_DEFS = {
         "scope": "tenant",
         "description": "Ticket executor",
         "is_system": True,
-        "permissions": ["tickets.read", "tickets.update", "tickets.comment", "notifications.read", "ai.view_suggestions", "knowledge.read"],
+        "permissions": [
+            "tickets.read",
+            "tickets.update",
+            "tickets.comment",
+            "notifications.read",
+            "ai.view_suggestions",
+            "knowledge.read",
+            "automation.rules.read",
+            "automation.runs.read",
+            "automation.logs.read",
+            "automation.runbooks.read",
+            "automation.executions.read",
+            "automation.executions.manage",
+            "automation.approvals.read",
+            "automation.suggestions.read",
+        ],
     },
     "requester": {
         "name": "Requester",
@@ -222,6 +274,13 @@ ROLE_DEFS = {
             "integrations.events.read",
             "integrations.webhooks.read",
             "integrations.mappings.read",
+            "automation.rules.read",
+            "automation.runs.read",
+            "automation.logs.read",
+            "automation.runbooks.read",
+            "automation.executions.read",
+            "automation.approvals.read",
+            "automation.suggestions.read",
         ],
     },
     "knowledge_manager": {
@@ -729,6 +788,7 @@ def seed_demo_data(db: Session) -> None:
     seed_knowledge_ai_demo_data(db)
     seed_notification_templates(db)
     seed_demo_notifications(db)
+    seed_workflow_automation_data(db, tenant.id, settings.demo_admin_email)
 
     ai_suggestion_count = int(db.scalar(select(func.count(AiSuggestion.id))) or 0)
     if ai_suggestion_count == 0:

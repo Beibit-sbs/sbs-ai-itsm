@@ -5,6 +5,7 @@ import HealthBadge from '../components/HealthBadge'
 import {
   createReportSnapshot,
   createSavedReport,
+  fetchAutomationAnalytics,
   fetchAnalyticsOverview,
   fetchAssetAnalytics,
   fetchDemoExport,
@@ -25,6 +26,7 @@ const tabs = [
   { key: 'assets', label: 'Assets' },
   { key: 'ai', label: 'AI & Knowledge' },
   { key: 'security', label: 'Security' },
+  { key: 'automation', label: 'Automation' },
   { key: 'reports', label: 'Reports' },
 ] as const
 
@@ -82,6 +84,11 @@ export default function AnalyticsPage() {
     queryFn: () => fetchSecurityAnalytics(session?.access_token ?? ''),
     enabled: Boolean(session?.access_token),
   })
+  const automationQuery = useQuery({
+    queryKey: ['analytics-automation', session?.access_token],
+    queryFn: () => fetchAutomationAnalytics(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+  })
   const savedReportsQuery = useQuery({
     queryKey: ['reports-saved', session?.access_token],
     queryFn: () => fetchSavedReports(session?.access_token ?? ''),
@@ -134,6 +141,7 @@ export default function AnalyticsPage() {
   const assets = assetQuery.data
   const knowledge = knowledgeQuery.data
   const security = securityQuery.data
+  const automation = automationQuery.data
 
   return (
     <AppShell title="Аналитика" subtitle="Executive dashboard, SLA, активы, AI, безопасность и demo-отчёты для управленческого контура.">
@@ -183,6 +191,11 @@ export default function AnalyticsPage() {
           <span>Asset risk</span>
           <strong>{executiveQuery.isPending ? '…' : executive?.asset_risk_score ?? 0}</strong>
           <p>Сводная оценка рисков по парку активов.</p>
+        </article>
+        <article className="metric-card">
+          <span>Automation score</span>
+          <strong>{executiveQuery.isPending ? '…' : executive?.workflow_automation_score ?? 0}</strong>
+          <p>Индекс зрелости workflow automation.</p>
         </article>
       </section>
 
@@ -451,6 +464,40 @@ export default function AnalyticsPage() {
                 <article className="activity-item" key={String(item.id ?? index)}>
                   <header><strong>{String(item.action ?? 'security.event')}</strong><span>{String(item.actor_email ?? 'n/a')}</span></header>
                   <p>{formatDateTime(String(item.created_at ?? null))}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'automation' ? (
+        <section className="foundation-card dashboard-split admin-panel">
+          <div>
+            <p className="eyebrow">WORKFLOW AUTOMATION</p>
+            <h2>Rules, runs, approvals</h2>
+            <div className="metric-grid analytics-mini-grid">
+              <article className="metric-card"><span>Active rules</span><strong>{automation?.active_rules ?? 0}</strong><p>Количество активных правил.</p></article>
+              <article className="metric-card"><span>Runs today</span><strong>{automation?.runs_today ?? 0}</strong><p>Прогоны за текущий день.</p></article>
+              <article className="metric-card"><span>Failed runs</span><strong>{automation?.failed_runs ?? 0}</strong><p>Ошибки и run with errors.</p></article>
+              <article className="metric-card"><span>Pending approvals</span><strong>{automation?.pending_approvals ?? 0}</strong><p>Approval requests в ожидании.</p></article>
+              <article className="metric-card"><span>Runbooks</span><strong>{automation?.runbooks_available ?? 0}</strong><p>Доступные runbooks.</p></article>
+              <article className="metric-card"><span>Success rate</span><strong>{`${automation?.automation_success_rate ?? 0}%`}</strong><p>Процент успешных действий.</p></article>
+            </div>
+            <div className="ticket-table-wrap analytics-table-space">
+              <table className="ticket-table">
+                <thead><tr><th>Trigger</th><th>Count</th></tr></thead>
+                <tbody>{(automation?.triggers ?? []).map((item) => <tr key={item.trigger_type}><td>{item.trigger_type}</td><td>{item.count}</td></tr>)}</tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <p className="eyebrow">TOP RULES</p>
+            <h2>Наиболее часто запускаемые</h2>
+            <div className="activity-list">
+              {(automation?.top_triggered_rules ?? []).map((item) => (
+                <article className="activity-item" key={item.rule_id}>
+                  <header><strong>{item.rule_name}</strong><span>{item.count}</span></header>
                 </article>
               ))}
             </div>

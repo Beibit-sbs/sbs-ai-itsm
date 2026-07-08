@@ -27,6 +27,7 @@ from app.models.system_setting import SystemSetting
 from app.models.ticket import Ticket
 from app.models.ticket_history import TicketHistory
 from app.models.user import User
+from app.services.automation import collect_automation_overview
 from app.services.audit import parse_metadata, summarize_security
 from app.services.service_desk import calculate_response_minutes
 
@@ -354,6 +355,7 @@ def collect_executive_summary(db: Session, tenant_id: str | None = None) -> dict
     security_metrics = collect_security_metrics(db, tenant_id)
     knowledge_metrics = collect_knowledge_metrics(db, tenant_id)
     integration_metrics = collect_integration_metrics(db, tenant_id)
+    automation_metrics = collect_automation_overview(db, tenant_id)
 
     workload_score = max(0, 100 - ticket_metrics["open_tickets"] * 4 - ticket_metrics["open_critical_tickets"] * 7)
     sla_risk_score = max(0, int(sla_metrics["sla_compliance_percent"] - sla_metrics["critical_sla_breaches"] * 8))
@@ -361,7 +363,30 @@ def collect_executive_summary(db: Session, tenant_id: str | None = None) -> dict
     security_risk_score = max(0, 100 - security_metrics["login_failed"] * 6 - security_metrics["admin_changes_today"] * 2)
     ai_maturity_score = min(100, int(ai_metrics["average_confidence_percent"] * 0.7 + ai_metrics["total_ai_analyses"] * 4))
     integrations_health_score = integration_metrics["integrations_health_score"]
-    health_score = round(mean([workload_score, sla_risk_score, asset_risk_score, security_risk_score, ai_maturity_score, integrations_health_score]))
+    workflow_automation_score = int(
+        max(
+            0,
+            min(
+                100,
+                automation_metrics["automation_success_rate"] * 0.6
+                + min(30, automation_metrics["active_rules"] * 2)
+                + min(20, automation_metrics["runbooks_available"]),
+            ),
+        )
+    )
+    health_score = round(
+        mean(
+            [
+                workload_score,
+                sla_risk_score,
+                asset_risk_score,
+                security_risk_score,
+                ai_maturity_score,
+                integrations_health_score,
+                workflow_automation_score,
+            ]
+        )
+    )
 
     problems = [
         {"title": "Открытые критические заявки", "value": ticket_metrics["open_critical_tickets"]},
@@ -386,6 +411,7 @@ def collect_executive_summary(db: Session, tenant_id: str | None = None) -> dict
         "security_risk_score": security_risk_score,
         "ai_maturity_score": ai_maturity_score,
         "integrations_health_score": integrations_health_score,
+        "workflow_automation_score": workflow_automation_score,
         "top_5_problems": problems[:5],
         "top_5_recommendations": recommendations[:5],
     }
@@ -401,6 +427,7 @@ def collect_overview(db: Session, tenant_id: str | None = None) -> dict[str, Any
         "notifications": collect_notification_metrics(db, tenant_id),
         "security": collect_security_metrics(db, tenant_id),
         "integrations": collect_integration_metrics(db, tenant_id),
+        "automation": collect_automation_overview(db, tenant_id),
         "executive_summary": collect_executive_summary(db, tenant_id),
     }
 
@@ -415,6 +442,7 @@ def report_payload_for_type(db: Session, report_type: str, tenant_id: str | None
         "knowledge": lambda: collect_knowledge_metrics(db, tenant_id),
         "notifications": lambda: collect_notification_metrics(db, tenant_id),
         "security": lambda: collect_security_metrics(db, tenant_id),
+        "automation": lambda: collect_automation_overview(db, tenant_id),
         "executive-summary": lambda: collect_executive_summary(db, tenant_id),
         "daily_it_overview": lambda: collect_overview(db, tenant_id),
         "weekly_sla_report": lambda: collect_sla_metrics(db, tenant_id),

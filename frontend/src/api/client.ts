@@ -508,6 +508,112 @@ export type IntegrationAnalytics = {
   recent_integration_events: Array<{ id: string; event_type: string; status: string; correlation_id: string | null; created_at: string }>
 }
 
+export type AutomationRule = {
+  id: string
+  tenant_id: string | null
+  code: string
+  name: string
+  description: string | null
+  trigger_type: string
+  conditions_json: Record<string, unknown> | Array<unknown>
+  actions_json: Array<Record<string, unknown>>
+  is_active: boolean
+  priority: number
+  created_at: string
+  updated_at: string
+}
+
+export type AutomationRun = {
+  id: string
+  tenant_id: string | null
+  rule_id: string
+  trigger_type: string
+  trigger_entity_type: string | null
+  trigger_entity_id: string | null
+  status: string
+  started_at: string | null
+  finished_at: string | null
+  result_summary: Record<string, unknown>
+  error_message: string | null
+  created_at: string
+}
+
+export type AutomationActionLog = {
+  id: string
+  tenant_id: string | null
+  automation_run_id: string
+  action_type: string
+  status: string
+  input_json: Record<string, unknown>
+  output_json: Record<string, unknown>
+  error_message: string | null
+  created_at: string
+}
+
+export type Runbook = {
+  id: string
+  tenant_id: string | null
+  code: string
+  title: string
+  description: string | null
+  category: string
+  severity: string
+  steps_json: Array<Record<string, unknown>>
+  estimated_minutes: number
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type RunbookExecution = {
+  id: string
+  tenant_id: string | null
+  runbook_id: string
+  ticket_id: string | null
+  status: string
+  current_step: number
+  started_by: string | null
+  started_at: string | null
+  completed_at: string | null
+  result_summary: string | null
+  created_at: string
+}
+
+export type ApprovalRequest = {
+  id: string
+  tenant_id: string | null
+  title: string
+  description: string | null
+  entity_type: string
+  entity_id: string | null
+  requested_by: string
+  approver_name: string | null
+  status: string
+  decision_comment: string | null
+  created_at: string
+  decided_at: string | null
+}
+
+export type TicketAutomationSuggestion = {
+  ticket_id: string
+  suggested_runbooks: Array<{ id: string; code: string; title: string; category: string; severity: string; estimated_minutes: number }>
+  matched_rules: Array<{ rule_id: string; rule_code: string; rule_name: string; trigger_type: string; matched: boolean; planned_actions: Array<Record<string, unknown>>; mode: string }>
+}
+
+export type AutomationOverview = {
+  active_rules: number
+  runs_today: number
+  failed_runs: number
+  pending_approvals: number
+  runbooks_available: number
+  automation_success_rate: number
+  automation_runs_count: number
+  runbook_execution_count: number
+  last_actions: Array<{ id: string; action_type: string; status: string; created_at: string; error_message: string | null }>
+  top_triggered_rules: Array<{ rule_id: string; rule_name: string; count: number }>
+  triggers: Array<{ trigger_type: string; count: number }>
+}
+
 export type ExecutiveSummary = {
   health_score: number
   it_workload_score: number
@@ -516,6 +622,7 @@ export type ExecutiveSummary = {
   security_risk_score: number
   ai_maturity_score: number
   integrations_health_score: number
+  workflow_automation_score: number
   top_5_problems: Array<{ title: string; value: number }>
   top_5_recommendations: string[]
 }
@@ -529,6 +636,7 @@ export type AnalyticsOverview = {
   notifications: NotificationAnalytics
   security: SecurityAnalytics
   integrations: IntegrationAnalytics
+  automation: AutomationOverview
   executive_summary: ExecutiveSummary
 }
 
@@ -1219,6 +1327,123 @@ export async function fetchExecutiveSummary(accessToken: string): Promise<Execut
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   return readJsonResponse<ExecutiveSummary>(response)
+}
+
+export async function fetchAutomationAnalytics(accessToken: string): Promise<AutomationOverview> {
+  const response = await fetch(`${API_BASE_URL}/analytics/automation`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AutomationOverview>(response)
+}
+
+export async function fetchAutomationOverview(accessToken: string): Promise<AutomationOverview> {
+  const response = await fetch(`${API_BASE_URL}/automation/overview`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AutomationOverview>(response)
+}
+
+export async function fetchAutomationRules(accessToken: string): Promise<AutomationRule[]> {
+  const response = await fetch(`${API_BASE_URL}/automation/rules`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AutomationRule[]>(response)
+}
+
+export async function patchAutomationRule(accessToken: string, ruleId: string, request: Partial<Pick<AutomationRule, 'name' | 'description' | 'trigger_type' | 'is_active' | 'priority'>> & { conditions_json?: Record<string, unknown> | Array<unknown>; actions_json?: Array<Record<string, unknown>> }): Promise<AutomationRule> {
+  const response = await fetch(`${API_BASE_URL}/automation/rules/${ruleId}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  return readJsonResponse<AutomationRule>(response)
+}
+
+export async function dryRunAutomationRule(accessToken: string, ruleId: string, request: { trigger_type?: string; context?: Record<string, unknown> }): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE_URL}/automation/rules/${ruleId}/dry-run`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  return readJsonResponse<Record<string, unknown>>(response)
+}
+
+export async function manualRunAutomationRule(accessToken: string, ruleId: string, request: { trigger_type?: string; context?: Record<string, unknown> }): Promise<{ run: AutomationRun; summary: Record<string, unknown> }> {
+  const response = await fetch(`${API_BASE_URL}/automation/rules/${ruleId}/manual-run`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  return readJsonResponse<{ run: AutomationRun; summary: Record<string, unknown> }>(response)
+}
+
+export async function fetchAutomationRuns(accessToken: string): Promise<AutomationRun[]> {
+  const response = await fetch(`${API_BASE_URL}/automation/runs`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AutomationRun[]>(response)
+}
+
+export async function fetchAutomationRunLogs(accessToken: string, runId: string): Promise<AutomationActionLog[]> {
+  const response = await fetch(`${API_BASE_URL}/automation/runs/${runId}/logs`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AutomationActionLog[]>(response)
+}
+
+export async function fetchRunbooks(accessToken: string): Promise<Runbook[]> {
+  const response = await fetch(`${API_BASE_URL}/automation/runbooks`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<Runbook[]>(response)
+}
+
+export async function fetchRunbookExecutions(accessToken: string): Promise<RunbookExecution[]> {
+  const response = await fetch(`${API_BASE_URL}/automation/runbook-executions`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<RunbookExecution[]>(response)
+}
+
+export async function startRunbookExecution(accessToken: string, runbookId: string, request: { ticket_id?: string | null }): Promise<RunbookExecution> {
+  const response = await fetch(`${API_BASE_URL}/automation/runbooks/${runbookId}/executions`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  return readJsonResponse<RunbookExecution>(response)
+}
+
+export async function patchRunbookExecution(accessToken: string, executionId: string, request: { status?: string; current_step?: number; result_summary?: string }): Promise<RunbookExecution> {
+  const response = await fetch(`${API_BASE_URL}/automation/runbook-executions/${executionId}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  return readJsonResponse<RunbookExecution>(response)
+}
+
+export async function fetchApprovalRequests(accessToken: string): Promise<ApprovalRequest[]> {
+  const response = await fetch(`${API_BASE_URL}/automation/approvals`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<ApprovalRequest[]>(response)
+}
+
+export async function decideApprovalRequest(accessToken: string, approvalId: string, request: { decision: 'APPROVED' | 'REJECTED'; comment?: string }): Promise<ApprovalRequest> {
+  const response = await fetch(`${API_BASE_URL}/automation/approvals/${approvalId}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  return readJsonResponse<ApprovalRequest>(response)
+}
+
+export async function fetchTicketAutomationSuggestions(accessToken: string, ticketId: string): Promise<TicketAutomationSuggestion> {
+  const response = await fetch(`${API_BASE_URL}/automation/tickets/${ticketId}/suggestions`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<TicketAutomationSuggestion>(response)
 }
 
 export async function fetchSavedReports(accessToken: string): Promise<SavedReport[]> {

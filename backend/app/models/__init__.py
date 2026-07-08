@@ -3,7 +3,11 @@ from app.models.asset import Asset
 from app.models.asset_assignment import AssetAssignment
 from app.models.asset_type import AssetType
 from app.models.ai_suggestion import AiSuggestion
+from app.models.approval_request import ApprovalRequest
 from app.models.audit_log import AuditLog
+from app.models.automation_action_log import AutomationActionLog
+from app.models.automation_rule import AutomationRule
+from app.models.automation_run import AutomationRun
 from app.models.email_message_log import EmailMessageLog
 from app.models.external_system import ExternalSystem
 from app.models.import_job import ImportJob
@@ -25,6 +29,8 @@ from app.models.user_role import UserRole
 from app.models.permission import Permission
 from app.models.report_snapshot import ReportSnapshot
 from app.models.role import Role
+from app.models.runbook import Runbook
+from app.models.runbook_execution import RunbookExecution
 from app.models.saved_report import SavedReport
 from app.models.sla import SlaPolicy
 from app.models.sla_event import SlaEvent

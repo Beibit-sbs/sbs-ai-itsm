@@ -32,6 +32,7 @@ const navigationGroups = [
     section: 'Executive',
     items: [
       { to: '/analytics', label: 'Аналитика' },
+      { to: '/automation', label: 'Автоматизация' },
       { to: '/integrations', label: 'Интеграции' },
     ],
   },
@@ -71,6 +72,9 @@ export default function AppShell({ title, subtitle, children }: AppShellProps) {
               }
               if (item.to === '/integrations') {
                 return ['saas_root', 'organization_admin', 'it_manager', 'security_officer'].includes(role)
+              }
+              if (item.to === '/automation') {
+                return ['saas_root', 'organization_admin', 'it_manager', 'it_agent', 'security_officer'].includes(role)
               }
               if (item.to === '/copilot') {
                 return role !== 'requester'

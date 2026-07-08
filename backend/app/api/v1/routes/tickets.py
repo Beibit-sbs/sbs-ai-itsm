@@ -20,6 +20,7 @@ from app.models.ticket_status import TicketStatus
 from app.models.sla import SlaPolicy
 from app.models.tenant import Tenant
 from app.services.asset_sla import calculate_ticket_sla_status
+from app.services.automation import AutomationEngine, build_ticket_context
 from app.services.audit import log_audit
 from app.services.notifications import create_ticket_event_notification
 from app.services.rbac import can_read_ticket, require_permissions
@@ -376,6 +377,13 @@ def create_ticket(
         user_agent=http_request.headers.get("user-agent"),
         metadata={"ticket_number": ticket.ticket_number},
     )
+    AutomationEngine.evaluate_rules(
+        db,
+        tenant_id=ticket.tenant_id,
+        trigger_type="ticket_created",
+        context=build_ticket_context(ticket),
+        actor_email=current_user.email,
+    )
     db.commit()
     db.refresh(ticket)
     return get_ticket(ticket.id, current_user, db)
@@ -512,6 +520,23 @@ def patch_ticket(
             user_agent=http_request.headers.get("user-agent"),
             metadata={"status": ticket.status},
         )
+
+    context = build_ticket_context(ticket)
+    AutomationEngine.evaluate_rules(
+        db,
+        tenant_id=ticket.tenant_id,
+        trigger_type="ticket_updated",
+        context=context,
+        actor_email=current_user.email,
+    )
+    if ticket.sla_status == "BREACHED":
+        AutomationEngine.evaluate_rules(
+            db,
+            tenant_id=ticket.tenant_id,
+            trigger_type="sla_breached",
+            context=context,
+            actor_email=current_user.email,
+        )
     db.commit()
     db.refresh(ticket)
     return get_ticket(ticket.id, current_user, db)
@@ -568,6 +593,13 @@ def add_comment(
         ip_address=http_request.client.host if http_request.client else None,
         user_agent=http_request.headers.get("user-agent"),
         metadata={"comment_length": len(request.body)},
+    )
+    AutomationEngine.evaluate_rules(
+        db,
+        tenant_id=ticket.tenant_id,
+        trigger_type="ticket_commented",
+        context=build_ticket_context(ticket),
+        actor_email=current_user.email,
     )
     ticket.updated_at = datetime.now(UTC)
     db.add_all([comment, history_entry] + ([notification_history] if notification_history is not None else []))

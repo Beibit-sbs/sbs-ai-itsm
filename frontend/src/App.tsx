@@ -12,6 +12,7 @@ import KnowledgePage from './pages/KnowledgePage'
 import NotificationsPage from './pages/NotificationsPage'
 import EmailLogPage from './pages/EmailLogPage'
 import AnalyticsPage from './pages/AnalyticsPage'
+import AutomationPage from './pages/AutomationPage'
 
 export default function App() {
   return (
@@ -94,6 +95,14 @@ export default function App() {
         element={
           <RequireAuth>
             <AnalyticsPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/automation"
+        element={
+          <RequireAuth>
+            <AutomationPage />
           </RequireAuth>
         }
       />

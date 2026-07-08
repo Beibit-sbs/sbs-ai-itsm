@@ -8,6 +8,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.services.analytics import (
     collect_ai_metrics,
+    collect_automation_overview,
     collect_asset_metrics,
     collect_executive_summary,
     collect_knowledge_metrics,
@@ -132,6 +133,17 @@ def get_security_analytics(
     require_permissions(current_user, "analytics.read")
     _audit_view(db, request, current_user, "security")
     return collect_security_metrics(db, _tenant_scope(current_user))
+
+
+@router.get("/automation")
+def get_automation_analytics(
+    request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_permissions(current_user, "analytics.read")
+    _audit_view(db, request, current_user, "automation")
+    return collect_automation_overview(db, _tenant_scope(current_user))
 
 
 @router.get("/executive-summary")

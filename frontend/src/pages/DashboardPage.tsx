@@ -254,6 +254,35 @@ export default function DashboardPage() {
       {isAdminContext ? (
         <section className="foundation-card dashboard-split admin-kpi-block">
           <div>
+            <p className="eyebrow">WORKFLOW AUTOMATION</p>
+            <h2>Состояние автоматизации процессов</h2>
+            <div className="mini-bars">
+              <div className="mini-bar-row"><span>Active rules</span><strong>{executiveOverviewQuery.isPending ? '…' : executiveOverviewQuery.data?.automation.active_rules ?? 0}</strong></div>
+              <div className="mini-bar-row"><span>Runs today</span><strong>{executiveOverviewQuery.isPending ? '…' : executiveOverviewQuery.data?.automation.runs_today ?? 0}</strong></div>
+              <div className="mini-bar-row"><span>Success rate</span><strong>{executiveOverviewQuery.isPending ? '…' : `${executiveOverviewQuery.data?.automation.automation_success_rate ?? 0}%`}</strong></div>
+              <div className="mini-bar-row"><span>Pending approvals</span><strong>{executiveOverviewQuery.isPending ? '…' : executiveOverviewQuery.data?.automation.pending_approvals ?? 0}</strong></div>
+              <div className="mini-bar-row"><span>Runbooks</span><strong>{executiveOverviewQuery.isPending ? '…' : executiveOverviewQuery.data?.automation.runbooks_available ?? 0}</strong></div>
+            </div>
+          </div>
+          <div className="status-column">
+            <p className="eyebrow">TOP TRIGGERED RULES</p>
+            <div className="activity-list">
+              {(executiveOverviewQuery.data?.automation.top_triggered_rules ?? []).map((item) => (
+                <article className="activity-item" key={item.rule_id}>
+                  <header>
+                    <strong>{item.rule_name}</strong>
+                    <span>{item.count}</span>
+                  </header>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {isAdminContext ? (
+        <section className="foundation-card dashboard-split admin-kpi-block">
+          <div>
             <p className="eyebrow">INTEGRATION HEALTH</p>
             <h2>Состояние интеграционного слоя</h2>
             <div className="mini-bars">
