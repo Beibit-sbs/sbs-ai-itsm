@@ -8,10 +8,12 @@ import {
   fetchAiSuggestions,
   fetchAssets,
   fetchTicket,
+  fetchTicketAutomationSuggestions,
   fetchTicketHistory,
   fetchTickets,
   patchTicket,
   type Ticket,
+  type TicketDetail,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import AppShell from '../components/AppShell'
@@ -115,6 +117,14 @@ function TicketBadge({ label, color }: { label: string; color: string }) {
   )
 }
 
+function toTicketDetailFallback(ticket: Ticket): TicketDetail {
+  return {
+    ...ticket,
+    comments: [],
+    history_count: 0,
+  }
+}
+
 export default function TicketsPage() {
   const { session } = useAuth()
   const queryClient = useQueryClient()
@@ -128,6 +138,24 @@ export default function TicketsPage() {
   const [detailAssignee, setDetailAssignee] = useState('')
   const [commentBody, setCommentBody] = useState('')
   const [notificationHint, setNotificationHint] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!selectedTicketId && !isCreateOpen) return
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      if (selectedTicketId) {
+        setSelectedTicketId(null)
+        return
+      }
+      if (isCreateOpen) {
+        setIsCreateOpen(false)
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selectedTicketId, isCreateOpen])
 
   const ticketsQuery = useQuery({
     queryKey: ['tickets', session?.access_token],
@@ -156,6 +184,12 @@ export default function TicketsPage() {
   const aiSuggestionsQuery = useQuery({
     queryKey: ['ticket-ai-suggestions', session?.access_token, selectedTicketId],
     queryFn: () => fetchAiSuggestions(session?.access_token ?? '', selectedTicketId ?? ''),
+    enabled: Boolean(session?.access_token && selectedTicketId),
+  })
+
+  const automationSuggestionsQuery = useQuery({
+    queryKey: ['ticket-automation-suggestions', session?.access_token, selectedTicketId],
+    queryFn: () => fetchTicketAutomationSuggestions(session?.access_token ?? '', selectedTicketId ?? ''),
     enabled: Boolean(session?.access_token && selectedTicketId),
   })
 
@@ -306,10 +340,12 @@ export default function TicketsPage() {
       .slice(0, 5)
   }, [tickets])
 
-  const detail = selectedTicketQuery.data
+  const selectedTableTicket = selectedTicketId ? tickets.find((item) => item.id === selectedTicketId) ?? null : null
+  const detail = selectedTicketQuery.data ?? (selectedTableTicket ? toTicketDetailFallback(selectedTableTicket) : null)
   const history = ticketHistoryQuery.data ?? []
   const suggestions = aiSuggestionsQuery.data ?? []
   const latestSuggestion = suggestions[0] ?? null
+  const automationSuggestions = automationSuggestionsQuery.data
 
   return (
     <AppShell title="Заявки" subtitle="Service Desk для Demo Tenant уже работает как полноценный demo-ready workflow.">
@@ -615,19 +651,26 @@ export default function TicketsPage() {
         </div>
       ) : null}
 
-      {detail ? (
+      {selectedTicketId ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setSelectedTicketId(null)}>
           <div className="modal-card modal-card-xl" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <p className="eyebrow">КАРТОЧКА ЗАЯВКИ</p>
-                <h2>{detail.ticket_number}</h2>
-                <p className="modal-subtitle">{detail.title}</p>
+                <h2>{detail?.ticket_number ?? 'Загрузка...'}</h2>
+                <p className="modal-subtitle">{detail?.title ?? 'Получаем карточку заявки...'}</p>
               </div>
               <button type="button" className="ghost-button" onClick={() => setSelectedTicketId(null)}>
                 Закрыть
               </button>
             </div>
+
+            {selectedTicketQuery.isPending && !detail ? <p className="muted">Загрузка карточки заявки…</p> : null}
+            {selectedTicketQuery.isError && !detail ? <p className="error-message">Не удалось загрузить карточку заявки.</p> : null}
+
+            {detail ? (
+              <>
+                {selectedTicketQuery.isError ? <p className="error-message">Детальная API-карточка недоступна. Показаны данные из таблицы.</p> : null}
 
             <div className="ticket-detail-grid">
               <section className="ticket-detail-panel">
@@ -751,6 +794,33 @@ export default function TicketsPage() {
                     {createArticleMutation.isPending ? 'Создание...' : 'Создать статью из решенной заявки'}
                   </button>
                 </div>
+
+                <div className="comment-box">
+                  <h4>Automation / Runbook suggestions</h4>
+                  {automationSuggestionsQuery.isPending ? <p className="muted">Подбираем runbooks и правила…</p> : null}
+                  {automationSuggestionsQuery.isError ? <p className="error-message">Не удалось получить automation suggestions.</p> : null}
+                  {!automationSuggestionsQuery.isPending && !automationSuggestionsQuery.isError ? (
+                    <>
+                      <div className="activity-list">
+                        {(automationSuggestions?.suggested_runbooks ?? []).map((item) => (
+                          <article className="activity-item" key={item.id}>
+                            <header>
+                              <strong>{item.title}</strong>
+                              <span>{item.severity}</span>
+                            </header>
+                            <p>{item.category}</p>
+                            <small>{item.estimated_minutes} min</small>
+                          </article>
+                        ))}
+                      </div>
+                      {automationSuggestions?.matched_rules?.length ? (
+                        <pre className="analytics-export-preview">{JSON.stringify(automationSuggestions.matched_rules, null, 2)}</pre>
+                      ) : (
+                        <p className="muted">Совпадающие automation rules не найдены.</p>
+                      )}
+                    </>
+                  ) : null}
+                </div>
               </section>
             </div>
 
@@ -759,10 +829,10 @@ export default function TicketsPage() {
                 <div>
                   <h3>Комментарии</h3>
                   <div className="activity-list">
-                    {detail.comments.length === 0 ? (
+                    {(detail.comments ?? []).length === 0 ? (
                       <p className="muted">Комментариев пока нет.</p>
                     ) : (
-                      detail.comments.map((comment) => (
+                      (detail.comments ?? []).map((comment) => (
                         <article className="activity-item" key={comment.id}>
                           <header>
                             <strong>{comment.author_name}</strong>
@@ -796,6 +866,8 @@ export default function TicketsPage() {
                 </div>
               </div>
             </section>
+              </>
+            ) : null}
           </div>
         </div>
       ) : null}

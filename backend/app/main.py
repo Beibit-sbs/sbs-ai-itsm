@@ -7,6 +7,7 @@ from app.core.errors import register_exception_handlers
 from app.db.base import Base
 from app.db.session import engine, SessionLocal
 from app.services.admin_security import ensure_admin_security_schema
+from app.services.asset_import import ensure_asset_import_schema
 from app.services.asset_sla import ensure_asset_sla_schema
 from app.services.reporting_schema import ensure_reporting_schema
 from app.services.seed import seed_demo_data
@@ -21,6 +22,7 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_service_desk_schema(engine)
     ensure_asset_sla_schema(engine)
+    ensure_asset_import_schema(engine)
     ensure_admin_security_schema(engine)
     ensure_reporting_schema(engine)
     db = SessionLocal()

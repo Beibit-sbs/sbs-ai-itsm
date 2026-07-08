@@ -48,6 +48,7 @@ export default function AutomationPage() {
   const [selectedTicketId, setSelectedTicketId] = useState<string>('')
   const [dryRunResult, setDryRunResult] = useState<string>('')
   const [manualRunResult, setManualRunResult] = useState<string>('')
+  const [actionError, setActionError] = useState<string>('')
 
   const token = session?.access_token ?? ''
 
@@ -108,40 +109,51 @@ export default function AutomationPage() {
   const dryRunMutation = useMutation({
     mutationFn: async (ruleId: string) => dryRunAutomationRule(token, ruleId, { trigger_type: 'manual_run', context: { entity_type: 'manual', entity_id: 'ui-dry-run' } }),
     onSuccess: (data) => {
+      setActionError('')
       setDryRunResult(JSON.stringify(data, null, 2))
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Dry Run failed'),
   })
 
   const manualRunMutation = useMutation({
     mutationFn: async (ruleId: string) => manualRunAutomationRule(token, ruleId, { trigger_type: 'manual_run', context: { entity_type: 'manual', entity_id: 'ui-manual-run' } }),
     onSuccess: async (data) => {
+      setActionError('')
       setManualRunResult(JSON.stringify(data, null, 2))
       await queryClient.invalidateQueries({ queryKey: ['automation-runs'] })
       await queryClient.invalidateQueries({ queryKey: ['automation-overview'] })
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Manual Run failed'),
   })
 
   const startExecutionMutation = useMutation({
     mutationFn: async () => startRunbookExecution(token, selectedRunbookId, { ticket_id: selectedTicketId || null }),
     onSuccess: async () => {
+      setActionError('')
       await queryClient.invalidateQueries({ queryKey: ['automation-executions'] })
       await queryClient.invalidateQueries({ queryKey: ['automation-overview'] })
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Start execution failed'),
   })
 
   const updateExecutionMutation = useMutation({
-    mutationFn: async (payload: { executionId: string; status: string }) => patchRunbookExecution(token, payload.executionId, { status: payload.status }),
+    mutationFn: async (payload: { executionId: string; status?: string; current_step?: number }) =>
+      patchRunbookExecution(token, payload.executionId, { status: payload.status, current_step: payload.current_step }),
     onSuccess: async () => {
+      setActionError('')
       await queryClient.invalidateQueries({ queryKey: ['automation-executions'] })
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Execution update failed'),
   })
 
   const decideApprovalMutation = useMutation({
     mutationFn: async (payload: { approvalId: string; decision: 'APPROVED' | 'REJECTED' }) => decideApprovalRequest(token, payload.approvalId, { decision: payload.decision }),
     onSuccess: async () => {
+      setActionError('')
       await queryClient.invalidateQueries({ queryKey: ['automation-approvals'] })
       await queryClient.invalidateQueries({ queryKey: ['automation-overview'] })
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Approval action failed'),
   })
 
   const runOptions = useMemo(() => runsQuery.data ?? [], [runsQuery.data])
@@ -168,6 +180,8 @@ export default function AutomationPage() {
           ))}
         </div>
       </section>
+
+      {actionError ? <section className="foundation-card"><p className="error-message">{actionError}</p></section> : null}
 
       {activeTab === 'rules' ? (
         <section className="ticket-table-wrap admin-panel">
@@ -319,7 +333,16 @@ export default function AutomationPage() {
                     <td>{execution.status}</td>
                     <td>{execution.current_step}</td>
                     <td>
-                      <button className="ghost-button" type="button" onClick={() => updateExecutionMutation.mutate({ executionId: execution.id, status: 'completed' })}>Mark Completed</button>
+                      <div className="analytics-actions">
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          onClick={() => updateExecutionMutation.mutate({ executionId: execution.id, current_step: execution.current_step + 1 })}
+                        >
+                          Update Step
+                        </button>
+                        <button className="ghost-button" type="button" onClick={() => updateExecutionMutation.mutate({ executionId: execution.id, status: 'completed' })}>Mark Completed</button>
+                      </div>
                     </td>
                   </tr>
                 ))}

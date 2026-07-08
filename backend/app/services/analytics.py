@@ -174,6 +174,20 @@ def collect_asset_metrics(db: Session, tenant_id: str | None = None) -> dict[str
             continue
         top_assets.append({"asset_tag": asset.asset_tag, "name": asset.name, "count": count})
 
+    source_counts = _count_map([item.source or "manual" for item in assets], label_key="source")
+    by_purchase_year_counter: Counter[str] = Counter(str(item.purchase_year) for item in assets if item.purchase_year is not None)
+    by_purchase_year = [{"year": key, "count": value} for key, value in by_purchase_year_counter.most_common()]
+    missing_location_assets = [item for item in assets if item.verification_status == "needs_location"]
+    disposed_assets = [item for item in assets if item.status == "disposed"]
+    imported_assets = [item for item in assets if item.source == "excel_import"]
+    responsible_counter = Counter(item.assigned_to_name or "Unassigned" for item in assets)
+    inventory_counter = Counter(item.inventory_number for item in assets if item.inventory_number)
+    duplicate_inventory_numbers = [
+        {"inventory_number": number, "count": count}
+        for number, count in inventory_counter.items()
+        if count > 1
+    ]
+
     return {
         "total_assets": len(assets),
         "assets_by_type": _count_map([item.asset_type for item in assets], label_key="type"),
@@ -188,6 +202,13 @@ def collect_asset_metrics(db: Session, tenant_id: str | None = None) -> dict[str
         ][:10],
         "unassigned_assets": [{"asset_tag": item.asset_tag, "name": item.name} for item in unassigned_assets[:10]],
         "unassigned_assets_count": len(unassigned_assets),
+        "imported_assets_count": len(imported_assets),
+        "assets_missing_location_count": len(missing_location_assets),
+        "disposed_assets_count": len(disposed_assets),
+        "assets_by_source": source_counts,
+        "assets_by_purchase_year": by_purchase_year,
+        "top_responsible_persons": [{"name": key, "count": value} for key, value in responsible_counter.most_common(10)],
+        "duplicate_inventory_numbers": duplicate_inventory_numbers,
     }
 
 

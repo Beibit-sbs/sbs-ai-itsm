@@ -15,6 +15,7 @@ export type AuthUser = {
   full_name: string
   tenant_id: string | null
   role: string
+  permissions: string[]
 }
 
 export type AuthSession = {
@@ -118,8 +119,11 @@ export type Asset = {
   name: string
   type: string | null
   asset_type: string
+  original_type: string | null
   serial_number: string | null
   inventory_number: string | null
+  source: string | null
+  source_batch_id: string | null
   manufacturer: string | null
   model: string | null
   status: string
@@ -129,6 +133,14 @@ export type Asset = {
   department: string | null
   location: string
   purchase_date: string | null
+  accepted_at: string | null
+  purchase_cost: number | null
+  current_cost: number | null
+  depreciation_amount: number | null
+  residual_value: number | null
+  purchase_year: number | null
+  verification_status: string | null
+  imported_at: string | null
   warranty_until: string | null
   condition: string
   description: string | null
@@ -163,6 +175,57 @@ export type AssetTicket = {
   sla_status: string | null
   created_at: string
   updated_at: string
+}
+
+export type AssetImportBatch = {
+  id: string
+  tenant_id: string | null
+  file_name: string
+  original_file_name: string
+  status: string
+  total_rows: number
+  valid_rows: number
+  imported_rows: number
+  skipped_rows: number
+  error_rows: number
+  created_by: string | null
+  created_at: string
+  completed_at: string | null
+  summary: Record<string, unknown>
+}
+
+export type AssetImportRow = {
+  id: string
+  row_number: number
+  raw: Record<string, unknown>
+  normalized: Record<string, unknown>
+  status: string
+  error_message: string | null
+  asset_id: string | null
+  created_at: string
+}
+
+export type AssetImportSummary = {
+  total_batches: number
+  preview_ready_batches: number
+  committed_batches: number
+  total_rows: number
+  total_imported_rows: number
+  total_error_rows: number
+}
+
+export type AssetImportPreviewResult = {
+  batch_id: string
+  dry_run: boolean
+  total_rows: number
+  valid_rows: number
+  error_rows: number
+  duplicate_rows: number
+  disposed_rows: number
+  in_stock_rows: number
+  missing_location_rows: number
+  imported_rows?: number
+  skipped_rows?: number
 }
 
 export type SlaOverview = {
@@ -456,6 +519,13 @@ export type AssetAnalytics = {
   warranty_expiring_soon: Array<{ asset_tag: string; name: string; warranty_until: string | null }>
   unassigned_assets: Array<{ asset_tag: string; name: string }>
   unassigned_assets_count: number
+  imported_assets_count: number
+  assets_missing_location_count: number
+  disposed_assets_count: number
+  assets_by_source: Array<{ source: string; count: number }>
+  assets_by_purchase_year: Array<{ year: string; count: number }>
+  top_responsible_persons: Array<{ name: string; count: number }>
+  duplicate_inventory_numbers: Array<{ inventory_number: string; count: number }>
 }
 
 export type AiAnalytics = {
@@ -871,8 +941,29 @@ export async function fetchTicketHistory(accessToken: string, ticketId: string):
   return readJsonResponse<TicketHistory[]>(response)
 }
 
-export async function fetchAssets(accessToken: string): Promise<Asset[]> {
-  const response = await fetch(`${API_BASE_URL}/assets`, {
+export async function fetchAssets(
+  accessToken: string,
+  params?: {
+    source?: string
+    verification_status?: string
+    without_location?: boolean
+    disposed?: boolean
+    assigned_to_name?: string
+    purchase_year?: number
+    type?: string
+  },
+): Promise<Asset[]> {
+  const search = new URLSearchParams()
+  if (params?.source && params.source !== 'ALL') search.set('source', params.source)
+  if (params?.verification_status && params.verification_status !== 'ALL') search.set('verification_status', params.verification_status)
+  if (params?.without_location) search.set('without_location', 'true')
+  if (params?.disposed) search.set('disposed', 'true')
+  if (params?.assigned_to_name && params.assigned_to_name !== 'ALL') search.set('assigned_to_name', params.assigned_to_name)
+  if (typeof params?.purchase_year === 'number') search.set('purchase_year', String(params.purchase_year))
+  if (params?.type && params.type !== 'ALL') search.set('type', params.type)
+  const query = search.toString()
+
+  const response = await fetch(`${API_BASE_URL}/assets${query ? `?${query}` : ''}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
 
@@ -893,6 +984,70 @@ export async function fetchAssetTickets(accessToken: string, assetId: string): P
   })
 
   return readJsonResponse<AssetTicket[]>(response)
+}
+
+export async function uploadAssetImport(accessToken: string, file: File): Promise<AssetImportBatch> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await fetch(`${API_BASE_URL}/assets/import/upload`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: formData,
+  })
+  return readJsonResponse<AssetImportBatch>(response)
+}
+
+export async function previewAssetImport(accessToken: string, payload: { batch_id: string; dry_run?: boolean }): Promise<AssetImportPreviewResult> {
+  const response = await fetch(`${API_BASE_URL}/assets/import/preview`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<AssetImportPreviewResult>(response)
+}
+
+export async function commitAssetImport(accessToken: string, batchId: string, payload?: { dry_run?: boolean }): Promise<AssetImportPreviewResult> {
+  const response = await fetch(`${API_BASE_URL}/assets/import/${batchId}/commit`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload ?? {}),
+  })
+  return readJsonResponse<AssetImportPreviewResult>(response)
+}
+
+export async function fetchAssetImportBatches(accessToken: string): Promise<AssetImportBatch[]> {
+  const response = await fetch(`${API_BASE_URL}/assets/import/batches`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AssetImportBatch[]>(response)
+}
+
+export async function fetchAssetImportBatch(accessToken: string, batchId: string): Promise<AssetImportBatch> {
+  const response = await fetch(`${API_BASE_URL}/assets/import/batches/${batchId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AssetImportBatch>(response)
+}
+
+export async function fetchAssetImportRows(accessToken: string, batchId: string): Promise<AssetImportRow[]> {
+  const response = await fetch(`${API_BASE_URL}/assets/import/batches/${batchId}/rows`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AssetImportRow[]>(response)
+}
+
+export async function fetchAssetImportTemplate(accessToken: string): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE_URL}/assets/import/template`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<Record<string, unknown>>(response)
+}
+
+export async function fetchAssetImportSummary(accessToken: string): Promise<AssetImportSummary> {
+  const response = await fetch(`${API_BASE_URL}/assets/import/summary`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AssetImportSummary>(response)
 }
 
 export async function fetchSlaPolicies(accessToken: string): Promise<SlaPolicy[]> {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -19,6 +19,9 @@ class Asset(Base):
     type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     inventory_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    original_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     manufacturer: Mapped[str | None] = mapped_column(String(200), nullable=True)
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -28,7 +31,15 @@ class Asset(Base):
     department: Mapped[str | None] = mapped_column(String(200), nullable=True)
     location: Mapped[str] = mapped_column(String(200), nullable=False)
     purchase_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     warranty_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    purchase_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    depreciation_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    residual_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    purchase_year: Mapped[int | None] = mapped_column(nullable=True)
+    verification_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     condition: Mapped[str] = mapped_column(String(32), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

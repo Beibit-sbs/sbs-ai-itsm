@@ -361,6 +361,12 @@ export default function AnalyticsPage() {
           <div>
             <p className="eyebrow">ASSET ANALYTICS</p>
             <h2>Активы по типам и статусам</h2>
+            <div className="metric-grid analytics-mini-grid">
+              <article className="metric-card"><span>Imported</span><strong>{assets?.imported_assets_count ?? 0}</strong></article>
+              <article className="metric-card"><span>Missing location</span><strong>{assets?.assets_missing_location_count ?? 0}</strong></article>
+              <article className="metric-card"><span>Disposed</span><strong>{assets?.disposed_assets_count ?? 0}</strong></article>
+              <article className="metric-card"><span>Duplicate inventory</span><strong>{assets?.duplicate_inventory_numbers?.length ?? 0}</strong></article>
+            </div>
             <div className="ticket-table-wrap">
               <table className="ticket-table">
                 <thead><tr><th>Тип</th><th>Count</th></tr></thead>
@@ -371,6 +377,12 @@ export default function AnalyticsPage() {
               <table className="ticket-table">
                 <thead><tr><th>Статус</th><th>Count</th></tr></thead>
                 <tbody>{(assets?.assets_by_status ?? []).map((item) => <tr key={item.status}><td>{item.status}</td><td>{item.count}</td></tr>)}</tbody>
+              </table>
+            </div>
+            <div className="ticket-table-wrap analytics-table-space">
+              <table className="ticket-table">
+                <thead><tr><th>Источник</th><th>Count</th></tr></thead>
+                <tbody>{(assets?.assets_by_source ?? []).map((item) => <tr key={item.source}><td>{item.source}</td><td>{item.count}</td></tr>)}</tbody>
               </table>
             </div>
           </div>
@@ -393,6 +405,13 @@ export default function AnalyticsPage() {
                   <p>{item.name}</p>
                 </article>
               ))}
+            </div>
+            <p className="eyebrow analytics-subsection">Топ ответственные (МОЛ)</p>
+            <div className="ticket-table-wrap">
+              <table className="ticket-table">
+                <thead><tr><th>МОЛ</th><th>Count</th></tr></thead>
+                <tbody>{(assets?.top_responsible_persons ?? []).map((item) => <tr key={item.name}><td>{item.name}</td><td>{item.count}</td></tr>)}</tbody>
+              </table>
             </div>
           </div>
         </section>

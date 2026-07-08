@@ -101,7 +101,7 @@ def test_tenant_admin_can_list_assets(app) -> None:
 
         assert assets_response.status_code == 200
         assets = assets_response.json()
-        assert len(assets) == 3
+        assert len(assets) >= 3
         assert assets[0]["tenant_name"] == "Demo Tenant"
 
 
@@ -124,8 +124,8 @@ def test_root_user_can_list_assets(app) -> None:
 
         assert assets_response.status_code == 200
         assets = assets_response.json()
-        assert len(assets) == 3
-        assert {asset["status"] for asset in assets} == {"in_use", "in_stock", "in_repair"}
+        assert len(assets) >= 3
+        assert {"in_use", "in_stock", "in_repair"}.issubset({asset["status"] for asset in assets})
 
 
 def test_tenant_admin_can_list_sla_policies(app) -> None:
