@@ -7,12 +7,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.security import AuthUser, create_token, decode_token, verify_password
 from app.db.session import get_db
 from app.models.user import User
 from app.services.audit import log_audit
 
 router = APIRouter(prefix="/auth")
+settings = get_settings()
 
 
 class LoginRequest(BaseModel):
@@ -40,6 +42,10 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = None
+
+
 def _to_response(user: AuthUser, permissions: list[str] | None = None) -> AuthUserResponse:
     return AuthUserResponse(
         id=user.id,
@@ -53,8 +59,8 @@ def _to_response(user: AuthUser, permissions: list[str] | None = None) -> AuthUs
 
 def _issue_tokens(user: AuthUser, permissions: list[str] | None = None) -> TokenPair:
     subject = {"sub": user.id, "email": user.email, "tenant_id": user.tenant_id, "role": user.role}
-    access_token = create_token(subject, expires_in_seconds=60 * 30, token_type="access")
-    refresh_token = create_token(subject, expires_in_seconds=60 * 60 * 24 * 7, token_type="refresh")
+    access_token = create_token(subject, expires_in_seconds=settings.access_token_ttl_minutes * 60, token_type="access")
+    refresh_token = create_token(subject, expires_in_seconds=settings.refresh_token_ttl_minutes * 60, token_type="refresh")
     return TokenPair(access_token=access_token, refresh_token=refresh_token, user=_to_response(user, permissions))
 
 
@@ -151,6 +157,8 @@ def refresh(request: RefreshRequest, db: Session = Depends(get_db)) -> TokenPair
     user = _load_user(db, email)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown account")
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated")
 
     auth_user = AuthUser(
         id=user.id,
@@ -170,3 +178,47 @@ def refresh(request: RefreshRequest, db: Session = Depends(get_db)) -> TokenPair
 @router.get("/me", response_model=AuthUserResponse)
 def me(current_user: AuthUserResponse = Depends(get_current_user)) -> AuthUserResponse:
     return current_user
+
+
+@router.post("/logout")
+def logout(
+    request: LogoutRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    actor: User | None = None
+    actor_email = "unknown@sbs.local"
+
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            payload = decode_token(authorization.removeprefix("Bearer ").strip(), expected_type="access")
+            actor = db.scalar(select(User).where(User.id == str(payload.get("sub"))))
+        except HTTPException:
+            actor = None
+
+    if actor is not None:
+        actor_email = actor.email
+
+    refresh_jti = None
+    if request.refresh_token:
+        try:
+            refresh_payload = decode_token(request.refresh_token, expected_type="refresh")
+            refresh_jti = str(refresh_payload.get("jti"))
+            if actor is None:
+                actor = _load_user(db, str(refresh_payload.get("email")))
+                if actor is not None:
+                    actor_email = actor.email
+        except HTTPException:
+            refresh_jti = None
+
+    log_audit(
+        db,
+        action="logout_success",
+        entity_type="auth",
+        entity_id=actor.id if actor is not None else None,
+        actor_user=actor,
+        actor_email=actor_email,
+        metadata={"refresh_jti": refresh_jti},
+    )
+    db.commit()
+    return {"ok": True}

@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchEmailLog, sendTestEmail } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -12,6 +13,8 @@ function formatDateTime(value: string | null) {
 export default function EmailLogPage() {
   const { session } = useAuth()
   const queryClient = useQueryClient()
+  const [statusFilter, setStatusFilter] = useState('ALL')
+  const [search, setSearch] = useState('')
 
   const emailLogQuery = useQuery({
     queryKey: ['email-log', session?.access_token],
@@ -34,23 +37,23 @@ export default function EmailLogPage() {
   })
 
   const logs = emailLogQuery.data ?? []
+  const filteredLogs = useMemo(
+    () => logs.filter((item) => (statusFilter === 'ALL' || item.status === statusFilter) && (!search.trim() || item.to_email.toLowerCase().includes(search.trim().toLowerCase()) || item.subject.toLowerCase().includes(search.trim().toLowerCase()))),
+    [logs, statusFilter, search],
+  )
   const queued = logs.filter((item) => item.status === 'PENDING').length
   const sent = logs.filter((item) => item.status === 'SENT').length
   const failed = logs.filter((item) => item.status === 'FAILED').length
 
   return (
-    <AppShell title="Email log" subtitle="MockEmailProvider сохраняет каждую отправку в журнал без подключения SMTP/Zimbra.">
-      <section className="foundation-card notifications-toolbar">
+    <AppShell title="Email Log" subtitle="Журнал mock-email сообщений и будущих email-интеграций.">
+      <section className="section-card">
         <div>
           <p className="eyebrow">EMAIL PROVIDER FOUNDATION</p>
           <h2>Журнал mock-email</h2>
           <p>Все операции email сохраняются локально в EmailMessageLog и не отправляются наружу.</p>
         </div>
         <div className="status-column">
-          <div className="notification-tabs">
-            <Link to="/notifications">Уведомления</Link>
-            <Link to="/notifications/email-log" className="active">Email log</Link>
-          </div>
           <button
             type="button"
             className="ghost-button"
@@ -66,9 +69,14 @@ export default function EmailLogPage() {
         </div>
       </section>
 
+      <nav className="module-subnav" aria-label="Notifications navigation">
+        <Link to="/notifications" className="module-subnav-tab">Уведомления</Link>
+        <Link to="/notifications/email-log" className="module-subnav-tab active">Email Log</Link>
+      </nav>
+
       {testEmailMutation.isError ? <p className="error-message">Не удалось создать тестовый mock-email.</p> : null}
 
-      <section className="metric-grid dashboard-metrics">
+      <section className="module-overview-grid">
         <article className="metric-card">
           <span>Email в очереди</span>
           <strong>{queued}</strong>
@@ -86,13 +94,36 @@ export default function EmailLogPage() {
         </article>
       </section>
 
-      <section className="foundation-card notification-list-shell">
+      <section className="foundation-card table-toolbar">
+        <div className="table-filters">
+          <label className="inline-field">
+            <span>Поиск</span>
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Тема или получатель" />
+          </label>
+          <label className="inline-field">
+            <span>Статус</span>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+              <option value="ALL">Все</option>
+              <option value="PENDING">Ожидает</option>
+              <option value="SENT">Отправлено</option>
+              <option value="FAILED">Ошибка</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section className="section-card notification-list-shell">
         {emailLogQuery.isPending ? (
-          <p className="state-panel state-panel-loading">Загрузка email log…</p>
+          <p className="loading-state">Загрузка данных...</p>
         ) : emailLogQuery.isError ? (
-          <p className="error-message">Не удалось загрузить email log.</p>
-        ) : logs.length === 0 ? (
-          <p className="state-panel state-panel-empty">Лог пуст. Создайте тестовый mock-email.</p>
+          <div className="error-state">
+            Не удалось загрузить email log.
+            <div className="analytics-actions">
+              <button type="button" className="ghost-button" onClick={() => emailLogQuery.refetch()}>Повторить</button>
+            </div>
+          </div>
+        ) : filteredLogs.length === 0 ? (
+          <p className="empty-state">Данных пока нет. Создайте тестовый mock-email или измените фильтры.</p>
         ) : (
           <div className="ticket-table-wrap">
             <table className="ticket-table">
@@ -108,7 +139,7 @@ export default function EmailLogPage() {
                 </tr>
               </thead>
               <tbody>
-                {logs.map((item) => (
+                {filteredLogs.map((item) => (
                   <tr key={item.id}>
                     <td>{item.to_email}</td>
                     <td>{item.subject}</td>

@@ -1,14 +1,28 @@
 import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import { fetchSlaBreaches, fetchSlaOverview, fetchSlaPolicies } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import AppShell from '../components/AppShell'
-import HealthBadge from '../components/HealthBadge'
+
+const tabs = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'policies', label: 'Policies' },
+  { key: 'breaches', label: 'Breaches' },
+] as const
+
+type TabKey = (typeof tabs)[number]['key']
 
 const priorityLabels: Record<string, string> = {
-  critical: 'Critical',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
+  critical: 'Критичный',
+  high: 'Высокий',
+  medium: 'Средний',
+  low: 'Низкий',
+}
+
+const slaStatusLabel: Record<string, string> = {
+  healthy: 'Норма',
+  risk: 'Риск',
+  breached: 'Просрочено',
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -18,6 +32,7 @@ function formatDateTime(value: string | null | undefined) {
 
 export default function SlaPage() {
   const { session } = useAuth()
+  const [activeTab, setActiveTab] = useState<TabKey>('overview')
 
   const policiesQuery = useQuery({
     queryKey: ['sla-policies', session?.access_token],
@@ -42,24 +57,17 @@ export default function SlaPage() {
   const activeCount = policies.filter((policy) => policy.is_active && policy.status === 'active').length
 
   return (
-    <AppShell title="SLA" subtitle="Контроль реакции и решения связан с активами и проблемными заявками в реальном backend-срезе.">
-      <section className="foundation-card">
-        <div>
-          <p className="eyebrow">SLA CONTROL</p>
-          <h2>Политики и нарушения</h2>
-          <p>Раздел уже показывает не только правила обслуживания, но и текущие breach-ы и операционный обзор по активам.</p>
-        </div>
-        <div className="status-column">
-          <HealthBadge />
-          <div className="status-list">
-            <span>✓ SLA overview</span>
-            <span>✓ Breach queue</span>
-            <span>✓ Tenant-scoped policies</span>
-          </div>
-        </div>
-      </section>
+    <AppShell title="SLA" subtitle="Политики реакции и решения, нарушения сроков и контроль качества поддержки.">
+      <nav className="module-subnav" aria-label="SLA navigation">
+        {tabs.map((tab) => (
+          <button type="button" className={`module-subnav-tab ${activeTab === tab.key ? 'active' : ''}`} key={tab.key} onClick={() => setActiveTab(tab.key)}>
+            {tab.label}
+          </button>
+        ))}
+      </nav>
 
-      <section className="metric-grid sla-metrics">
+      {activeTab === 'overview' ? (
+      <section className="module-overview-grid sla-metrics">
         <article className="metric-card">
           <span>Активные политики</span>
           <strong>{policiesQuery.isPending ? '…' : activeCount}</strong>
@@ -68,7 +76,7 @@ export default function SlaPage() {
         <article className="metric-card">
           <span>Нарушенные заявки</span>
           <strong>{overviewQuery.isPending ? '…' : overviewQuery.data?.breached_tickets ?? 0}</strong>
-          <p>Заявки с текущим SLA breach.</p>
+          <p>Заявки со статусом «Просрочено».</p>
         </article>
         <article className="metric-card">
           <span>Проблемные активы</span>
@@ -81,8 +89,10 @@ export default function SlaPage() {
           <p>Активы с истекающей гарантией.</p>
         </article>
       </section>
+      ) : null}
 
-      <section className="foundation-card dashboard-split">
+      {activeTab === 'policies' ? (
+      <section className="foundation-card">
         <div>
           <p className="eyebrow">SLA POLICIES</p>
           <h2>Политики обслуживания</h2>
@@ -101,7 +111,7 @@ export default function SlaPage() {
                       <p className="eyebrow">{priorityLabels[policy.priority] ?? policy.priority}</p>
                       <h3>{policy.name}</h3>
                     </div>
-                    <span className={`sla-status sla-status-${policy.status}`}>{policy.status}</span>
+                    <span className={`sla-status sla-status-${policy.status}`}>{slaStatusLabel[policy.status] ?? policy.status}</span>
                   </div>
                   <p className="sla-description">{policy.description ?? 'Описание отсутствует'}</p>
                   <div className="sla-meta">
@@ -115,7 +125,11 @@ export default function SlaPage() {
             </div>
           )}
         </div>
+      </section>
+      ) : null}
 
+      {activeTab === 'breaches' ? (
+      <section className="foundation-card">
         <div className="status-column">
           <p className="eyebrow">BREACH QUEUE</p>
           <h2>Нарушения SLA</h2>
@@ -131,7 +145,7 @@ export default function SlaPage() {
                 <article className="activity-item" key={breach.ticket_id}>
                   <header>
                     <strong>{breach.ticket_number ?? breach.ticket_id}</strong>
-                    <span>{breach.sla_status ?? '—'}</span>
+                    <span>{slaStatusLabel[String(breach.sla_status ?? '').toLowerCase()] ?? breach.sla_status ?? '—'}</span>
                   </header>
                   <p>{breach.title}</p>
                   <small>
@@ -146,6 +160,7 @@ export default function SlaPage() {
           )}
         </div>
       </section>
+      ) : null}
     </AppShell>
   )
 }

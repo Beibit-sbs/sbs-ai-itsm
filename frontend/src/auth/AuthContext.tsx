@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { fetchCurrentUser, loginWithPassword, refreshAuthSession, type AuthSession } from '../api/client'
+import { fetchCurrentUser, loginWithPassword, logoutSession, refreshAuthSession, type AuthSession } from '../api/client'
 
 const STORAGE_KEY = 'sbs-ai-itsm-session'
 
@@ -77,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSession))
       },
       logout: () => {
+        void logoutSession(session?.access_token, { refresh_token: session?.refresh_token })
         setSession(null)
         window.localStorage.removeItem(STORAGE_KEY)
       },

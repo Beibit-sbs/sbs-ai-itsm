@@ -3,7 +3,6 @@ import { useMutation } from '@tanstack/react-query'
 import { analyzeTicketWithAi, createKnowledgeArticle, createTicket, fetchKnowledgeCategories, type AiSuggestion } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import AppShell from '../components/AppShell'
-import HealthBadge from '../components/HealthBadge'
 
 function suggestionToTicketCategory(category: string): string {
   const map: Record<string, string> = {
@@ -81,22 +80,7 @@ export default function CopilotPage() {
   })
 
   return (
-    <AppShell title="AI Copilot" subtitle="MockAI анализирует описание проблемы и предлагает действие на основе базы знаний и похожих инцидентов.">
-      <section className="foundation-card">
-        <div>
-          <p className="eyebrow">AI COPILOT</p>
-          <h2>Анализ обращения</h2>
-          <p>Введите описание проблемы, чтобы получить категорию, приоритет, возможную причину, решение и рекомендуемые следующие действия.</p>
-        </div>
-        <div className="status-column">
-          <HealthBadge />
-          <div className="status-list">
-            <span>✓ MockAI API</span>
-            <span>✓ Related knowledge articles</span>
-            <span>✓ Similar incidents</span>
-          </div>
-        </div>
-      </section>
+    <AppShell title="AI Copilot" subtitle="AI-анализ обращений, рекомендации, похожие заявки и статьи базы знаний.">
 
       <section className="copilot-layout">
         <article className="copilot-panel">
@@ -115,11 +99,11 @@ export default function CopilotPage() {
           >
             {analyzeMutation.isPending ? 'Анализ...' : 'Проанализировать'}
           </button>
-          {analyzeMutation.isError ? <p className="error-message">Не удалось выполнить AI-анализ. Повторите запрос.</p> : null}
+          {analyzeMutation.isError ? <p className="error-state">Не удалось выполнить AI-анализ. Повторите запрос.</p> : null}
         </article>
 
         <article className="copilot-panel">
-          <p className="eyebrow">AI THINKING RESULT</p>
+          <p className="eyebrow">РЕЗУЛЬТАТ AI-АНАЛИЗА</p>
           <h2>Результат анализа</h2>
           {result ? (
             <div className="copilot-result">
@@ -129,7 +113,7 @@ export default function CopilotPage() {
               <div className="result-card"><span>Возможная причина</span><strong>{result.possible_cause}</strong></div>
               <div className="result-card"><span>Рекомендуемое решение</span><strong>{result.suggested_solution}</strong></div>
               <div className="result-card"><span>Исполнитель</span><strong>{result.recommended_assignee}</strong></div>
-              <div className="result-card"><span>Asset type</span><strong>{result.recommended_asset_type ?? '—'}</strong></div>
+              <div className="result-card"><span>Тип актива</span><strong>{result.recommended_asset_type ?? '—'}</strong></div>
               <div className="result-card"><span>Уверенность AI</span><strong>{result.confidence}</strong></div>
 
               <div className="result-card result-card-wide">
@@ -183,10 +167,10 @@ export default function CopilotPage() {
 
               {createTicketMutation.isError ? <p className="error-message">Не удалось создать заявку из AI-анализа.</p> : null}
               {createArticleMutation.isError ? <p className="error-message">Не удалось создать статью из AI-анализа.</p> : null}
-              {actionHint ? <p className="state-panel">{actionHint}</p> : null}
+              {actionHint ? <p className="loading-state">{actionHint}</p> : null}
             </div>
           ) : (
-            <p className="muted">Нажмите Проанализировать, чтобы получить рекомендации MockAI.</p>
+            <p className="empty-state">Данных пока нет. Нажмите «Проанализировать», чтобы получить рекомендации AI Copilot.</p>
           )}
         </article>
       </section>

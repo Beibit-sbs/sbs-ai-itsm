@@ -11,7 +11,16 @@ import {
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import AppShell from '../components/AppShell'
-import HealthBadge from '../components/HealthBadge'
+
+const tabs = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'categories', label: 'Категории' },
+  { key: 'articles', label: 'Статьи' },
+  { key: 'feedback', label: 'Feedback' },
+  { key: 'ai', label: 'AI Suggestions' },
+] as const
+
+type TabKey = (typeof tabs)[number]['key']
 
 function formatDate(value: string | null | undefined) {
   if (!value) return '—'
@@ -47,6 +56,7 @@ export default function KnowledgePage() {
   const [selectedArticleId, setSelectedArticleId] = useState<string | null>(null)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [form, setForm] = useState<ArticleFormState>(emptyForm)
+  const [activeTab, setActiveTab] = useState<TabKey>('overview')
 
   useEffect(() => {
     if (!selectedArticleId && !isCreateOpen) return
@@ -132,45 +142,39 @@ export default function KnowledgePage() {
     .slice(0, 5)
 
   return (
-    <AppShell title="База знаний" subtitle="Типовые решения, связи с категориями заявок и активами, и обратная связь от команды.">
-      <section className="foundation-card">
-        <div>
-          <p className="eyebrow">KNOWLEDGE BASE</p>
-          <h2>Операционная база решений</h2>
-          <p>Экран объединяет поиск, фильтры, карточку статьи и feedback, чтобы команда быстрее решала типовые инциденты.</p>
-        </div>
-        <div className="status-column">
-          <HealthBadge />
-          <div className="status-list">
-            <span>✓ Search and filters</span>
-            <span>✓ Article feedback</span>
-            <span>✓ Ticket and asset links</span>
-          </div>
-        </div>
-      </section>
+    <AppShell title="База знаний" subtitle="Инструкции, решения, статьи и база типовых инцидентов для ИТ-службы.">
+      <nav className="module-subnav" aria-label="Knowledge navigation">
+        {tabs.map((tab) => (
+          <button key={tab.key} type="button" className={`module-subnav-tab ${activeTab === tab.key ? 'active' : ''}`} onClick={() => setActiveTab(tab.key)}>
+            {tab.label}
+          </button>
+        ))}
+      </nav>
 
-      <section className="metric-grid">
-        <article className="metric-card">
-          <span>Всего статей</span>
-          <strong>{articlesQuery.isPending ? '…' : allArticles.length}</strong>
-          <p>База инструкций для операторов и инженеров.</p>
-        </article>
-        <article className="metric-card">
-          <span>Опубликовано</span>
-          <strong>{articlesQuery.isPending ? '…' : publishedCount}</strong>
-          <p>Статьи со статусом published.</p>
-        </article>
-        <article className="metric-card">
-          <span>Категорий</span>
-          <strong>{categoriesQuery.isPending ? '…' : categories.length}</strong>
-          <p>Темы базы знаний по направлениям.</p>
-        </article>
-        <article className="metric-card">
-          <span>Статус API</span>
-          <strong>{articlesQuery.isError ? 'Ошибка' : 'OK'}</strong>
-          <p>{articlesQuery.isError ? 'Не удалось загрузить статьи.' : 'Сервис базы знаний доступен.'}</p>
-        </article>
-      </section>
+      {activeTab === 'overview' ? (
+        <section className="module-overview-grid">
+          <article className="metric-card">
+            <span>Всего статей</span>
+            <strong>{articlesQuery.isPending ? '…' : allArticles.length}</strong>
+            <p>База инструкций для операторов и инженеров.</p>
+          </article>
+          <article className="metric-card">
+            <span>Опубликовано</span>
+            <strong>{articlesQuery.isPending ? '…' : publishedCount}</strong>
+            <p>Статьи со статусом published.</p>
+          </article>
+          <article className="metric-card">
+            <span>Категорий</span>
+            <strong>{categoriesQuery.isPending ? '…' : categories.length}</strong>
+            <p>Темы базы знаний по направлениям.</p>
+          </article>
+          <article className="metric-card">
+            <span>Статус API</span>
+            <strong>{articlesQuery.isError ? 'Ошибка' : 'OK'}</strong>
+            <p>{articlesQuery.isError ? 'Не удалось загрузить статьи.' : 'Сервис базы знаний доступен.'}</p>
+          </article>
+        </section>
+      ) : null}
 
       <section className="foundation-card tickets-toolbar">
         <div className="tickets-toolbar-group">
@@ -199,6 +203,7 @@ export default function KnowledgePage() {
         </button>
       </section>
 
+      {activeTab === 'articles' || activeTab === 'overview' ? (
       <section className="ticket-table-shell">
         {articlesQuery.isPending ? (
           <p className="state-panel state-panel-loading">Загрузка базы знаний…</p>
@@ -249,7 +254,9 @@ export default function KnowledgePage() {
           </div>
         )}
       </section>
+      ) : null}
 
+      {activeTab === 'overview' || activeTab === 'feedback' ? (
       <section className="foundation-card dashboard-split">
         <div>
           <p className="eyebrow">TOP ARTICLES</p>
@@ -267,6 +274,36 @@ export default function KnowledgePage() {
           </div>
         </div>
       </section>
+      ) : null}
+
+      {activeTab === 'categories' ? (
+        <section className="section-card">
+          <header className="section-header">
+            <h3 className="section-title">Категории базы знаний</h3>
+            <p className="section-subtitle">Список тематик и их краткие описания.</p>
+          </header>
+          <div className="activity-list">
+            {categoriesQuery.isPending ? <p className="loading-state">Загрузка данных...</p> : null}
+            {!categoriesQuery.isPending && categories.length === 0 ? <p className="empty-state">Данных пока нет. Добавьте первую категорию в админ-модуле.</p> : null}
+            {categories.map((category) => (
+              <article className="activity-item" key={category.id}>
+                <header><strong>{category.name}</strong><span>{category.code}</span></header>
+                <p>{category.description ?? 'Описание отсутствует.'}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'ai' ? (
+        <section className="section-card">
+          <header className="section-header">
+            <h3 className="section-title">AI Suggestions</h3>
+            <p className="section-subtitle">Раздел для AI-подсказок по статьям и пробелам в покрытии.</p>
+          </header>
+          <p className="empty-state">Данных пока нет. Создайте или откройте статью и используйте AI Copilot для генерации рекомендаций.</p>
+        </section>
+      ) : null}
 
       {isCreateOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setIsCreateOpen(false)}>

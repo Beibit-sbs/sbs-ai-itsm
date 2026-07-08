@@ -82,13 +82,16 @@ PRIORITY_DEFS = [
 
 STATUS_DEFS = [
     {"code": "NEW", "name": "Новая", "description": "Только что создана и ждёт первичного триажа.", "color": "#8fa6bb", "sort_order": 1, "is_closed": False},
-    {"code": "TRIAGED", "name": "Оттриажена", "description": "Классифицирована и готова к назначению.", "color": "#5db3ff", "sort_order": 2, "is_closed": False},
+    {"code": "TRIAGE", "name": "Разбор", "description": "Классифицирована и готова к назначению.", "color": "#5db3ff", "sort_order": 2, "is_closed": False},
+    {"code": "TRIAGED", "name": "Оттриажена", "description": "Legacy статус: оттриажена.", "color": "#5db3ff", "sort_order": 3, "is_closed": False},
     {"code": "ASSIGNED", "name": "Назначена", "description": "Передана исполнителю.", "color": "#7ad7ff", "sort_order": 3, "is_closed": False},
     {"code": "IN_PROGRESS", "name": "В работе", "description": "Исполнитель работает над заявкой.", "color": "#40a8ff", "sort_order": 4, "is_closed": False},
     {"code": "WAITING_USER", "name": "Ожидаем пользователя", "description": "Требуются уточнения или действия от пользователя.", "color": "#ffb56e", "sort_order": 5, "is_closed": False},
+    {"code": "WAITING_VENDOR", "name": "Ожидает поставщика", "description": "Ожидаются действия внешнего поставщика.", "color": "#d9a56f", "sort_order": 6, "is_closed": False},
     {"code": "RESOLVED", "name": "Решена", "description": "Проблема устранена, ждёт подтверждения.", "color": "#33c391", "sort_order": 6, "is_closed": True},
     {"code": "CLOSED", "name": "Закрыта", "description": "Заявка завершена и закрыта.", "color": "#2f8f66", "sort_order": 7, "is_closed": True},
     {"code": "REOPENED", "name": "Переоткрыта", "description": "Пользователь вернул заявку в работу.", "color": "#ff7777", "sort_order": 8, "is_closed": False},
+    {"code": "CANCELLED", "name": "Отменена", "description": "Заявка отменена.", "color": "#8e8f99", "sort_order": 9, "is_closed": True},
 ]
 
 DEMO_TICKETS: list[DemoTicketSeed] = [
@@ -114,6 +117,7 @@ def _build_lookup(definitions: Iterable[dict[str, object]]) -> dict[str, dict[st
 def ensure_service_desk_schema(engine: Engine) -> None:
     inspector = inspect(engine)
     existing_columns = {column["name"] for column in inspector.get_columns("tickets")}
+    existing_comment_columns = {column["name"] for column in inspector.get_columns("ticket_comments")}
     ddl_map = {
         "ticket_number": "ALTER TABLE tickets ADD COLUMN ticket_number VARCHAR(32)",
         "title": "ALTER TABLE tickets ADD COLUMN title VARCHAR(255)",
@@ -127,11 +131,22 @@ def ensure_service_desk_schema(engine: Engine) -> None:
         "resolution_due_at": "ALTER TABLE tickets ADD COLUMN resolution_due_at TIMESTAMP",
         "sla_status": "ALTER TABLE tickets ADD COLUMN sla_status VARCHAR(32)",
         "resolved_at": "ALTER TABLE tickets ADD COLUMN resolved_at TIMESTAMP",
+        "closed_at": "ALTER TABLE tickets ADD COLUMN closed_at TIMESTAMP",
+        "reopened_at": "ALTER TABLE tickets ADD COLUMN reopened_at TIMESTAMP",
+        "requester_id": "ALTER TABLE tickets ADD COLUMN requester_id VARCHAR(36)",
+        "assignee_id": "ALTER TABLE tickets ADD COLUMN assignee_id VARCHAR(36)",
+    }
+    comment_ddl_map = {
+        "author_id": "ALTER TABLE ticket_comments ADD COLUMN author_id VARCHAR(36)",
+        "is_internal": "ALTER TABLE ticket_comments ADD COLUMN is_internal BOOLEAN DEFAULT FALSE",
     }
 
     with engine.begin() as connection:
         for column_name, ddl in ddl_map.items():
             if column_name not in existing_columns:
+                connection.exec_driver_sql(ddl)
+        for column_name, ddl in comment_ddl_map.items():
+            if column_name not in existing_comment_columns:
                 connection.exec_driver_sql(ddl)
 
         if "subject" in existing_columns:

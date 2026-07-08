@@ -106,14 +106,14 @@ export default function AppShell({ title, subtitle, children }: AppShellProps) {
         </Link>
       </aside>
 
-      <main className="dashboard">
-        <header className="topbar">
+      <main className="dashboard module-shell">
+        <header className="topbar page-header">
           <div>
-            <p className="eyebrow">ОПЕРАЦИОННЫЙ ЦЕНТР</p>
+            <p className="eyebrow page-eyebrow">ОПЕРАЦИОННЫЙ ЦЕНТР</p>
             <h1>{title}</h1>
             <p className="page-subtitle">{subtitle}</p>
           </div>
-          <div className="user-chip">
+          <div className="user-chip page-actions">
             <span>{session?.user.email}</span>
             <button type="button" className="ghost-button" onClick={logout}>
               Выйти

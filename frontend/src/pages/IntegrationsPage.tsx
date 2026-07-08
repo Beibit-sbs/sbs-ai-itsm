@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import AppShell from '../components/AppShell'
-import HealthBadge from '../components/HealthBadge'
 import {
   createIntegrationImportJob,
   fetchAnalyticsOverview,
@@ -24,8 +23,8 @@ import { useAuth } from '../auth/AuthContext'
 
 const tabs = [
   { key: 'overview', label: 'Overview' },
-  { key: 'systems', label: 'Systems' },
-  { key: 'providers', label: 'Providers' },
+  { key: 'systems', label: 'Системы' },
+  { key: 'providers', label: 'Провайдеры' },
   { key: 'jobs', label: 'Import Jobs' },
   { key: 'webhooks', label: 'Webhooks' },
   { key: 'events', label: 'Events' },
@@ -179,50 +178,28 @@ export default function IntegrationsPage() {
   const statusTypes = useMemo(() => ['ALL', ...Array.from(new Set(systems.map((item) => item.status)))], [systems])
 
   return (
-    <AppShell title="Интеграции" subtitle="Mock/demo foundation для Zimbra, LDAP/AD, SMTP, Platonus, Moodle, webhooks и future connectors.">
-      <section className="foundation-card">
-        <div>
-          <p className="eyebrow">INTEGRATION FOUNDATION</p>
-          <h2>Внешние системы и readiness layer</h2>
-          <p>Архитектура готова к будущему подключению без хранения реальных секретов и без реальных внешних вызовов на этом этапе.</p>
-        </div>
-        <div className="status-column">
-          <HealthBadge />
-          <div className="status-list">
-            <span>✓ Mock providers only</span>
-            <span>✓ Integration event log</span>
-            <span>✓ Import preview jobs</span>
-          </div>
-        </div>
-      </section>
+    <AppShell title="Интеграции" subtitle="Подключение внешних систем, mock providers, webhooks, import jobs и журнал событий.">
+      <nav className="module-subnav" aria-label="Integrations navigation">
+        {tabs.map((tab) => (
+          <button type="button" className={`module-subnav-tab ${activeTab === tab.key ? 'active' : ''}`} key={tab.key} onClick={() => setActiveTab(tab.key)}>
+            {tab.label}
+          </button>
+        ))}
+      </nav>
 
-      <section className="metric-grid dashboard-metrics">
-        <article className="metric-card"><span>Enabled systems</span><strong>{overviewQuery.isPending ? '…' : overview?.enabled_systems ?? 0}</strong><p>Активные integration connectors.</p></article>
-        <article className="metric-card"><span>Systems with errors</span><strong>{overviewQuery.isPending ? '…' : overview?.systems_with_errors ?? 0}</strong><p>Ошибки health/status.</p></article>
-        <article className="metric-card"><span>Events count</span><strong>{overviewQuery.isPending ? '…' : overview?.integration_events_count ?? 0}</strong><p>Все integration events.</p></article>
-        <article className="metric-card"><span>Failed events</span><strong>{overviewQuery.isPending ? '…' : overview?.failed_integration_events ?? 0}</strong><p>Неуспешные integration events.</p></article>
-        <article className="metric-card"><span>Active import jobs</span><strong>{overviewQuery.isPending ? '…' : overview?.active_import_jobs ?? 0}</strong><p>Очередь preview import jobs.</p></article>
-        <article className="metric-card"><span>Import success rate</span><strong>{overviewQuery.isPending ? '…' : `${overview?.import_success_rate ?? 0}%`}</strong><p>Доля успешной mock обработki.</p></article>
-      </section>
+      {actionError ? <p className="error-state">{actionError}</p> : null}
 
-      <section className="foundation-card admin-panel">
-        <div>
-          <p className="eyebrow">INTEGRATION TABS</p>
-          <h2>Управление connectors</h2>
-        </div>
-        <div className="notification-tabs">
-          {tabs.map((tab) => (
-            <button type="button" className={activeTab === tab.key ? 'admin-tab-active' : 'ghost-button'} key={tab.key} onClick={() => setActiveTab(tab.key)}>
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      {actionError ? <p className="error-message">{actionError}</p> : null}
+      <section className="module-content">
 
       {activeTab === 'overview' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <>
+        <section className="module-overview-grid">
+          <article className="metric-card"><span>Активные системы</span><strong>{overviewQuery.isPending ? '…' : overview?.enabled_systems ?? 0}</strong><p>Активные connectors.</p></article>
+          <article className="metric-card"><span>Системы с ошибками</span><strong>{overviewQuery.isPending ? '…' : overview?.systems_with_errors ?? 0}</strong><p>Ошибки health/status.</p></article>
+          <article className="metric-card"><span>События</span><strong>{overviewQuery.isPending ? '…' : overview?.integration_events_count ?? 0}</strong><p>Всего integration events.</p></article>
+          <article className="metric-card"><span>Успешность импорта</span><strong>{overviewQuery.isPending ? '…' : `${overview?.import_success_rate ?? 0}%`}</strong><p>Доля успешной mock-обработки.</p></article>
+        </section>
+        <section className="foundation-card dashboard-split">
           <div>
             <p className="eyebrow">SYSTEM LANDSCAPE</p>
             <h2>Статусы систем</h2>
@@ -252,30 +229,31 @@ export default function IntegrationsPage() {
             </div>
           </div>
         </section>
+        </>
       ) : null}
 
       {activeTab === 'systems' ? (
         <>
-          <section className="foundation-card tickets-toolbar">
+          <section className="foundation-card table-toolbar">
             <div className="tickets-toolbar-group">
               <label className="inline-field">
-                <span>Type</span>
+                <span>Тип</span>
                 <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
                   {systemTypes.map((item) => <option key={item} value={item}>{item}</option>)}
                 </select>
               </label>
               <label className="inline-field">
-                <span>Status</span>
+                <span>Статус</span>
                 <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
                   {statusTypes.map((item) => <option key={item} value={item}>{item}</option>)}
                 </select>
               </label>
             </div>
           </section>
-          <section className="foundation-card admin-panel">
+          <section className="section-card">
             <div className="ticket-table-wrap">
               <table className="ticket-table">
-                <thead><tr><th>System</th><th>Type</th><th>Status</th><th>Last health</th><th>Capabilities</th><th /></tr></thead>
+                <thead><tr><th>Система</th><th>Тип</th><th>Статус</th><th>Проверка</th><th>Возможности</th><th /></tr></thead>
                 <tbody>
                   {systemsQuery.isPending ? <tr><td colSpan={6}><p className="state-panel state-panel-loading">Загрузка систем…</p></td></tr> : null}
                   {!systemsQuery.isPending && systems.length === 0 ? <tr><td colSpan={6}><p className="state-panel state-panel-empty">Системы по фильтрам не найдены.</p></td></tr> : null}
@@ -289,7 +267,7 @@ export default function IntegrationsPage() {
                       <td>
                         <div className="analytics-actions">
                           <button type="button" className="ghost-button" onClick={() => healthMutation.mutate(item.id)} disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}>Health check</button>
-                          <button type="button" className="ghost-button" onClick={() => testMutation.mutate(item.id)} disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}>Test connection</button>
+                          <button type="button" className="ghost-button" onClick={() => testMutation.mutate(item.id)} disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}>Тест подключения</button>
                           {(item.system_type === 'ldap' || item.system_type === 'zimbra' || item.system_type === 'platonus' || item.system_type === 'moodle') ? (
                             <button
                               type="button"
@@ -301,7 +279,7 @@ export default function IntegrationsPage() {
                               }}
                               disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}
                             >
-                              Import preview
+                              Preview импорта
                             </button>
                           ) : null}
                         </div>
@@ -316,7 +294,7 @@ export default function IntegrationsPage() {
       ) : null}
 
       {activeTab === 'providers' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="section-card dashboard-split">
           <div>
             <p className="eyebrow">PROVIDER REGISTRY</p>
             <h2>Провайдеры</h2>
@@ -351,7 +329,7 @@ export default function IntegrationsPage() {
       ) : null}
 
       {activeTab === 'jobs' ? (
-        <section className="foundation-card admin-panel">
+        <section className="section-card">
           <div className="ticket-table-wrap">
             <table className="ticket-table">
               <thead><tr><th>Job type</th><th>Status</th><th>Total</th><th>Success</th><th>Failed</th><th>Started</th><th>Finished</th><th>Error</th></tr></thead>
@@ -377,7 +355,7 @@ export default function IntegrationsPage() {
       ) : null}
 
       {activeTab === 'webhooks' ? (
-        <section className="foundation-card admin-panel">
+        <section className="section-card">
           <div className="ticket-table-wrap">
             <table className="ticket-table">
               <thead><tr><th>Name</th><th>Path</th><th>Target</th><th>Status</th><th>Secret ref</th><th /></tr></thead>
@@ -405,7 +383,7 @@ export default function IntegrationsPage() {
       ) : null}
 
       {activeTab === 'events' ? (
-        <section className="foundation-card admin-panel">
+        <section className="section-card">
           <div className="ticket-table-wrap">
             <table className="ticket-table">
               <thead><tr><th>Date</th><th>Direction</th><th>Type</th><th>Status</th><th>External system</th><th>Correlation</th><th>Error</th></tr></thead>
@@ -430,7 +408,7 @@ export default function IntegrationsPage() {
       ) : null}
 
       {activeTab === 'mappings' ? (
-        <section className="foundation-card admin-panel">
+        <section className="section-card">
           <div className="ticket-table-wrap">
             <table className="ticket-table">
               <thead><tr><th>Source</th><th>Target</th><th>External system</th><th>Mapping</th><th>Status</th></tr></thead>
@@ -453,7 +431,7 @@ export default function IntegrationsPage() {
       ) : null}
 
       {activeTab === 'mock' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="section-card dashboard-split">
           <div>
             <p className="eyebrow">MOCK ACTIONS</p>
             <h2>Preview сценарии</h2>
@@ -472,6 +450,7 @@ export default function IntegrationsPage() {
           </div>
         </section>
       ) : null}
+      </section>
     </AppShell>
   )
 }

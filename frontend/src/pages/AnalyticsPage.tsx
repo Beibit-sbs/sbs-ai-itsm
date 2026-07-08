@@ -1,11 +1,9 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import AppShell from '../components/AppShell'
-import HealthBadge from '../components/HealthBadge'
 import {
   createReportSnapshot,
   createSavedReport,
-  fetchAutomationAnalytics,
   fetchAnalyticsOverview,
   fetchAssetAnalytics,
   fetchDemoExport,
@@ -26,7 +24,6 @@ const tabs = [
   { key: 'assets', label: 'Assets' },
   { key: 'ai', label: 'AI & Knowledge' },
   { key: 'security', label: 'Security' },
-  { key: 'automation', label: 'Automation' },
   { key: 'reports', label: 'Reports' },
 ] as const
 
@@ -84,11 +81,6 @@ export default function AnalyticsPage() {
     queryFn: () => fetchSecurityAnalytics(session?.access_token ?? ''),
     enabled: Boolean(session?.access_token),
   })
-  const automationQuery = useQuery({
-    queryKey: ['analytics-automation', session?.access_token],
-    queryFn: () => fetchAutomationAnalytics(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
-  })
   const savedReportsQuery = useQuery({
     queryKey: ['reports-saved', session?.access_token],
     queryFn: () => fetchSavedReports(session?.access_token ?? ''),
@@ -141,7 +133,6 @@ export default function AnalyticsPage() {
   const assets = assetQuery.data
   const knowledge = knowledgeQuery.data
   const security = securityQuery.data
-  const automation = automationQuery.data
   const hasTabError =
     overviewQuery.isError ||
     executiveQuery.isError ||
@@ -149,83 +140,31 @@ export default function AnalyticsPage() {
     slaQuery.isError ||
     assetQuery.isError ||
     knowledgeQuery.isError ||
-    securityQuery.isError ||
-    automationQuery.isError
+    securityQuery.isError
 
   return (
-    <AppShell title="Аналитика" subtitle="Executive dashboard, SLA, активы, AI, безопасность и demo-отчёты для управленческого контура.">
-      <section className="foundation-card">
-        <div>
-          <p className="eyebrow">EXECUTIVE ANALYTICS</p>
-          <h2>Управленческий обзор ITSM</h2>
-          <p>Срез для руководства по нагрузке ИТ-службы, SLA-рискам, активам, AI adoption и security posture.</p>
-        </div>
-        <div className="status-column">
-          <HealthBadge />
-          <div className="status-list">
-            <span>✓ Executive summary</span>
-            <span>✓ Demo reports</span>
-            <span>✓ Permission-guarded analytics</span>
-          </div>
-        </div>
-      </section>
+    <AppShell title="Аналитика" subtitle="Управленческие метрики по заявкам, SLA, активам, AI, безопасности и автоматизации.">
+      <nav className="module-subnav" aria-label="Analytics navigation">
+        {tabs.map((tab) => (
+          <button type="button" className={`module-subnav-tab ${activeTab === tab.key ? 'active' : ''}`} key={tab.key} onClick={() => setActiveTab(tab.key)}>
+            {tab.label}
+          </button>
+        ))}
+      </nav>
 
-      <section className="metric-grid dashboard-metrics">
-        <article className="metric-card">
-          <span>Health score</span>
-          <strong>{executiveQuery.isPending ? '…' : executive?.health_score ?? 0}</strong>
-          <p>Сводный health score по операционному контуру.</p>
-        </article>
-        <article className="metric-card">
-          <span>SLA compliance</span>
-          <strong>{overviewQuery.isPending ? '…' : `${overview?.sla.sla_compliance_percent ?? 0}%`}</strong>
-          <p>Процент соблюдения SLA по tracked ticket pool.</p>
-        </article>
-        <article className="metric-card">
-          <span>Open critical</span>
-          <strong>{ticketQuery.isPending ? '…' : tickets?.open_critical_tickets ?? 0}</strong>
-          <p>Критические заявки, требующие контроля.</p>
-        </article>
-        <article className="metric-card">
-          <span>Security risk</span>
-          <strong>{executiveQuery.isPending ? '…' : executive?.security_risk_score ?? 0}</strong>
-          <p>Оценка security risk на базе логинов и audit.</p>
-        </article>
-        <article className="metric-card">
-          <span>AI confidence</span>
-          <strong>{overviewQuery.isPending ? '…' : `${overview?.ai.average_confidence_percent ?? 0}%`}</strong>
-          <p>Средняя уверенность AI suggestions.</p>
-        </article>
-        <article className="metric-card">
-          <span>Asset risk</span>
-          <strong>{executiveQuery.isPending ? '…' : executive?.asset_risk_score ?? 0}</strong>
-          <p>Сводная оценка рисков по парку активов.</p>
-        </article>
-        <article className="metric-card">
-          <span>Automation score</span>
-          <strong>{executiveQuery.isPending ? '…' : executive?.workflow_automation_score ?? 0}</strong>
-          <p>Индекс зрелости workflow automation.</p>
-        </article>
-      </section>
+      {hasTabError ? <p className="error-state">Часть аналитических данных временно недоступна. Повторите загрузку.</p> : null}
 
-      <section className="foundation-card admin-panel">
-        <div>
-          <p className="eyebrow">ANALYTICS TABS</p>
-          <h2>Детализация отчётности</h2>
-        </div>
-        <div className="notification-tabs">
-          {tabs.map((tab) => (
-            <button type="button" className={activeTab === tab.key ? 'admin-tab-active' : 'ghost-button'} key={tab.key} onClick={() => setActiveTab(tab.key)}>
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      {hasTabError ? <p className="error-message">Часть аналитических данных временно недоступна. Проверьте API и повторите загрузку.</p> : null}
+      <section className="module-content">
 
       {activeTab === 'executive' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <>
+        <section className="module-overview-grid">
+          <article className="metric-card"><span>Health score</span><strong>{executiveQuery.isPending ? '…' : executive?.health_score ?? 0}</strong><p>Сводный health score.</p></article>
+          <article className="metric-card"><span>SLA compliance</span><strong>{overviewQuery.isPending ? '…' : `${overview?.sla.sla_compliance_percent ?? 0}%`}</strong><p>Соблюдение SLA.</p></article>
+          <article className="metric-card"><span>Open critical</span><strong>{ticketQuery.isPending ? '…' : tickets?.open_critical_tickets ?? 0}</strong><p>Критические заявки.</p></article>
+          <article className="metric-card"><span>Security risk</span><strong>{executiveQuery.isPending ? '…' : executive?.security_risk_score ?? 0}</strong><p>Риск безопасности.</p></article>
+        </section>
+        <section className="foundation-card dashboard-split">
           <div>
             <p className="eyebrow">SCORES</p>
             <h2>Executive scorecard</h2>
@@ -284,6 +223,7 @@ export default function AnalyticsPage() {
             </div>
           </div>
         </section>
+        </>
       ) : null}
 
       {activeTab === 'tickets' ? (
@@ -294,7 +234,7 @@ export default function AnalyticsPage() {
             <article className="metric-card"><span>Закрытые</span><strong>{tickets?.closed_tickets ?? 0}</strong><p>Решённые обращения.</p></article>
             <article className="metric-card"><span>За сегодня</span><strong>{tickets?.tickets_today ?? 0}</strong><p>Новые заявки за текущий день.</p></article>
           </section>
-          <section className="foundation-card dashboard-split admin-panel">
+          <section className="foundation-card dashboard-split">
             <div>
               <p className="eyebrow">STATUS / CATEGORY</p>
               <h2>Распределение заявок</h2>
@@ -339,7 +279,7 @@ export default function AnalyticsPage() {
       ) : null}
 
       {activeTab === 'sla' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="foundation-card dashboard-split">
           <div>
             <p className="eyebrow">SLA CONTROL</p>
             <h2>Compliance и breaches</h2>
@@ -371,7 +311,7 @@ export default function AnalyticsPage() {
       ) : null}
 
       {activeTab === 'assets' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="foundation-card dashboard-split">
           <div>
             <p className="eyebrow">ASSET ANALYTICS</p>
             <h2>Активы по типам и статусам</h2>
@@ -434,7 +374,7 @@ export default function AnalyticsPage() {
       ) : null}
 
       {activeTab === 'ai' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="foundation-card dashboard-split">
           <div>
             <p className="eyebrow">AI USAGE</p>
             <h2>AI adoption и confidence</h2>
@@ -475,7 +415,7 @@ export default function AnalyticsPage() {
       ) : null}
 
       {activeTab === 'security' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="foundation-card dashboard-split">
           <div>
             <p className="eyebrow">SECURITY</p>
             <h2>Security analytics</h2>
@@ -509,43 +449,8 @@ export default function AnalyticsPage() {
         </section>
       ) : null}
 
-      {activeTab === 'automation' ? (
-        <section className="foundation-card dashboard-split admin-panel">
-          <div>
-            <p className="eyebrow">WORKFLOW AUTOMATION</p>
-            <h2>Rules, runs, approvals</h2>
-            <div className="metric-grid analytics-mini-grid">
-              <article className="metric-card"><span>Active rules</span><strong>{automation?.active_rules ?? 0}</strong><p>Количество активных правил.</p></article>
-              <article className="metric-card"><span>Runs today</span><strong>{automation?.runs_today ?? 0}</strong><p>Прогоны за текущий день.</p></article>
-              <article className="metric-card"><span>Failed runs</span><strong>{automation?.failed_runs ?? 0}</strong><p>Ошибки и run with errors.</p></article>
-              <article className="metric-card"><span>Pending approvals</span><strong>{automation?.pending_approvals ?? 0}</strong><p>Approval requests в ожидании.</p></article>
-              <article className="metric-card"><span>Runbooks</span><strong>{automation?.runbooks_available ?? 0}</strong><p>Доступные runbooks.</p></article>
-              <article className="metric-card"><span>Success rate</span><strong>{`${automation?.automation_success_rate ?? 0}%`}</strong><p>Процент успешных действий.</p></article>
-            </div>
-            <div className="ticket-table-wrap analytics-table-space">
-              <table className="ticket-table">
-                <thead><tr><th>Trigger</th><th>Count</th></tr></thead>
-                <tbody>{(automation?.triggers ?? []).map((item) => <tr key={item.trigger_type}><td>{item.trigger_type}</td><td>{item.count}</td></tr>)}</tbody>
-              </table>
-            </div>
-          </div>
-          <div>
-            <p className="eyebrow">TOP RULES</p>
-            <h2>Наиболее часто запускаемые</h2>
-            <div className="activity-list">
-              {!automationQuery.isPending && (automation?.top_triggered_rules ?? []).length === 0 ? <p className="state-panel state-panel-empty">Запуски правил пока отсутствуют.</p> : null}
-              {(automation?.top_triggered_rules ?? []).map((item) => (
-                <article className="activity-item" key={item.rule_id}>
-                  <header><strong>{item.rule_name}</strong><span>{item.count}</span></header>
-                </article>
-              ))}
-            </div>
-          </div>
-        </section>
-      ) : null}
-
       {activeTab === 'reports' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="foundation-card dashboard-split">
           <div>
             <p className="eyebrow">SAVED REPORTS</p>
             <h2>Шаблоны и snapshots</h2>
@@ -599,6 +504,7 @@ export default function AnalyticsPage() {
           </div>
         </section>
       ) : null}
+      </section>
     </AppShell>
   )
 }

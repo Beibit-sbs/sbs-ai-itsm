@@ -181,3 +181,43 @@ def test_requester_cannot_access_automation(app) -> None:
         token = _login(client, 'requester@sbs.local', 'Sbs!2026')
         response = client.get('/api/v1/automation/rules', headers=_headers(token))
         assert response.status_code == 403
+
+
+def test_it_agent_cannot_manage_runbooks(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        token = _login(client, 'agent.support@sbs.local', 'Sbs!2026')
+        response = client.post(
+            '/api/v1/automation/runbooks',
+            headers=_headers(token),
+            json={
+                'code': 'forbidden-runbook',
+                'title': 'Forbidden runbook',
+                'category': 'security',
+                'severity': 'high',
+                'steps_json': [],
+            },
+        )
+        assert response.status_code == 403
+
+
+def test_audit_log_created_for_automation_manual_run(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        manager_token = _login(client, 'manager@sbs.local', 'Sbs!2026')
+        rules = client.get('/api/v1/automation/rules', headers=_headers(manager_token)).json()
+        rule_id = _find_rule_id(rules, 'manual_executive_check')
+
+        run_response = client.post(
+            f'/api/v1/automation/rules/{rule_id}/manual-run',
+            headers=_headers(manager_token),
+            json={'trigger_type': 'manual_run', 'context': {'entity_type': 'manual', 'entity_id': 'audit-check-1'}},
+        )
+        assert run_response.status_code == 200
+
+        admin_token = _login(client, 'admin@sbs.local', 'Sbs!2026')
+        logs = client.get('/api/v1/admin/audit-logs?action=automation_manual_run_executed', headers=_headers(admin_token))
+        assert logs.status_code == 200
+        assert any(item['entity_id'] == rule_id for item in logs.json())

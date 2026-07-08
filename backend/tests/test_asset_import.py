@@ -4,6 +4,8 @@ import io
 
 from openpyxl import Workbook
 
+from app.services.asset_import import FILE_SIZE_LIMIT_BYTES
+
 
 def _login(client, email: str, password: str) -> str:
     response = client.post('/api/v1/auth/login', json={'email': email, 'password': password})
@@ -67,6 +69,33 @@ def test_upload_import_file(app) -> None:
         body = response.json()
         assert body['status'] == 'uploaded'
         assert body['original_file_name'] == 'assets.xlsx'
+
+
+def test_upload_rejects_non_xlsx_extension(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        token = _login(client, 'manager@sbs.local', 'Sbs!2026')
+        response = client.post(
+            '/api/v1/assets/import/upload',
+            headers={'Authorization': f'Bearer {token}'},
+            files={'file': ('assets.csv', b'csv,not,allowed', 'text/csv')},
+        )
+        assert response.status_code == 400
+
+
+def test_upload_rejects_oversized_file(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        token = _login(client, 'manager@sbs.local', 'Sbs!2026')
+        oversized = b'X' * (FILE_SIZE_LIMIT_BYTES + 1)
+        response = client.post(
+            '/api/v1/assets/import/upload',
+            headers={'Authorization': f'Bearer {token}'},
+            files={'file': ('assets.xlsx', oversized, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')},
+        )
+        assert response.status_code == 413
 
 
 def test_preview_import(app) -> None:

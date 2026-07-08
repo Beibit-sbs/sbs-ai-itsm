@@ -16,9 +16,21 @@ if str(backend_root) not in sys.path:
 def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'app.db'}")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("RUN_STARTUP_DDL", "true")
 
-    for module_name in ["app.main", "app.db.session", "app.core.config", "app.services.seed", "app.services.service_desk"]:
-        sys.modules.pop(module_name, None)
+    reload_prefixes = [
+        "app.main",
+        "app.db.session",
+        "app.core.config",
+        "app.services.seed",
+        "app.services.service_desk",
+        "app.api.v1.router",
+        "app.api.v1.routes.",
+    ]
+    for module_name in list(sys.modules.keys()):
+        if any(module_name == prefix or module_name.startswith(prefix) for prefix in reload_prefixes):
+            sys.modules.pop(module_name, None)
 
     from app.main import app as fastapi_app
 

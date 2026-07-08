@@ -35,9 +35,11 @@ export type Tenant = {
 
 export type TicketComment = {
   id: string
+  author_id: string | null
   author_name: string
   author_role: string
   body: string
+  is_internal: boolean
   created_at: string
 }
 
@@ -57,6 +59,7 @@ export type Ticket = {
   ticket_number: string | null
   title: string
   description: string | null
+  requester_id: string | null
   requester_name: string
   requester_email: string
   department: string
@@ -70,6 +73,7 @@ export type Ticket = {
   status: string
   status_label: string
   status_color: string
+  assignee_id: string | null
   assignee_name: string | null
   asset_id: string | null
   asset_tag: string | null
@@ -80,7 +84,14 @@ export type Ticket = {
   response_due_at: string | null
   resolution_due_at: string | null
   sla_status: string | null
+  sla_badge: string | null
+  response_remaining_minutes: number | null
+  resolution_remaining_minutes: number | null
+  is_response_breached: boolean
+  is_resolution_breached: boolean
   resolved_at: string | null
+  closed_at: string | null
+  reopened_at: string | null
   created_at: string
   updated_at: string
   response_minutes: number | null
@@ -99,6 +110,7 @@ export type PaginatedResponse<T> = {
 }
 
 export type TicketQueryParams = {
+  queue?: 'all' | 'mine' | 'unassigned' | 'critical' | 'sla_breached' | 'due_today' | 'created_by_me' | 'closed'
   q?: string
   status?: string
   priority?: string
@@ -113,12 +125,15 @@ export type TicketQueryParams = {
 export type CreateTicketRequest = {
   title: string
   description?: string | null
+  requester_id?: string | null
   requester_name: string
   requester_email: string
+  requester_contact?: string | null
   department: string
-  location: string
+  location?: string | null
   category: string
   priority: string
+  assignee_id?: string | null
   assignee_name?: string | null
   asset_id?: string | null
 }
@@ -130,6 +145,18 @@ export type UpdateTicketRequest = Partial<CreateTicketRequest> & {
 
 export type CreateCommentRequest = {
   body: string
+  is_internal?: boolean
+}
+
+export type TicketTransitionRequest = {
+  status: string
+  comment?: string
+  is_internal?: boolean
+}
+
+export type TicketAssignRequest = {
+  assignee_id?: string | null
+  comment?: string
 }
 
 export type Asset = {
@@ -151,27 +178,57 @@ export type Asset = {
   assigned_to_email: string | null
   department: string | null
   location: string
+  building: string | null
+  floor: string | null
+  room: string | null
+  location_label: string | null
+  location_verified_at: string | null
+  responsible_person_name: string | null
+  responsible_person_position: string | null
+  responsible_department: string | null
+  mol_name: string | null
+  mol_department: string | null
   purchase_date: string | null
   accepted_at: string | null
   purchase_cost: number | null
   current_cost: number | null
+  initial_cost: number | null
   depreciation_amount: number | null
+  residual_cost: number | null
   residual_value: number | null
   purchase_year: number | null
+  writeoff_date: string | null
+  writeoff_reason: string | null
   verification_status: string | null
   imported_at: string | null
+  assigned_at: string | null
+  moved_at: string | null
+  disposed_at: string | null
+  last_inventory_at: string | null
+  last_verified_at: string | null
   warranty_until: string | null
   condition: string
   description: string | null
+  notes: string | null
   tenant_id: string | null
   tenant_name: string | null
   health: string
+  created_at: string
+  updated_at: string
 }
 
 export type AssetQueryParams = {
   q?: string
+  asset_type?: string
+  status?: string
   source?: string
   verification_status?: string
+  room?: string
+  building?: string
+  responsible_person_name?: string
+  mol_name?: string
+  missing_location?: boolean
+  needs_verification?: boolean
   without_location?: boolean
   disposed?: boolean
   assigned_to_name?: string
@@ -209,6 +266,94 @@ export type AssetTicket = {
   sla_status: string | null
   created_at: string
   updated_at: string
+}
+
+export type AssetHistory = {
+  id: string
+  asset_id: string
+  actor_id: string | null
+  action: string
+  old_value: Record<string, unknown> | null
+  new_value: Record<string, unknown> | null
+  comment: string | null
+  created_at: string
+}
+
+export type AssetHistoryFeedItem = AssetHistory & {
+  asset_name: string | null
+  inventory_number: string | null
+  actor_email: string | null
+}
+
+export type AssetDetail = Asset & {
+  linked_tickets_summary: Array<{
+    id: string
+    ticket_number: string | null
+    title: string
+    status: string
+    priority: string
+    updated_at: string
+  }>
+  latest_history: AssetHistory[]
+}
+
+export type AssetUpdateRequest = Partial<{
+  name: string
+  asset_type: string
+  status: string
+  source: string
+  verification_status: string
+  building: string | null
+  floor: string | null
+  room: string | null
+  location_label: string | null
+  responsible_person_name: string | null
+  responsible_person_position: string | null
+  responsible_department: string | null
+  mol_name: string | null
+  mol_department: string | null
+  purchase_date: string | null
+  purchase_year: number | null
+  initial_cost: number | null
+  depreciation_amount: number | null
+  residual_cost: number | null
+  writeoff_date: string | null
+  writeoff_reason: string | null
+  serial_number: string | null
+  manufacturer: string | null
+  model: string | null
+  notes: string | null
+  description: string | null
+}>
+
+export type AssetAssignRequest = {
+  responsible_person_name: string
+  responsible_department?: string | null
+  mol_name?: string | null
+  mol_department?: string | null
+  comment?: string
+}
+
+export type AssetMoveRequest = {
+  building?: string | null
+  floor?: string | null
+  room?: string | null
+  location_label?: string | null
+  comment?: string
+}
+
+export type AssetVerifyRequest = {
+  verification_status: string
+  comment?: string
+}
+
+export type AssetDisposeRequest = {
+  writeoff_reason: string
+  comment?: string
+}
+
+export type AssetRestoreRequest = {
+  comment?: string
 }
 
 export type AssetImportBatch = {
@@ -861,6 +1006,10 @@ type RefreshRequest = {
   refresh_token: string
 }
 
+type LogoutRequest = {
+  refresh_token?: string
+}
+
 export async function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
   const response = await fetch(`${API_BASE_URL}/health`, { signal })
   if (!response.ok) throw new Error(`Backend returned ${response.status}`)
@@ -896,6 +1045,19 @@ export async function refreshAuthSession(request: RefreshRequest): Promise<AuthS
   return readJsonResponse<AuthSession>(response)
 }
 
+export async function logoutSession(accessToken: string | undefined, request?: LogoutRequest): Promise<{ ok: boolean }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`
+  }
+  const response = await fetch(`${API_BASE_URL}/auth/logout`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(request ?? {}),
+  })
+  return readJsonResponse<{ ok: boolean }>(response)
+}
+
 export async function fetchCurrentUser(accessToken: string): Promise<AuthUser> {
   const response = await fetch(`${API_BASE_URL}/auth/me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -919,6 +1081,7 @@ export async function fetchCurrentTenant(accessToken: string): Promise<Tenant | 
 
 export async function fetchTicketsPage(accessToken: string, params?: TicketQueryParams): Promise<PaginatedResponse<Ticket>> {
   const search = new URLSearchParams()
+  if (params?.queue && params.queue !== 'all') search.set('queue', params.queue)
   if (params?.q) search.set('q', params.q)
   if (params?.status && params.status !== 'ALL') search.set('status', params.status)
   if (params?.priority && params.priority !== 'ALL') search.set('priority', params.priority)
@@ -976,6 +1139,32 @@ export async function patchTicket(accessToken: string, ticketId: string, request
   return readJsonResponse<TicketDetail>(response)
 }
 
+export async function transitionTicket(accessToken: string, ticketId: string, request: TicketTransitionRequest): Promise<TicketDetail> {
+  const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/transition`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+
+  return readJsonResponse<TicketDetail>(response)
+}
+
+export async function assignTicket(accessToken: string, ticketId: string, request: TicketAssignRequest): Promise<TicketDetail> {
+  const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/assign`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+
+  return readJsonResponse<TicketDetail>(response)
+}
+
 export async function addTicketComment(accessToken: string, ticketId: string, request: CreateCommentRequest): Promise<TicketComment> {
   const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/comments`, {
     method: 'POST',
@@ -1012,8 +1201,16 @@ export async function fetchAssets(
 export async function fetchAssetsPage(accessToken: string, params?: AssetQueryParams): Promise<PaginatedResponse<Asset>> {
   const search = new URLSearchParams()
   if (params?.q) search.set('q', params.q)
+  if (params?.asset_type && params.asset_type !== 'ALL') search.set('asset_type', params.asset_type)
+  if (params?.status && params.status !== 'ALL') search.set('status', params.status)
   if (params?.source && params.source !== 'ALL') search.set('source', params.source)
   if (params?.verification_status && params.verification_status !== 'ALL') search.set('verification_status', params.verification_status)
+  if (params?.room && params.room !== 'ALL') search.set('room', params.room)
+  if (params?.building && params.building !== 'ALL') search.set('building', params.building)
+  if (params?.responsible_person_name && params.responsible_person_name !== 'ALL') search.set('responsible_person_name', params.responsible_person_name)
+  if (params?.mol_name && params.mol_name !== 'ALL') search.set('mol_name', params.mol_name)
+  if (params?.missing_location) search.set('missing_location', 'true')
+  if (params?.needs_verification) search.set('needs_verification', 'true')
   if (params?.without_location) search.set('without_location', 'true')
   if (params?.disposed) search.set('disposed', 'true')
   if (params?.assigned_to_name && params.assigned_to_name !== 'ALL') search.set('assigned_to_name', params.assigned_to_name)
@@ -1040,12 +1237,118 @@ export async function fetchAsset(accessToken: string, assetId: string): Promise<
   return readJsonResponse<Asset>(response)
 }
 
+export async function fetchAssetById(accessToken: string, assetId: string): Promise<AssetDetail> {
+  const response = await fetch(`${API_BASE_URL}/assets/${assetId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+
+  return readJsonResponse<AssetDetail>(response)
+}
+
 export async function fetchAssetTickets(accessToken: string, assetId: string): Promise<AssetTicket[]> {
   const response = await fetch(`${API_BASE_URL}/assets/${assetId}/tickets`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
 
   return readJsonResponse<AssetTicket[]>(response)
+}
+
+export async function updateAsset(accessToken: string, assetId: string, payload: AssetUpdateRequest): Promise<AssetDetail> {
+  const response = await fetch(`${API_BASE_URL}/assets/${assetId}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<AssetDetail>(response)
+}
+
+export async function assignAsset(accessToken: string, assetId: string, payload: AssetAssignRequest): Promise<AssetDetail> {
+  const response = await fetch(`${API_BASE_URL}/assets/${assetId}/assign`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<AssetDetail>(response)
+}
+
+export async function moveAsset(accessToken: string, assetId: string, payload: AssetMoveRequest): Promise<AssetDetail> {
+  const response = await fetch(`${API_BASE_URL}/assets/${assetId}/move`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<AssetDetail>(response)
+}
+
+export async function verifyAsset(accessToken: string, assetId: string, payload: AssetVerifyRequest): Promise<AssetDetail> {
+  const response = await fetch(`${API_BASE_URL}/assets/${assetId}/verify`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<AssetDetail>(response)
+}
+
+export async function disposeAsset(accessToken: string, assetId: string, payload: AssetDisposeRequest): Promise<AssetDetail> {
+  const response = await fetch(`${API_BASE_URL}/assets/${assetId}/dispose`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<AssetDetail>(response)
+}
+
+export async function restoreAsset(accessToken: string, assetId: string, payload: AssetRestoreRequest): Promise<AssetDetail> {
+  const response = await fetch(`${API_BASE_URL}/assets/${assetId}/restore`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<AssetDetail>(response)
+}
+
+export async function fetchAssetHistory(accessToken: string, assetId: string): Promise<AssetHistory[]> {
+  const response = await fetch(`${API_BASE_URL}/assets/${assetId}/history`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AssetHistory[]>(response)
+}
+
+export async function fetchAssetHistoryFeed(
+  accessToken: string,
+  params?: { action?: string; actor?: string; asset_q?: string; date_from?: string; date_to?: string; limit?: number },
+): Promise<AssetHistoryFeedItem[]> {
+  const search = new URLSearchParams()
+  if (params?.action && params.action !== 'ALL') search.set('action', params.action)
+  if (params?.actor) search.set('actor', params.actor)
+  if (params?.asset_q) search.set('asset_q', params.asset_q)
+  if (params?.date_from) search.set('date_from', params.date_from)
+  if (params?.date_to) search.set('date_to', params.date_to)
+  if (typeof params?.limit === 'number') search.set('limit', String(params.limit))
+  const query = search.toString()
+
+  const response = await fetch(`${API_BASE_URL}/assets/history${query ? `?${query}` : ''}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AssetHistoryFeedItem[]>(response)
 }
 
 export async function uploadAssetImport(accessToken: string, file: File): Promise<AssetImportBatch> {

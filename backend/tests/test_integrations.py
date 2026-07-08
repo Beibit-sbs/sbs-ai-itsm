@@ -206,6 +206,24 @@ def test_manager_can_access_integrations(app) -> None:
         assert response.status_code == 200
 
 
+def test_it_agent_cannot_manage_integrations(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        token = _login(client, "agent.support@sbs.local", "Sbs!2026")
+        response = client.post(
+            "/api/v1/integrations/systems",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "code": "forbidden_system",
+                "name": "Forbidden",
+                "system_type": "custom_api",
+                "status": "planned",
+            },
+        )
+        assert response.status_code == 403
+
+
 def test_audit_log_created_for_health_check(app) -> None:
     from fastapi.testclient import TestClient
 

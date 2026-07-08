@@ -9,7 +9,8 @@ from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
-from app.core.security import hash_password
+from app.core.config import get_settings
+from app.core.security import hash_password, validate_password_strength
 from app.db.session import get_db
 from app.models.audit_log import AuditLog
 from app.models.permission import Permission
@@ -20,6 +21,7 @@ from app.services.audit import log_audit, parse_metadata
 from app.services.rbac import is_saas_root, require_permissions
 
 router = APIRouter(prefix="/admin")
+settings = get_settings()
 
 
 class UserResponse(BaseModel):
@@ -168,6 +170,17 @@ def _ensure_role_scope(current_user: AuthUserResponse, role: Role) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
 
 
+def _password_min_length(db: Session, tenant_id: str | None) -> int:
+    statement = select(SystemSetting).where(SystemSetting.key == "password_min_length")
+    candidate = db.scalar(statement.where(SystemSetting.tenant_id == tenant_id)) if tenant_id else None
+    if candidate is None:
+        candidate = db.scalar(statement.where(SystemSetting.tenant_id.is_(None)))
+    try:
+        return int(candidate.value) if candidate is not None else 10
+    except (TypeError, ValueError):
+        return 10
+
+
 @router.get("/users", response_model=list[UserResponse])
 def list_users(
     current_user: AuthUserResponse = Depends(get_current_user),
@@ -207,6 +220,14 @@ def create_user(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User email already exists")
 
     tenant_id = request.tenant_id if is_saas_root(current_user) else current_user.tenant_id
+    password_error = validate_password_strength(
+        request.password,
+        minimum_length=_password_min_length(db, tenant_id),
+        demo_mode=settings.demo_mode,
+    )
+    if password_error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=password_error)
+
     role: Role | None = None
     if request.role_id:
         role = db.scalar(select(Role).where(Role.id == request.role_id))

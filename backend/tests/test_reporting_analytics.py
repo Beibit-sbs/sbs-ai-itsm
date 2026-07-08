@@ -181,3 +181,23 @@ def test_manager_can_access_analytics(app) -> None:
         token = _login(client, "manager@sbs.local", "Sbs!2026")
         response = client.get("/api/v1/analytics/overview", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 200
+
+
+def test_audit_log_created_for_report_export(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        manager_token = _login(client, "manager@sbs.local", "Sbs!2026")
+        exported = client.get(
+            "/api/v1/reports/export-demo?report_type=overview&format=json",
+            headers={"Authorization": f"Bearer {manager_token}"},
+        )
+        assert exported.status_code == 200
+
+        admin_token = _login(client, "admin@sbs.local", "Sbs!2026")
+        logs = client.get(
+            "/api/v1/admin/audit-logs?action=demo_export_requested",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert logs.status_code == 200
+        assert any(item["entity_id"] == "overview" for item in logs.json())

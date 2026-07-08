@@ -87,8 +87,8 @@ export default function NotificationsPage() {
   }, [notifications])
 
   return (
-    <AppShell title="Уведомления" subtitle="Notification Center фиксирует события ITSM и mock-email активность без реальной отправки писем.">
-      <section className="foundation-card notifications-toolbar">
+    <AppShell title="Уведомления" subtitle="Системные события, in-app уведомления и статус прочтения.">
+      <section className="section-card">
         <div>
           <p className="eyebrow">NOTIFICATION CENTER</p>
           <h2>События и оповещения</h2>
@@ -96,15 +96,16 @@ export default function NotificationsPage() {
         </div>
         <div className="status-column">
           <span className="unread-pill">Непрочитано: {unreadCount}</span>
-          <div className="notification-tabs">
-            <Link to="/notifications" className="active">Уведомления</Link>
-            <Link to="/notifications/email-log">Email log</Link>
-          </div>
         </div>
       </section>
 
-      <section className="foundation-card tickets-toolbar">
-        <div className="tickets-toolbar-group">
+      <nav className="module-subnav" aria-label="Notifications navigation">
+        <Link to="/notifications" className="module-subnav-tab active">Уведомления</Link>
+        <Link to="/notifications/email-log" className="module-subnav-tab">Email Log</Link>
+      </nav>
+
+      <section className="foundation-card table-toolbar">
+        <div className="table-filters">
           <label className="inline-field">
             <span>Статус</span>
             <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
@@ -142,13 +143,18 @@ export default function NotificationsPage() {
 
       {markReadMutation.isError || readAllMutation.isError ? <p className="error-message">Не удалось обновить статус уведомлений.</p> : null}
 
-      <section className="foundation-card notification-list-shell">
+      <section className="section-card notification-list-shell">
         {notificationsQuery.isPending ? (
-          <p className="state-panel state-panel-loading">Загрузка уведомлений…</p>
+          <p className="loading-state">Загрузка данных...</p>
         ) : notificationsQuery.isError ? (
-          <p className="error-message">Не удалось загрузить уведомления.</p>
+          <div className="error-state">
+            Не удалось загрузить уведомления.
+            <div className="analytics-actions">
+              <button type="button" className="ghost-button" onClick={() => notificationsQuery.refetch()}>Повторить</button>
+            </div>
+          </div>
         ) : notifications.length === 0 ? (
-          <p className="state-panel state-panel-empty">По выбранным фильтрам уведомлений нет.</p>
+          <p className="empty-state">Данных пока нет. Измените фильтры или дождитесь новых событий.</p>
         ) : (
           <div className="notification-grid">
             {[...grouped.unread, ...grouped.read].map((notification) => (

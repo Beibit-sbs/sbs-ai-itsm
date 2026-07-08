@@ -21,14 +21,15 @@ import {
 import { useAuth } from '../auth/AuthContext'
 
 const tabs = [
+  { key: 'overview', label: 'Overview' },
   { key: 'rules', label: 'Правила' },
-  { key: 'dryrun', label: 'Dry Run' },
+  { key: 'dryrun', label: 'Тестовый прогон' },
   { key: 'runs', label: 'Прогоны' },
   { key: 'logs', label: 'Логи действий' },
-  { key: 'runbooks', label: 'Runbooks' },
+  { key: 'runbooks', label: 'Runbooks / инструкции' },
   { key: 'executions', label: 'Исполнения' },
-  { key: 'approvals', label: 'Approval' },
-  { key: 'suggestions', label: 'Suggestions' },
+  { key: 'approvals', label: 'Согласования' },
+  { key: 'suggestions', label: 'Рекомендации' },
 ] as const
 
 type TabKey = (typeof tabs)[number]['key']
@@ -41,7 +42,7 @@ function formatDateTime(value: string | null) {
 export default function AutomationPage() {
   const { session } = useAuth()
   const queryClient = useQueryClient()
-  const [activeTab, setActiveTab] = useState<TabKey>('rules')
+  const [activeTab, setActiveTab] = useState<TabKey>('overview')
   const [selectedRuleId, setSelectedRuleId] = useState<string>('')
   const [selectedRunId, setSelectedRunId] = useState<string>('')
   const [selectedRunbookId, setSelectedRunbookId] = useState<string>('')
@@ -159,34 +160,59 @@ export default function AutomationPage() {
   const runOptions = useMemo(() => runsQuery.data ?? [], [runsQuery.data])
 
   return (
-    <AppShell title="Автоматизация" subtitle="WORKFLOW-AUTOMATION-001: правила, триггеры, runbooks, approval и demo-safe исполнение.">
-      <section className="metric-grid dashboard-metrics">
-        <article className="metric-card"><span>Активные правила</span><strong>{overviewQuery.data?.active_rules ?? 0}</strong><p>Доступные правила автоматизации.</p></article>
-        <article className="metric-card"><span>Прогонов сегодня</span><strong>{overviewQuery.data?.runs_today ?? 0}</strong><p>Все automation-runs за текущий день.</p></article>
-        <article className="metric-card"><span>Ошибки</span><strong>{overviewQuery.data?.failed_runs ?? 0}</strong><p>Failed/with-errors прогоны.</p></article>
-        <article className="metric-card"><span>Success rate</span><strong>{`${overviewQuery.data?.automation_success_rate ?? 0}%`}</strong><p>Эффективность demo-safe выполнения.</p></article>
-      </section>
+    <AppShell title="Автоматизация" subtitle="Правила, триггеры, runbooks, согласования и безопасное выполнение процессов.">
+      <nav className="module-subnav" aria-label="Automation navigation">
+        {tabs.map((tab) => (
+          <button key={tab.key} type="button" className={`module-subnav-tab ${activeTab === tab.key ? 'active' : ''}`} onClick={() => setActiveTab(tab.key)}>
+            {tab.label}
+          </button>
+        ))}
+      </nav>
 
-      <section className="foundation-card admin-panel">
-        <div>
-          <p className="eyebrow">WORKFLOW AUTOMATION</p>
-          <h2>Правила, runbooks и approval flow</h2>
-        </div>
-        <div className="notification-tabs">
-          {tabs.map((tab) => (
-            <button key={tab.key} type="button" className={activeTab === tab.key ? 'admin-tab-active' : 'ghost-button'} onClick={() => setActiveTab(tab.key)}>
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </section>
+      {actionError ? <p className="error-state">{actionError}</p> : null}
 
-      {actionError ? <section className="foundation-card"><p className="error-message">{actionError}</p></section> : null}
+      <section className="module-content">
+      {activeTab === 'overview' ? (
+        <>
+          <section className="module-overview-grid">
+            <article className="metric-card"><span>Активные правила</span><strong>{overviewQuery.data?.active_rules ?? 0}</strong><p>Доступные правила автоматизации.</p></article>
+            <article className="metric-card"><span>Прогонов сегодня</span><strong>{overviewQuery.data?.runs_today ?? 0}</strong><p>Все прогоны за текущий день.</p></article>
+            <article className="metric-card"><span>Ошибки</span><strong>{overviewQuery.data?.failed_runs ?? 0}</strong><p>Ошибки и прогоны с ошибками.</p></article>
+            <article className="metric-card"><span>Успешность</span><strong>{`${overviewQuery.data?.automation_success_rate ?? 0}%`}</strong><p>Эффективность исполнения.</p></article>
+          </section>
+
+          <section className="foundation-card dashboard-split">
+            <div>
+              <p className="eyebrow">WORKFLOW AUTOMATION</p>
+              <h2>Обзор автоматизации</h2>
+              <div className="mini-bars">
+                <div className="mini-bar-row"><span>Pending approvals</span><strong>{overviewQuery.data?.pending_approvals ?? 0}</strong></div>
+                <div className="mini-bar-row"><span>Runbooks</span><strong>{overviewQuery.data?.runbooks_available ?? 0}</strong></div>
+                <div className="mini-bar-row"><span>Исполнения</span><strong>{(executionsQuery.data ?? []).length}</strong></div>
+              </div>
+            </div>
+            <div>
+              <p className="eyebrow">ПОСЛЕДНИЕ ПРОГОНЫ</p>
+              <div className="activity-list">
+                {(runsQuery.data ?? []).slice(0, 6).map((run) => (
+                  <article className="activity-item" key={run.id}>
+                    <header><strong>{run.trigger_type}</strong><span>{run.status === 'with-errors' ? 'с ошибками' : run.status}</span></header>
+                    <small>{formatDateTime(run.started_at)}</small>
+                  </article>
+                ))}
+                {!runsQuery.isPending && (runsQuery.data ?? []).length === 0 ? <p className="empty-state">Данных пока нет. Запустите тестовый прогон правила.</p> : null}
+              </div>
+            </div>
+          </section>
+        </>
+      ) : null}
 
       {activeTab === 'rules' ? (
-        <section className="ticket-table-wrap admin-panel">
+        <section className="section-card">
+          <header className="section-header"><h3 className="section-title">Правила автоматизации</h3><p className="section-subtitle">Управление активностью и приоритетом правил.</p></header>
+          <div className="ticket-table-wrap">
           <table className="ticket-table">
-            <thead><tr><th>Rule</th><th>Trigger</th><th>Priority</th><th>Status</th><th>Action</th></tr></thead>
+            <thead><tr><th>Правило</th><th>Триггер</th><th>Приоритет</th><th>Статус</th><th>Действие</th></tr></thead>
             <tbody>
               {rulesQuery.isPending ? <tr><td colSpan={5}><p className="state-panel state-panel-loading">Загрузка правил…</p></td></tr> : null}
               {!rulesQuery.isPending && (rulesQuery.data ?? []).length === 0 ? <tr><td colSpan={5}><p className="state-panel state-panel-empty">Правила автоматизации отсутствуют.</p></td></tr> : null}
@@ -195,7 +221,7 @@ export default function AutomationPage() {
                   <td><strong>{rule.name}</strong><p className="table-subtext">{rule.code}</p></td>
                   <td>{rule.trigger_type}</td>
                   <td>{rule.priority}</td>
-                  <td>{rule.is_active ? 'ACTIVE' : 'INACTIVE'}</td>
+                  <td>{rule.is_active ? 'Активный' : 'Неактивный'}</td>
                   <td>
                     <button
                       type="button"
@@ -208,66 +234,70 @@ export default function AutomationPage() {
                       }}
                       disabled={patchRuleMutation.isPending}
                     >
-                      {rule.is_active ? 'Disable' : 'Enable'}
+                      {rule.is_active ? 'Отключить' : 'Включить'}
                     </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         </section>
       ) : null}
 
       {activeTab === 'dryrun' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="section-card dashboard-split">
           <div>
-            <p className="eyebrow">DRY RUN / MANUAL RUN</p>
+            <p className="eyebrow">ТЕСТОВЫЙ ПРОГОН</p>
             <h2>Проверка правил без side effects</h2>
             <label>
-              <span>Rule</span>
+              <span>Правило</span>
               <select value={selectedRuleId} onChange={(event) => setSelectedRuleId(event.target.value)}>
                 <option value="">Выберите правило</option>
                 {(rulesQuery.data ?? []).map((rule) => <option key={rule.id} value={rule.id}>{rule.name}</option>)}
               </select>
             </label>
             <div className="analytics-actions">
-              <button type="button" onClick={() => selectedRuleId && dryRunMutation.mutate(selectedRuleId)} disabled={!selectedRuleId || dryRunMutation.isPending}>Dry Run</button>
-              <button type="button" onClick={() => selectedRuleId && manualRunMutation.mutate(selectedRuleId)} disabled={!selectedRuleId || manualRunMutation.isPending}>Manual Run</button>
+              <button type="button" onClick={() => selectedRuleId && dryRunMutation.mutate(selectedRuleId)} disabled={!selectedRuleId || dryRunMutation.isPending}>Тестовый прогон</button>
+              <button type="button" onClick={() => selectedRuleId && manualRunMutation.mutate(selectedRuleId)} disabled={!selectedRuleId || manualRunMutation.isPending}>Ручной запуск</button>
             </div>
           </div>
           <div>
-            <p className="eyebrow">RESULTS</p>
-            <pre className="analytics-export-preview">{dryRunResult || manualRunResult || 'Результат dry-run/manual-run появится здесь.'}</pre>
+            <p className="eyebrow">РЕЗУЛЬТАТ</p>
+            <pre className="analytics-export-preview">{dryRunResult || manualRunResult || 'Результат тестового прогона появится здесь.'}</pre>
           </div>
         </section>
       ) : null}
 
       {activeTab === 'runs' ? (
-        <section className="ticket-table-wrap admin-panel">
+        <section className="section-card">
+          <header className="section-header"><h3 className="section-title">Прогоны</h3><p className="section-subtitle">История запусков правил автоматизации.</p></header>
+          <div className="ticket-table-wrap">
           <table className="ticket-table">
-            <thead><tr><th>Run</th><th>Trigger</th><th>Status</th><th>Started</th><th>Finished</th></tr></thead>
+            <thead><tr><th>Прогон</th><th>Триггер</th><th>Статус</th><th>Старт</th><th>Завершение</th></tr></thead>
             <tbody>
               {(runsQuery.data ?? []).map((run) => (
                 <tr key={run.id}>
                   <td>{run.id}</td>
                   <td>{run.trigger_type}</td>
-                  <td>{run.status}</td>
+                  <td>{run.status === 'with-errors' ? 'с ошибками' : run.status}</td>
                   <td>{formatDateTime(run.started_at)}</td>
                   <td>{formatDateTime(run.finished_at)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         </section>
       ) : null}
 
       {activeTab === 'logs' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="section-card dashboard-split">
           <div>
-            <p className="eyebrow">ACTION LOGS</p>
+            <p className="eyebrow">ЛОГИ ДЕЙСТВИЙ</p>
             <h2>Логи действий по прогону</h2>
             <label>
-              <span>Run</span>
+              <span>Прогон</span>
               <select value={selectedRunId} onChange={(event) => setSelectedRunId(event.target.value)}>
                 <option value="">Выберите прогон</option>
                 {runOptions.map((run) => <option key={run.id} value={run.id}>{run.id} · {run.status}</option>)}
@@ -276,7 +306,7 @@ export default function AutomationPage() {
           </div>
           <div className="ticket-table-wrap">
             <table className="ticket-table">
-              <thead><tr><th>Action</th><th>Status</th><th>Created</th><th>Error</th></tr></thead>
+              <thead><tr><th>Действие</th><th>Статус</th><th>Создано</th><th>Ошибка</th></tr></thead>
               <tbody>
                 {(logsQuery.data ?? []).map((log) => (
                   <tr key={log.id}>
@@ -293,27 +323,30 @@ export default function AutomationPage() {
       ) : null}
 
       {activeTab === 'runbooks' ? (
-        <section className="ticket-table-wrap admin-panel">
+        <section className="section-card">
+          <header className="section-header"><h3 className="section-title">Runbooks / инструкции</h3><p className="section-subtitle">Наборы шагов для регламентных операций.</p></header>
+          <div className="ticket-table-wrap">
           <table className="ticket-table">
-            <thead><tr><th>Runbook</th><th>Category</th><th>Severity</th><th>ETA</th></tr></thead>
+            <thead><tr><th>Runbook</th><th>Категория</th><th>Критичность</th><th>Оценка</th></tr></thead>
             <tbody>
               {(runbooksQuery.data ?? []).map((runbook) => (
                 <tr key={runbook.id}>
                   <td><strong>{runbook.title}</strong><p className="table-subtext">{runbook.code}</p></td>
                   <td>{runbook.category}</td>
                   <td>{runbook.severity}</td>
-                  <td>{runbook.estimated_minutes} min</td>
+                  <td>{runbook.estimated_minutes} мин</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         </section>
       ) : null}
 
       {activeTab === 'executions' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="section-card dashboard-split">
           <div>
-            <p className="eyebrow">START EXECUTION</p>
+            <p className="eyebrow">ИСПОЛНЕНИЯ</p>
             <h2>Запуск runbook исполнения</h2>
             <label>
               <span>Runbook</span>
@@ -323,13 +356,13 @@ export default function AutomationPage() {
               </select>
             </label>
             <label>
-              <span>Ticket (optional)</span>
+              <span>Заявка (опционально)</span>
               <select value={selectedTicketId} onChange={(event) => setSelectedTicketId(event.target.value)}>
                 <option value="">Без тикета</option>
                 {(ticketsQuery.data ?? []).map((ticket) => <option key={ticket.id} value={ticket.id}>{ticket.ticket_number} · {ticket.title}</option>)}
               </select>
             </label>
-            <button type="button" onClick={() => startExecutionMutation.mutate()} disabled={!selectedRunbookId || startExecutionMutation.isPending}>Start Execution</button>
+            <button type="button" onClick={() => startExecutionMutation.mutate()} disabled={!selectedRunbookId || startExecutionMutation.isPending}>Запустить исполнение</button>
           </div>
           <div className="ticket-table-wrap">
             <table className="ticket-table">
@@ -350,7 +383,7 @@ export default function AutomationPage() {
                           onClick={() => updateExecutionMutation.mutate({ executionId: execution.id, current_step: execution.current_step + 1 })}
                           disabled={updateExecutionMutation.isPending}
                         >
-                          Update Step
+                          Следующий шаг
                         </button>
                         <button
                           className="ghost-button"
@@ -362,7 +395,7 @@ export default function AutomationPage() {
                           }}
                           disabled={updateExecutionMutation.isPending}
                         >
-                          Mark Completed
+                          Завершить
                         </button>
                       </div>
                     </td>
@@ -375,12 +408,14 @@ export default function AutomationPage() {
       ) : null}
 
       {activeTab === 'approvals' ? (
-        <section className="ticket-table-wrap admin-panel">
+        <section className="section-card">
+          <header className="section-header"><h3 className="section-title">Согласования</h3><p className="section-subtitle">Запросы подтверждения для контролируемых действий.</p></header>
+          <div className="ticket-table-wrap">
           <table className="ticket-table">
-            <thead><tr><th>Title</th><th>Status</th><th>Requested By</th><th>Decision</th></tr></thead>
+            <thead><tr><th>Название</th><th>Статус</th><th>Инициатор</th><th>Решение</th></tr></thead>
             <tbody>
-              {approvalsQuery.isPending ? <tr><td colSpan={4}><p className="state-panel state-panel-loading">Загрузка approval requests…</p></td></tr> : null}
-              {!approvalsQuery.isPending && (approvalsQuery.data ?? []).length === 0 ? <tr><td colSpan={4}><p className="state-panel state-panel-empty">Approval requests отсутствуют.</p></td></tr> : null}
+              {approvalsQuery.isPending ? <tr><td colSpan={4}><p className="state-panel state-panel-loading">Загрузка согласований…</p></td></tr> : null}
+              {!approvalsQuery.isPending && (approvalsQuery.data ?? []).length === 0 ? <tr><td colSpan={4}><p className="state-panel state-panel-empty">Запросы согласования отсутствуют.</p></td></tr> : null}
               {(approvalsQuery.data ?? []).map((approval) => (
                 <tr key={approval.id}>
                   <td>{approval.title}</td>
@@ -397,7 +432,7 @@ export default function AutomationPage() {
                         }}
                         disabled={decideApprovalMutation.isPending}
                       >
-                        Approve
+                        Подтвердить
                       </button>
                       <button
                         type="button"
@@ -409,7 +444,7 @@ export default function AutomationPage() {
                         }}
                         disabled={decideApprovalMutation.isPending}
                       >
-                        Reject
+                        Отклонить
                       </button>
                     </div>
                   </td>
@@ -417,16 +452,17 @@ export default function AutomationPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </section>
       ) : null}
 
       {activeTab === 'suggestions' ? (
-        <section className="foundation-card dashboard-split admin-panel">
+        <section className="section-card dashboard-split">
           <div>
-            <p className="eyebrow">SUGGESTIONS</p>
+            <p className="eyebrow">РЕКОМЕНДАЦИИ</p>
             <h2>Рекомендованные runbooks для тикета</h2>
             <label>
-              <span>Ticket</span>
+              <span>Заявка</span>
               <select value={selectedTicketId} onChange={(event) => setSelectedTicketId(event.target.value)}>
                 <option value="">Выберите тикет</option>
                 {(ticketsQuery.data ?? []).map((ticket) => <option key={ticket.id} value={ticket.id}>{ticket.ticket_number} · {ticket.title}</option>)}
@@ -445,11 +481,12 @@ export default function AutomationPage() {
                 </article>
               ))}
             </div>
-            <p className="eyebrow analytics-subsection">MATCHED RULES</p>
+            <p className="eyebrow analytics-subsection">ПОДХОДЯЩИЕ ПРАВИЛА</p>
             <pre className="analytics-export-preview">{JSON.stringify(suggestionQuery.data?.matched_rules ?? [], null, 2)}</pre>
           </div>
         </section>
       ) : null}
+      </section>
     </AppShell>
   )
 }

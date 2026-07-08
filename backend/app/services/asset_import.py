@@ -467,7 +467,45 @@ def ensure_asset_import_schema(engine: Engine) -> None:
             "accepted_at": "ALTER TABLE assets ADD COLUMN accepted_at TIMESTAMP",
             "verification_status": "ALTER TABLE assets ADD COLUMN verification_status VARCHAR(64)",
             "imported_at": "ALTER TABLE assets ADD COLUMN imported_at TIMESTAMP",
+            "building": "ALTER TABLE assets ADD COLUMN building VARCHAR(120)",
+            "floor": "ALTER TABLE assets ADD COLUMN floor VARCHAR(64)",
+            "room": "ALTER TABLE assets ADD COLUMN room VARCHAR(120)",
+            "location_label": "ALTER TABLE assets ADD COLUMN location_label VARCHAR(255)",
+            "location_verified_at": "ALTER TABLE assets ADD COLUMN location_verified_at TIMESTAMP",
+            "responsible_person_name": "ALTER TABLE assets ADD COLUMN responsible_person_name VARCHAR(200)",
+            "responsible_person_position": "ALTER TABLE assets ADD COLUMN responsible_person_position VARCHAR(200)",
+            "responsible_department": "ALTER TABLE assets ADD COLUMN responsible_department VARCHAR(200)",
+            "mol_name": "ALTER TABLE assets ADD COLUMN mol_name VARCHAR(200)",
+            "mol_department": "ALTER TABLE assets ADD COLUMN mol_department VARCHAR(200)",
+            "initial_cost": "ALTER TABLE assets ADD COLUMN initial_cost FLOAT",
+            "residual_cost": "ALTER TABLE assets ADD COLUMN residual_cost FLOAT",
+            "writeoff_date": "ALTER TABLE assets ADD COLUMN writeoff_date TIMESTAMP",
+            "writeoff_reason": "ALTER TABLE assets ADD COLUMN writeoff_reason TEXT",
+            "assigned_at": "ALTER TABLE assets ADD COLUMN assigned_at TIMESTAMP",
+            "moved_at": "ALTER TABLE assets ADD COLUMN moved_at TIMESTAMP",
+            "disposed_at": "ALTER TABLE assets ADD COLUMN disposed_at TIMESTAMP",
+            "last_inventory_at": "ALTER TABLE assets ADD COLUMN last_inventory_at TIMESTAMP",
+            "last_verified_at": "ALTER TABLE assets ADD COLUMN last_verified_at TIMESTAMP",
+            "notes": "ALTER TABLE assets ADD COLUMN notes TEXT",
         }
         for column_name, ddl in asset_columns.items():
             if column_name not in existing_assets:
                 connection.exec_driver_sql(ddl)
+
+        if not inspector.has_table("asset_history"):
+            connection.exec_driver_sql(
+                """
+                CREATE TABLE asset_history (
+                    id VARCHAR(36) PRIMARY KEY,
+                    asset_id VARCHAR(36) NOT NULL,
+                    actor_id VARCHAR(36),
+                    action VARCHAR(80) NOT NULL,
+                    old_value TEXT,
+                    new_value TEXT,
+                    comment TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                    FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE CASCADE,
+                    FOREIGN KEY(actor_id) REFERENCES users(id) ON DELETE SET NULL
+                )
+                """
+            )

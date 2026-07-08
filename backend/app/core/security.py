@@ -68,7 +68,13 @@ def create_token(subject: dict[str, Any], expires_in_seconds: int, token_type: s
     settings = get_settings()
     header = {"alg": "HS256", "typ": "JWT"}
     now = int(time.time())
-    payload = {**subject, "type": token_type, "iat": now, "exp": now + expires_in_seconds}
+    payload = {
+        **subject,
+        "type": token_type,
+        "iat": now,
+        "exp": now + expires_in_seconds,
+        "jti": _b64url_encode(secrets.token_bytes(12)),
+    }
     header_segment = _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
     payload_segment = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     signing_input = f"{header_segment}.{payload_segment}".encode("ascii")
@@ -93,6 +99,13 @@ def decode_token(token: str, expected_type: str | None = None) -> dict[str, Any]
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    required_claims = {"sub", "email", "type", "iat", "exp", "jti"}
+    if not required_claims.issubset(set(payload.keys())):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
     if payload.get("exp", 0) < int(time.time()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
 
@@ -100,6 +113,35 @@ def decode_token(token: str, expected_type: str | None = None) -> dict[str, Any]
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
 
     return payload
+
+
+WEAK_PASSWORD_MARKERS = {
+    "password",
+    "123456",
+    "qwerty",
+    "admin",
+    "demo",
+    "sbs!2026",
+    "root!2026",
+    "changeme",
+}
+
+
+def validate_password_strength(password: str, *, minimum_length: int, demo_mode: bool) -> str | None:
+    if len(password) < minimum_length:
+        return f"Password must be at least {minimum_length} characters"
+
+    if demo_mode:
+        return None
+
+    lowered = password.lower()
+    if any(marker in lowered for marker in WEAK_PASSWORD_MARKERS):
+        return "Password is too weak for production mode"
+    if lowered.isalpha() or lowered.isdigit():
+        return "Password must include letters, numbers, and symbols"
+    if password == password[::-1]:
+        return "Password is too predictable"
+    return None
 
 
 def build_demo_accounts() -> dict[str, DemoAccount]:

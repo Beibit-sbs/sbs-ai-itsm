@@ -25,3 +25,10 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=422,
             content=error_payload("VALIDATION_ERROR", "Request validation failed", exc.errors()),
         )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(_: Request, __: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=500,
+            content=error_payload("INTERNAL_ERROR", "Internal server error"),
+        )

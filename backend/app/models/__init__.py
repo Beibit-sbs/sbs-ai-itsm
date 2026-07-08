@@ -1,5 +1,6 @@
 from app.db.tables import role_permissions
 from app.models.asset import Asset
+from app.models.asset_history import AssetHistory
 from app.models.asset_import_batch import AssetImportBatch
 from app.models.asset_import_row import AssetImportRow
 from app.models.asset_assignment import AssetAssignment

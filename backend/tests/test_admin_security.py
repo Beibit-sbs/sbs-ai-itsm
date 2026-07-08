@@ -29,7 +29,7 @@ def test_create_user(app) -> None:
             json={
                 "email": "new.requester@sbs.local",
                 "full_name": "New Requester",
-                "password": "Sbs!2026",
+                    "password": "Sbs!2026-Strong",
                 "position": "Specialist",
                 "department": "Business",
                 "phone": "+70000000111",
@@ -161,6 +161,24 @@ def test_requester_cannot_access_admin_endpoints(app) -> None:
     with TestClient(app) as client:
         token = _login(client, "requester@sbs.local", "Sbs!2026")
         response = client.get("/api/v1/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 403
+
+
+def test_it_agent_cannot_access_admin_endpoints(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        token = _login(client, "agent.support@sbs.local", "Sbs!2026")
+        response = client.get("/api/v1/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 403
+
+
+def test_requester_cannot_access_security_endpoints(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        token = _login(client, "requester@sbs.local", "Sbs!2026")
+        response = client.get("/api/v1/security/risk-summary", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 403
 
 

@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     backend_cors_origins: list[str] | str = ["http://localhost:5173", "http://localhost:5174"]
     jwt_secret_key: str = "change-me-in-production"
+    access_token_ttl_minutes: int = 30
+    refresh_token_ttl_minutes: int = 10080
     demo_mode: bool = True
     run_startup_ddl: bool = True
     demo_root_email: str = "root@sbs.local"
@@ -30,6 +32,13 @@ class Settings(BaseSettings):
     def parse_cors(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("access_token_ttl_minutes", "refresh_token_ttl_minutes")
+    @classmethod
+    def ttl_must_be_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Token TTL must be positive")
         return value
 
 
