@@ -91,6 +91,25 @@ export type TicketDetail = Ticket & {
   history_count: number
 }
 
+export type PaginatedResponse<T> = {
+  items: T[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export type TicketQueryParams = {
+  q?: string
+  status?: string
+  priority?: string
+  category?: string
+  assignee_name?: string
+  sort_by?: string
+  sort_dir?: 'asc' | 'desc'
+  page?: number
+  page_size?: number
+}
+
 export type CreateTicketRequest = {
   title: string
   description?: string | null
@@ -147,6 +166,21 @@ export type Asset = {
   tenant_id: string | null
   tenant_name: string | null
   health: string
+}
+
+export type AssetQueryParams = {
+  q?: string
+  source?: string
+  verification_status?: string
+  without_location?: boolean
+  disposed?: boolean
+  assigned_to_name?: string
+  purchase_year?: number
+  type?: string
+  sort_by?: string
+  sort_dir?: 'asc' | 'desc'
+  page?: number
+  page_size?: number
 }
 
 export type SlaPolicy = {
@@ -878,12 +912,34 @@ export async function fetchTenants(accessToken: string): Promise<Tenant[]> {
   return readJsonResponse<Tenant[]>(response)
 }
 
-export async function fetchTickets(accessToken: string): Promise<Ticket[]> {
-  const response = await fetch(`${API_BASE_URL}/tickets`, {
+export async function fetchCurrentTenant(accessToken: string): Promise<Tenant | null> {
+  const tenants = await fetchTenants(accessToken)
+  return tenants[0] ?? null
+}
+
+export async function fetchTicketsPage(accessToken: string, params?: TicketQueryParams): Promise<PaginatedResponse<Ticket>> {
+  const search = new URLSearchParams()
+  if (params?.q) search.set('q', params.q)
+  if (params?.status && params.status !== 'ALL') search.set('status', params.status)
+  if (params?.priority && params.priority !== 'ALL') search.set('priority', params.priority)
+  if (params?.category && params.category !== 'ALL') search.set('category', params.category)
+  if (params?.assignee_name && params.assignee_name !== 'ALL') search.set('assignee_name', params.assignee_name)
+  if (params?.sort_by) search.set('sort_by', params.sort_by)
+  if (params?.sort_dir) search.set('sort_dir', params.sort_dir)
+  if (typeof params?.page === 'number') search.set('page', String(params.page))
+  if (typeof params?.page_size === 'number') search.set('page_size', String(params.page_size))
+
+  const query = search.toString()
+  const response = await fetch(`${API_BASE_URL}/tickets${query ? `?${query}` : ''}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
 
-  return readJsonResponse<Ticket[]>(response)
+  return readJsonResponse<PaginatedResponse<Ticket>>(response)
+}
+
+export async function fetchTickets(accessToken: string): Promise<Ticket[]> {
+  const page = await fetchTicketsPage(accessToken, { page: 1, page_size: 500 })
+  return page.items
 }
 
 export async function fetchTicket(accessToken: string, ticketId: string): Promise<TicketDetail> {
@@ -943,17 +999,19 @@ export async function fetchTicketHistory(accessToken: string, ticketId: string):
 
 export async function fetchAssets(
   accessToken: string,
-  params?: {
-    source?: string
-    verification_status?: string
-    without_location?: boolean
-    disposed?: boolean
-    assigned_to_name?: string
-    purchase_year?: number
-    type?: string
-  },
+  params?: AssetQueryParams,
 ): Promise<Asset[]> {
+  const page = await fetchAssetsPage(accessToken, {
+    ...params,
+    page: params?.page ?? 1,
+    page_size: params?.page_size ?? 500,
+  })
+  return page.items
+}
+
+export async function fetchAssetsPage(accessToken: string, params?: AssetQueryParams): Promise<PaginatedResponse<Asset>> {
   const search = new URLSearchParams()
+  if (params?.q) search.set('q', params.q)
   if (params?.source && params.source !== 'ALL') search.set('source', params.source)
   if (params?.verification_status && params.verification_status !== 'ALL') search.set('verification_status', params.verification_status)
   if (params?.without_location) search.set('without_location', 'true')
@@ -961,13 +1019,17 @@ export async function fetchAssets(
   if (params?.assigned_to_name && params.assigned_to_name !== 'ALL') search.set('assigned_to_name', params.assigned_to_name)
   if (typeof params?.purchase_year === 'number') search.set('purchase_year', String(params.purchase_year))
   if (params?.type && params.type !== 'ALL') search.set('type', params.type)
+  if (params?.sort_by) search.set('sort_by', params.sort_by)
+  if (params?.sort_dir) search.set('sort_dir', params.sort_dir)
+  if (typeof params?.page === 'number') search.set('page', String(params.page))
+  if (typeof params?.page_size === 'number') search.set('page_size', String(params.page_size))
   const query = search.toString()
 
   const response = await fetch(`${API_BASE_URL}/assets${query ? `?${query}` : ''}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
 
-  return readJsonResponse<Asset[]>(response)
+  return readJsonResponse<PaginatedResponse<Asset>>(response)
 }
 
 export async function fetchAsset(accessToken: string, assetId: string): Promise<Asset> {
@@ -1272,6 +1334,10 @@ export async function fetchAdminUser(accessToken: string, userId: string): Promi
   return readJsonResponse<AdminUser>(response)
 }
 
+export async function fetchAdminUserById(accessToken: string, userId: string): Promise<AdminUser> {
+  return fetchAdminUser(accessToken, userId)
+}
+
 export async function createAdminUser(
   accessToken: string,
   request: {
@@ -1300,6 +1366,14 @@ export async function patchAdminUser(accessToken: string, userId: string, reques
     body: JSON.stringify(request),
   })
   return readJsonResponse<AdminUser>(response)
+}
+
+export async function updateAdminUser(
+  accessToken: string,
+  userId: string,
+  request: Partial<Pick<AdminUser, 'full_name' | 'position' | 'department' | 'phone' | 'is_active'>>,
+): Promise<AdminUser> {
+  return patchAdminUser(accessToken, userId, request)
 }
 
 export async function activateAdminUser(accessToken: string, userId: string): Promise<AdminUser> {
@@ -1339,6 +1413,13 @@ export async function fetchAdminRoles(accessToken: string): Promise<AdminRole[]>
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   return readJsonResponse<AdminRole[]>(response)
+}
+
+export async function fetchAdminRoleById(accessToken: string, roleId: string): Promise<AdminRole> {
+  const response = await fetch(`${API_BASE_URL}/admin/roles/${roleId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AdminRole>(response)
 }
 
 export async function createAdminRole(
@@ -1384,6 +1465,24 @@ export async function fetchAdminAuditLogs(
   return readJsonResponse<AdminAuditLog[]>(response)
 }
 
+export async function fetchAuditLogs(
+  accessToken: string,
+  params?: { action?: string; actor_email?: string; entity_type?: string },
+): Promise<AdminAuditLog[]> {
+  return fetchAdminAuditLogs(accessToken, params)
+}
+
+export async function fetchAdminAuditLogById(accessToken: string, auditId: string): Promise<AdminAuditLog> {
+  const response = await fetch(`${API_BASE_URL}/admin/audit-logs/${auditId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AdminAuditLog>(response)
+}
+
+export async function fetchAuditLogById(accessToken: string, auditId: string): Promise<AdminAuditLog> {
+  return fetchAdminAuditLogById(accessToken, auditId)
+}
+
 export async function fetchAdminSettings(accessToken: string): Promise<SystemSetting[]> {
   const response = await fetch(`${API_BASE_URL}/admin/settings`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -1400,11 +1499,19 @@ export async function patchAdminSetting(accessToken: string, key: string, value:
   return readJsonResponse<SystemSetting>(response)
 }
 
+export async function updateAdminSetting(accessToken: string, key: string, value: string): Promise<SystemSetting> {
+  return patchAdminSetting(accessToken, key, value)
+}
+
 export async function fetchSecurityLoginEvents(accessToken: string): Promise<SecurityLoginEvent[]> {
   const response = await fetch(`${API_BASE_URL}/security/login-events`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   return readJsonResponse<SecurityLoginEvent[]>(response)
+}
+
+export async function fetchLoginEvents(accessToken: string): Promise<SecurityLoginEvent[]> {
+  return fetchSecurityLoginEvents(accessToken)
 }
 
 export async function fetchSecuritySessionOverview(accessToken: string): Promise<SecuritySessionOverview> {
@@ -1414,11 +1521,19 @@ export async function fetchSecuritySessionOverview(accessToken: string): Promise
   return readJsonResponse<SecuritySessionOverview>(response)
 }
 
+export async function fetchSecurityOverview(accessToken: string): Promise<SecuritySessionOverview> {
+  return fetchSecuritySessionOverview(accessToken)
+}
+
 export async function fetchSecurityRiskSummary(accessToken: string): Promise<SecurityRiskSummary> {
   const response = await fetch(`${API_BASE_URL}/security/risk-summary`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   return readJsonResponse<SecurityRiskSummary>(response)
+}
+
+export async function fetchRiskSummary(accessToken: string): Promise<SecurityRiskSummary> {
+  return fetchSecurityRiskSummary(accessToken)
 }
 
 export async function fetchAnalyticsOverview(accessToken: string): Promise<AnalyticsOverview> {

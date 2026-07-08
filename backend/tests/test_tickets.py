@@ -16,7 +16,7 @@ def test_tenant_admin_can_list_seeded_tickets(app) -> None:
         )
 
         assert tickets_response.status_code == 200
-        tickets = tickets_response.json()
+        tickets = tickets_response.json()["items"]
         assert len(tickets) >= 12
         assert tickets[0]["ticket_number"].startswith("SD-")
 
@@ -39,6 +39,6 @@ def test_root_user_can_list_seeded_tickets(app) -> None:
         )
 
         assert tickets_response.status_code == 200
-        tickets = tickets_response.json()
+        tickets = tickets_response.json()["items"]
         assert len(tickets) >= 12
         assert {ticket["status"] for ticket in tickets} >= {"NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS", "WAITING_USER", "RESOLVED", "CLOSED", "REOPENED"}

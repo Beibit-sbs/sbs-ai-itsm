@@ -146,7 +146,7 @@ def test_commit_import_creates_assets(app) -> None:
 
     with TestClient(app) as client:
         token = _login(client, 'manager@sbs.local', 'Sbs!2026')
-        before_assets = client.get('/api/v1/assets', headers={'Authorization': f'Bearer {token}'}).json()
+        before_assets = client.get('/api/v1/assets', headers={'Authorization': f'Bearer {token}'}).json()['items']
 
         batch_id = _upload_preview(client, token, _build_excel_bytes(include_missing_location=True))
         commit_response = client.post(
@@ -157,7 +157,7 @@ def test_commit_import_creates_assets(app) -> None:
         assert commit_response.status_code == 200
         assert commit_response.json()['imported_rows'] >= 2
 
-        after_assets = client.get('/api/v1/assets?source=excel_import', headers={'Authorization': f'Bearer {token}'}).json()
+        after_assets = client.get('/api/v1/assets?source=excel_import', headers={'Authorization': f'Bearer {token}'}).json()['items']
         assert len(after_assets) >= len(before_assets)
 
 
@@ -183,7 +183,7 @@ def test_commit_import_does_not_duplicate_existing_inventory_number(app) -> None
         )
         assert second_commit.status_code == 200
 
-        assets = client.get('/api/v1/assets?source=excel_import', headers={'Authorization': f'Bearer {token}'}).json()
+        assets = client.get('/api/v1/assets?source=excel_import', headers={'Authorization': f'Bearer {token}'}).json()['items']
         inventory_numbers = [item['inventory_number'] for item in assets if item['inventory_number']]
         assert len(inventory_numbers) == len(set(inventory_numbers))
 

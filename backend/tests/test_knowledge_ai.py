@@ -128,7 +128,7 @@ def test_create_article_from_resolved_ticket(app) -> None:
 
     with TestClient(app) as client:
         token = _login_admin(client)
-        ticket_id = client.get("/api/v1/tickets", headers={"Authorization": f"Bearer {token}"}).json()[0]["id"]
+        ticket_id = client.get("/api/v1/tickets", headers={"Authorization": f"Bearer {token}"}).json()["items"][0]["id"]
 
         patch_response = client.patch(
             f"/api/v1/tickets/{ticket_id}",

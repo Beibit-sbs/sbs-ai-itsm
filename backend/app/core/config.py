@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     backend_cors_origins: list[str] | str = ["http://localhost:5173", "http://localhost:5174"]
     jwt_secret_key: str = "change-me-in-production"
+    demo_mode: bool = True
+    run_startup_ddl: bool = True
     demo_root_email: str = "root@sbs.local"
     demo_root_password: str = "Root!2026"
     demo_admin_email: str = "admin@sbs.local"

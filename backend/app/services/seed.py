@@ -332,6 +332,96 @@ INTEGRATION_SYSTEM_DEFS = [
 ]
 
 
+def seed_system_data(db: Session) -> None:
+    settings = get_settings()
+    now = datetime.now(UTC)
+
+    permission_map = {item.code: item for item in db.scalars(select(Permission)).all()}
+    for code, name, module, description in PERMISSIONS:
+        if code in permission_map:
+            permission = permission_map[code]
+            permission.name = name
+            permission.module = module
+            permission.description = description
+        else:
+            permission = Permission(id=_uuid(), code=code, name=name, module=module, description=description)
+            db.add(permission)
+            permission_map[code] = permission
+    db.flush()
+
+    root_role = db.scalar(select(Role).where(Role.tenant_id.is_(None), Role.code == "saas_root"))
+    if root_role is None:
+        root_role = Role(
+            id=_uuid(),
+            tenant_id=None,
+            code="saas_root",
+            name=ROLE_DEFS["saas_root"]["name"],
+            scope=ROLE_DEFS["saas_root"]["scope"],
+            description=ROLE_DEFS["saas_root"]["description"],
+            is_system=True,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(root_role)
+        db.flush()
+    root_role.permissions = [permission_map[item] for item in ROLE_DEFS["saas_root"]["permissions"] if item in permission_map]
+    root_role.updated_at = now
+
+    root_user = db.scalar(select(User).where(User.email == settings.demo_root_email))
+    if root_user is None:
+        root_user = User(
+            id=_uuid(),
+            tenant_id=None,
+            role_id=root_role.id,
+            email=settings.demo_root_email,
+            full_name="SaaS Root",
+            position="Platform",
+            department="SaaS",
+            phone=None,
+            password_hash=hash_password(settings.demo_root_password),
+            is_active=True,
+            is_superuser=True,
+            is_root=True,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(root_user)
+        db.flush()
+    else:
+        root_user.tenant_id = None
+        root_user.role_id = root_role.id
+        root_user.full_name = "SaaS Root"
+        root_user.is_active = True
+        root_user.is_superuser = True
+        root_user.is_root = True
+        root_user.password_hash = hash_password(settings.demo_root_password)
+        root_user.updated_at = now
+    root_user.roles = [root_role]
+
+    setting_map = {(item.tenant_id, item.key): item for item in db.scalars(select(SystemSetting)).all()}
+    for key, value, description, is_sensitive in SETTING_DEFS:
+        map_key = (None, key)
+        setting = setting_map.get(map_key)
+        if setting is None:
+            setting = SystemSetting(
+                id=_uuid(),
+                tenant_id=None,
+                key=key,
+                value=value,
+                description=description,
+                is_sensitive=is_sensitive,
+                updated_at=now,
+            )
+            db.add(setting)
+        else:
+            setting.value = value
+            setting.description = description
+            setting.is_sensitive = is_sensitive
+            setting.updated_at = now
+
+    db.commit()
+
+
 def seed_demo_data(db: Session) -> None:
     settings = get_settings()
 

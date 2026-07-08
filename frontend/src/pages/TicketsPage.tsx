@@ -10,7 +10,7 @@ import {
   fetchTicket,
   fetchTicketAutomationSuggestions,
   fetchTicketHistory,
-  fetchTickets,
+  fetchTicketsPage,
   patchTicket,
   type Ticket,
   type TicketDetail,
@@ -129,8 +129,11 @@ export default function TicketsPage() {
   const { session } = useAuth()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [priorityFilter, setPriorityFilter] = useState('ALL')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [createForm, setCreateForm] = useState<TicketFormState>(emptyTicketForm)
@@ -157,9 +160,24 @@ export default function TicketsPage() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [selectedTicketId, isCreateOpen])
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim())
+      setPage(1)
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
   const ticketsQuery = useQuery({
-    queryKey: ['tickets', session?.access_token],
-    queryFn: () => fetchTickets(session?.access_token ?? ''),
+    queryKey: ['tickets', session?.access_token, debouncedSearch, statusFilter, priorityFilter, page, pageSize],
+    queryFn: () =>
+      fetchTicketsPage(session?.access_token ?? '', {
+        q: debouncedSearch || undefined,
+        status: statusFilter,
+        priority: priorityFilter,
+        page,
+        page_size: pageSize,
+      }),
     enabled: Boolean(session?.access_token),
   })
 
@@ -278,32 +296,18 @@ export default function TicketsPage() {
     },
   })
 
-  const tickets = ticketsQuery.data ?? []
+  const tickets = ticketsQuery.data?.items ?? []
+  const totalTickets = ticketsQuery.data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(totalTickets / pageSize))
   const assets = assetsQuery.data ?? []
 
-  const filteredTickets = useMemo(() => {
-    const query = search.trim().toLowerCase()
-    return tickets.filter((ticket) => {
-      const matchesSearch =
-        !query ||
-        [
-          ticket.ticket_number,
-          ticket.title,
-          ticket.requester_name,
-          ticket.requester_email,
-          ticket.department,
-          ticket.location,
-          ticket.assignee_name,
-          ticket.category_label,
-        ]
-          .filter(Boolean)
-          .some((value) => String(value).toLowerCase().includes(query))
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages)
+    }
+  }, [page, totalPages])
 
-      const matchesStatus = statusFilter === 'ALL' || ticket.status === statusFilter
-      const matchesPriority = priorityFilter === 'ALL' || ticket.priority === priorityFilter
-      return matchesSearch && matchesStatus && matchesPriority
-    })
-  }, [tickets, search, statusFilter, priorityFilter])
+  const filteredTickets = useMemo(() => tickets, [tickets])
 
   const openCount = tickets.filter((ticket) => !isClosedStatus(ticket.status)).length
   const overdueCount = tickets.filter((ticket) => {
@@ -470,6 +474,20 @@ export default function TicketsPage() {
               ))}
             </select>
           </label>
+          <label className="inline-field">
+            <span>На страницу</span>
+            <select
+              value={String(pageSize)}
+              onChange={(event) => {
+                setPageSize(Number(event.target.value))
+                setPage(1)
+              }}
+            >
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
         </div>
         <button type="button" className="ghost-button tickets-create-button" onClick={() => setIsCreateOpen(true)}>
           Создать заявку
@@ -548,6 +566,20 @@ export default function TicketsPage() {
             </table>
           </div>
         )}
+        {!ticketsQuery.isPending && !ticketsQuery.isError ? (
+          <div className="analytics-actions">
+            <p className="muted">Показано {tickets.length} из {totalTickets}</p>
+            <div className="analytics-actions">
+              <button type="button" className="ghost-button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+                Назад
+              </button>
+              <span className="muted">Страница {page} / {totalPages}</span>
+              <button type="button" className="ghost-button" disabled={page >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>
+                Вперёд
+              </button>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       {isCreateOpen ? (

@@ -14,7 +14,7 @@ def test_create_ticket_links_asset_and_assigns_sla(app) -> None:
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert assets_response.status_code == 200
-        asset_id = assets_response.json()[0]["id"]
+        asset_id = assets_response.json()["items"][0]["id"]
 
         create_response = client.post(
             "/api/v1/tickets",

@@ -4,11 +4,11 @@ import {
   commitAssetImport,
   type Asset,
   fetchAsset,
+  fetchAssetsPage,
   fetchAssetImportBatches,
   fetchAssetImportRows,
   fetchAssetImportSummary,
   fetchAssetTickets,
-  fetchAssets,
   previewAssetImport,
   uploadAssetImport,
   type AssetImportRow,
@@ -164,6 +164,9 @@ export default function AssetsPage() {
   const { session } = useAuth()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   const [typeFilter, setTypeFilter] = useState('ALL')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [sourceFilter, setSourceFilter] = useState('ALL')
@@ -183,10 +186,19 @@ export default function AssetsPage() {
   const canCommitImport = Boolean(session?.user.permissions.includes('assets.import.commit'))
   const canReadBatches = Boolean(session?.user.permissions.includes('assets.import.read_batches'))
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim())
+      setPage(1)
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
   const assetsQuery = useQuery({
     queryKey: [
       'assets',
       session?.access_token,
+      debouncedSearch,
       sourceFilter,
       verificationFilter,
       withoutLocation,
@@ -194,9 +206,12 @@ export default function AssetsPage() {
       assignedFilter,
       yearFilter,
       typeFilter,
+      page,
+      pageSize,
     ],
     queryFn: () =>
-      fetchAssets(session?.access_token ?? '', {
+      fetchAssetsPage(session?.access_token ?? '', {
+        q: debouncedSearch || undefined,
         source: sourceFilter,
         verification_status: verificationFilter,
         without_location: withoutLocation,
@@ -204,6 +219,8 @@ export default function AssetsPage() {
         assigned_to_name: assignedFilter,
         purchase_year: yearFilter === 'ALL' ? undefined : Number(yearFilter),
         type: typeFilter,
+        page,
+        page_size: pageSize,
       }),
     enabled: Boolean(session?.access_token),
   })
@@ -274,7 +291,15 @@ export default function AssetsPage() {
     },
   })
 
-  const assets = assetsQuery.data ?? []
+  const assets = assetsQuery.data?.items ?? []
+  const totalAssets = assetsQuery.data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(totalAssets / pageSize))
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages)
+    }
+  }, [page, totalPages])
 
   useEffect(() => {
     if (!activeBatchId && importBatchesQuery.data && importBatchesQuery.data.length > 0) {
@@ -294,35 +319,29 @@ export default function AssetsPage() {
   }, [selectedAssetId])
 
   const filteredAssets = useMemo(() => {
-    const query = search.trim().toLowerCase()
     return assets.filter((asset) => {
-      const matchesSearch =
-        !query ||
-        [asset.asset_tag, asset.name, asset.serial_number, asset.inventory_number, asset.manufacturer, asset.model, asset.assigned_to_name, asset.department]
-          .filter(Boolean)
-          .some((value) => String(value).toLowerCase().includes(query))
       const matchesStatus = statusFilter === 'ALL' || asset.status === statusFilter
-      return matchesSearch && matchesStatus
+      return matchesStatus
     })
-  }, [assets, search, statusFilter])
+  }, [assets, statusFilter])
 
-  const typeOptions = useMemo(() => Array.from(new Set((assetsQuery.data ?? []).map((asset) => asset.type ?? asset.asset_type))).sort(), [assetsQuery.data])
-  const statusOptions = useMemo(() => Array.from(new Set((assetsQuery.data ?? []).map((asset) => asset.status))).sort(), [assetsQuery.data])
-  const sourceOptions = useMemo(() => Array.from(new Set((assetsQuery.data ?? []).map((asset) => asset.source ?? 'manual'))).sort(), [assetsQuery.data])
+  const typeOptions = useMemo(() => Array.from(new Set(assets.map((asset) => asset.type ?? asset.asset_type))).sort(), [assets])
+  const statusOptions = useMemo(() => Array.from(new Set(assets.map((asset) => asset.status))).sort(), [assets])
+  const sourceOptions = useMemo(() => Array.from(new Set(assets.map((asset) => asset.source ?? 'manual'))).sort(), [assets])
   const verificationOptions = useMemo(
-    () => Array.from(new Set((assetsQuery.data ?? []).map((asset) => asset.verification_status).filter(Boolean) as string[])).sort(),
-    [assetsQuery.data],
+    () => Array.from(new Set(assets.map((asset) => asset.verification_status).filter(Boolean) as string[])).sort(),
+    [assets],
   )
   const assignedOptions = useMemo(
-    () => Array.from(new Set((assetsQuery.data ?? []).map((asset) => asset.assigned_to_name).filter(Boolean) as string[])).sort(),
-    [assetsQuery.data],
+    () => Array.from(new Set(assets.map((asset) => asset.assigned_to_name).filter(Boolean) as string[])).sort(),
+    [assets],
   )
   const yearOptions = useMemo(
     () =>
-      Array.from(new Set((assetsQuery.data ?? []).map((asset) => asset.purchase_year).filter((year): year is number => typeof year === 'number')))
+      Array.from(new Set(assets.map((asset) => asset.purchase_year).filter((year): year is number => typeof year === 'number')))
         .sort((a, b) => b - a)
         .map(String),
-    [assetsQuery.data],
+    [assets],
   )
   const problemAssets = assets.filter((asset) => ['broken', 'in_repair', 'maintenance'].includes(asset.status)).length
   const warrantySoon = assets.filter((asset) => asset.warranty_until && new Date(asset.warranty_until).getTime() < Date.now() + 1000 * 60 * 60 * 24 * 45).length
@@ -770,6 +789,20 @@ export default function AssetsPage() {
                   <label><input type="checkbox" checked={disposedOnly} onChange={(event) => setDisposedOnly(event.target.checked)} /> списанные</label>
                 </div>
               </label>
+              <label className="inline-field">
+                <span>На страницу</span>
+                <select
+                  value={String(pageSize)}
+                  onChange={(event) => {
+                    setPageSize(Number(event.target.value))
+                    setPage(1)
+                  }}
+                >
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
             </div>
             <button
               type="button"
@@ -845,6 +878,20 @@ export default function AssetsPage() {
                 </table>
               </div>
             )}
+            {!assetsQuery.isPending && !assetsQuery.isError ? (
+              <div className="analytics-actions">
+                <p className="muted">Показано {assets.length} из {totalAssets}</p>
+                <div className="analytics-actions">
+                  <button type="button" className="ghost-button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+                    Назад
+                  </button>
+                  <span className="muted">Страница {page} / {totalPages}</span>
+                  <button type="button" className="ghost-button" disabled={page >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>
+                    Вперёд
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </section>
         </>
       ) : null}

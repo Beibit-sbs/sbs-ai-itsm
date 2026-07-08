@@ -24,6 +24,11 @@ cp .env.example .env
 docker compose up --build
 ```
 
+По умолчанию в `.env.example` включены режимы для локальной demo-разработки:
+
+- `DEMO_MODE=true`
+- `RUN_STARTUP_DDL=true`
+
 После запуска:
 
 - Frontend: http://localhost:5173
@@ -40,6 +45,13 @@ source .venv/bin/activate
 pip install -e '.[dev]'
 cp ../.env.example ../.env
 uvicorn app.main:app --reload
+```
+
+Миграции (Alembic):
+
+```bash
+cd backend
+alembic upgrade head
 ```
 
 Тесты:
@@ -75,3 +87,24 @@ npm run build
 ## Следующий этап
 
 `FOUNDATION-002 — Tenant, User, Role and Permission Foundation`.
+
+## Production запуск
+
+Для production используется отдельный compose и env-шаблон:
+
+```bash
+cp .env.production.example .env.production
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+```
+
+Критичные параметры production:
+
+- `DEMO_MODE=false` отключает demo-данные.
+- `RUN_STARTUP_DDL=false` отключает runtime DDL на старте приложения.
+- `JWT_SECRET_KEY` должен быть заменен на стойкий секрет.
+
+Рекомендуемая последовательность деплоя:
+
+1. Поднять Postgres/Redis.
+2. Выполнить `alembic upgrade head`.
+3. Запустить backend/frontend через `docker-compose.prod.yml`.

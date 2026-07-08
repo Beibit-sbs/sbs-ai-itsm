@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
@@ -74,6 +74,13 @@ class AssetTicketResponse(BaseModel):
     sla_status: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class AssetListPageResponse(BaseModel):
+    items: list[AssetResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 class ImportPreviewRequest(BaseModel):
@@ -180,8 +187,9 @@ def _current_actor(db: Session, current_user: AuthUserResponse) -> User | None:
     return db.get(User, current_user.id)
 
 
-@router.get("", response_model=list[AssetResponse])
+@router.get("", response_model=AssetListPageResponse)
 def list_assets(
+    q: str | None = Query(default=None, min_length=1),
     source: str | None = Query(default=None),
     verification_status: str | None = Query(default=None),
     without_location: bool = Query(default=False),
@@ -189,12 +197,31 @@ def list_assets(
     assigned_to_name: str | None = Query(default=None),
     purchase_year: int | None = Query(default=None),
     type: str | None = Query(default=None),
+    sort_by: str = Query(default="updated_at"),
+    sort_dir: str = Query(default="desc"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> list[AssetResponse]:
+) -> AssetListPageResponse:
     _ensure_access(current_user)
     statement = _asset_query(current_user)
 
+    if q:
+        pattern = f"%{q.strip()}%"
+        statement = statement.where(
+            or_(
+                Asset.asset_tag.ilike(pattern),
+                Asset.name.ilike(pattern),
+                Asset.serial_number.ilike(pattern),
+                Asset.inventory_number.ilike(pattern),
+                Asset.manufacturer.ilike(pattern),
+                Asset.model.ilike(pattern),
+                Asset.assigned_to_name.ilike(pattern),
+                Asset.department.ilike(pattern),
+                Asset.location.ilike(pattern),
+            )
+        )
     if source:
         statement = statement.where(Asset.source == source)
     if verification_status:
@@ -210,8 +237,24 @@ def list_assets(
     if type:
         statement = statement.where((Asset.type == type) | (Asset.asset_type == type))
 
-    rows = db.execute(statement.order_by(Asset.updated_at.desc(), Asset.created_at.desc())).all()
-    return [
+    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    sort_map = {
+        "asset_tag": Asset.asset_tag,
+        "name": Asset.name,
+        "status": Asset.status,
+        "type": Asset.asset_type,
+        "source": Asset.source,
+        "purchase_year": Asset.purchase_year,
+        "updated_at": Asset.updated_at,
+        "created_at": Asset.created_at,
+    }
+    order_column = sort_map.get(sort_by, Asset.updated_at)
+    direction = asc if sort_dir.lower() == "asc" else desc
+    rows = db.execute(
+        statement.order_by(direction(order_column), Asset.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    ).all()
+
+    items = [
         AssetResponse(
             id=asset.id,
             asset_tag=asset.asset_tag,
@@ -249,6 +292,7 @@ def list_assets(
         )
         for asset, tenant_name in rows
     ]
+    return AssetListPageResponse(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.get("/{asset_id}", response_model=AssetResponse)

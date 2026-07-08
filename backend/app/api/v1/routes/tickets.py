@@ -3,9 +3,9 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
@@ -86,6 +86,13 @@ class TicketListResponse(BaseModel):
 class TicketDetailResponse(TicketListResponse):
     comments: list[TicketCommentResponse] = Field(default_factory=list)
     history_count: int = 0
+
+
+class TicketPageResponse(BaseModel):
+    items: list[TicketListResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 class TicketCreateRequest(BaseModel):
@@ -220,21 +227,72 @@ def _record_notification_history(ticket_id: str, actor_name: str, event_code: st
     )
 
 
-@router.get("", response_model=list[TicketListResponse])
-def list_tickets(current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> list[TicketListResponse]:
+@router.get("", response_model=TicketPageResponse)
+def list_tickets(
+    q: str | None = Query(default=None, min_length=1),
+    status: str | None = Query(default=None),
+    priority: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    assignee_name: str | None = Query(default=None),
+    sort_by: str = Query(default="updated_at"),
+    sort_dir: str = Query(default="desc"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketPageResponse:
     require_permissions(current_user, "tickets.read")
     _ensure_access(current_user)
     categories, priorities, statuses, _, assets = _lookup_maps(db)
-    tickets = db.scalars(_ticket_base_query(current_user, db).order_by(Ticket.updated_at.desc(), Ticket.created_at.desc())).all()
+    statement = _ticket_base_query(current_user, db)
+    if q:
+        pattern = f"%{q.strip()}%"
+        statement = statement.where(
+            or_(
+                Ticket.ticket_number.ilike(pattern),
+                Ticket.title.ilike(pattern),
+                Ticket.requester_name.ilike(pattern),
+                Ticket.requester_email.ilike(pattern),
+                Ticket.department.ilike(pattern),
+                Ticket.location.ilike(pattern),
+                Ticket.assignee_name.ilike(pattern),
+            )
+        )
+    if status:
+        statement = statement.where(Ticket.status == status)
+    if priority:
+        statement = statement.where(Ticket.priority == priority)
+    if category:
+        statement = statement.where(Ticket.category == category)
+    if assignee_name:
+        statement = statement.where(Ticket.assignee_name == assignee_name)
+
     if current_user.role == "requester":
-        tickets = [item for item in tickets if item.requester_email.lower() == current_user.email.lower()]
+        statement = statement.where(func.lower(Ticket.requester_email) == current_user.email.lower())
     if current_user.role == "it_agent":
-        tickets = [item for item in tickets if item.assignee_name and item.assignee_name.lower() == current_user.full_name.lower()]
+        statement = statement.where(func.lower(Ticket.assignee_name) == current_user.full_name.lower())
+
+    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    sort_map = {
+        "ticket_number": Ticket.ticket_number,
+        "priority": Ticket.priority,
+        "status": Ticket.status,
+        "sla_due_at": Ticket.sla_due_at,
+        "updated_at": Ticket.updated_at,
+        "created_at": Ticket.created_at,
+    }
+    order_column = sort_map.get(sort_by, Ticket.updated_at)
+    direction = asc if sort_dir.lower() == "asc" else desc
+    tickets = db.scalars(
+        statement.order_by(direction(order_column), Ticket.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    ).all()
+
     histories = _load_histories(db, [ticket.id for ticket in tickets])
-    return [
+    items = [
         _serialize_ticket(ticket, categories, priorities, statuses, assets, calculate_response_minutes(ticket, histories.get(ticket.id, [])))
         for ticket in tickets
     ]
+    return TicketPageResponse(items=items, total=total, page=page, page_size=page_size)
 
 
 def _ticket_base_query(current_user: AuthUserResponse, db: Session):
