@@ -861,6 +861,127 @@ select:focus {
 	margin-top: 22px;
 }
 
+.import-context {
+	display: grid;
+	gap: 4px;
+	margin-top: 12px;
+}
+
+.import-summary-grid {
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	margin-top: 14px;
+}
+
+.import-preview-filter-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.import-preview-table-wrap {
+	max-height: 520px;
+	overflow: auto;
+	border: 1px solid #244057;
+	border-radius: 12px;
+	background: #091522;
+}
+
+.import-preview-table {
+	min-width: 1120px;
+}
+
+.import-preview-table thead th {
+	position: sticky;
+	top: 0;
+	background: #0f1f30;
+	z-index: 2;
+}
+
+.import-name-cell {
+	max-width: 280px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.import-status-cell {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	align-items: center;
+}
+
+.import-status-badge {
+	font-size: .7rem;
+	text-transform: uppercase;
+}
+
+.import-status-valid,
+.import-status-imported,
+.import-status-updated {
+	color: #91ffd0;
+	background: #0f5d4938;
+	border-color: #33c39166;
+}
+
+.import-status-error {
+	color: #ffc0c0;
+	background: #702e2e4a;
+	border-color: #ff777766;
+}
+
+.import-status-duplicate,
+.import-status-skipped {
+	color: #ffd6b2;
+	background: #4d321b;
+	border-color: #ffb56e55;
+}
+
+.import-flag-badge {
+	font-size: .68rem;
+	text-transform: uppercase;
+}
+
+.import-flag-disposed {
+	color: #d3d7df;
+	background: #1f2733;
+	border-color: #64748b66;
+}
+
+.import-flag-in_stock {
+	color: #c7e6ff;
+	background: #17344e;
+	border-color: #5db3ff55;
+}
+
+.import-flag-needs_location {
+	color: #ffd6b2;
+	background: #4d321b;
+	border-color: #ffb56e55;
+}
+
+.import-empty-note {
+	padding: 12px;
+	margin: 0;
+	border-top: 1px solid #1f3549;
+}
+
+.import-commit-summary {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 8px;
+	padding: 12px;
+	border: 1px solid #244057;
+	border-radius: 12px;
+	background: #0f1f30;
+	margin-top: 12px;
+}
+
+.import-commit-summary .muted {
+	margin: 0;
+}
+
 .asset-list-shell {
 	margin-top: 18px;
 }
@@ -1118,7 +1239,9 @@ select:focus {
 	.dashboard-split,
 	.mini-bar-row,
 	.analytics-score-grid,
-	.analytics-mini-grid {
+	.analytics-mini-grid,
+	.import-summary-grid,
+	.import-commit-summary {
 		grid-template-columns: 1fr;
 	}
 

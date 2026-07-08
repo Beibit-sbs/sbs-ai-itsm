@@ -17,6 +17,8 @@ import { useAuth } from '../auth/AuthContext'
 import AppShell from '../components/AppShell'
 import HealthBadge from '../components/HealthBadge'
 
+type PreviewFilter = 'ALL' | 'VALID' | 'ERROR' | 'DUPLICATE' | 'MISSING_LOCATION' | 'DISPOSED' | 'IN_STOCK'
+
 const statusLabels: Record<string, string> = {
   in_use: 'В эксплуатации',
   in_stock: 'На складе',
@@ -57,6 +59,54 @@ function formatDate(value: string | null | undefined) {
 
 function AssetStatusBadge({ status }: { status: string }) {
   return <span className={`asset-status asset-status-${status}`}>{statusLabels[status] ?? status}</span>
+}
+
+function ImportRowStatusBadge({ status }: { status: string }) {
+  const normalized = status.toLowerCase()
+  const labelMap: Record<string, string> = {
+    valid: 'Валидно',
+    error: 'Ошибка',
+    duplicate: 'Дубликат',
+    skipped: 'Пропущено',
+    imported: 'Создан',
+    updated: 'Обновлён',
+  }
+  return <span className={`badge import-status-badge import-status-${normalized}`}>{labelMap[normalized] ?? status}</span>
+}
+
+function ImportFlagBadge({ kind }: { kind: 'disposed' | 'in_stock' | 'needs_location' }) {
+  const labels: Record<typeof kind, string> = {
+    disposed: 'Списано',
+    in_stock: 'В запасах',
+    needs_location: 'Нет кабинета',
+  }
+  return <span className={`badge import-flag-badge import-flag-${kind}`}>{labels[kind]}</span>
+}
+
+function normalizeLocationValue(rawLocation: unknown) {
+  const value = String(rawLocation ?? '').trim()
+  if (!value || value.toLowerCase() === 'location unknown') return 'Кабинет не указан'
+  return value
+}
+
+function hasDisposedMarker(raw: Record<string, unknown>, normalizedStatus: string) {
+  if (normalizedStatus === 'disposed') return true
+  const markers = [raw.status_m, raw.status_o, raw.status, raw['Статус M'], raw['Статус O']]
+  return markers.some((marker) => String(marker ?? '').toUpperCase().includes('СПИСАНО'))
+}
+
+function hasInStockMarker(raw: Record<string, unknown>, normalizedStatus: string) {
+  if (normalizedStatus === 'in_stock') return true
+  const statusBlob = [raw.status_m, raw.status_o, raw.status, raw['Статус M'], raw['Статус O']]
+    .map((item) => String(item ?? '').toUpperCase())
+    .join(' ')
+  return statusBlob.includes('ПЕРЕВЕДЕНО') && statusBlob.includes('ЗАПАС')
+}
+
+function isMissingLocation(normalized: Record<string, unknown>) {
+  const verificationStatus = String(normalized.verification_status ?? '').toLowerCase()
+  const location = normalizeLocationValue(normalized.location)
+  return verificationStatus === 'needs_location' || location === 'Кабинет не указан'
 }
 
 function downloadErrorRows(rows: AssetImportRow[]) {
@@ -102,6 +152,7 @@ export default function AssetsPage() {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null)
+  const [previewFilter, setPreviewFilter] = useState<PreviewFilter>('ALL')
 
   const canPreviewImport = Boolean(session?.user.permissions.includes('assets.import.preview'))
   const canCommitImport = Boolean(session?.user.permissions.includes('assets.import.commit'))
@@ -263,7 +314,100 @@ export default function AssetsPage() {
   const selectedAsset = selectedAssetQuery.data
   const relatedTickets: AssetTicket[] = relatedTicketsQuery.data ?? []
   const importRows = importRowsQuery.data ?? []
-  const importPreview = importBatchesQuery.data?.find((item) => item.id === activeBatchId)?.summary?.preview as Record<string, unknown> | undefined
+  const activeBatch = importBatchesQuery.data?.find((item) => item.id === activeBatchId)
+  const importPreview = activeBatch?.summary?.preview as Record<string, unknown> | undefined
+
+  const previewMetrics = useMemo(() => {
+    const totalRows = Number(importPreview?.total_rows ?? activeBatch?.total_rows ?? importRows.length)
+    const validRowsFromSummary = Number(importPreview?.valid_rows ?? activeBatch?.valid_rows ?? 0)
+    const errorRowsFromSummary = Number(importPreview?.error_rows ?? activeBatch?.error_rows ?? 0)
+    const duplicateRowsFromSummary = Number(importPreview?.duplicate_rows ?? activeBatch?.skipped_rows ?? 0)
+    const missingLocationFromSummary = Number(importPreview?.missing_location_rows ?? 0)
+    const disposedFromSummary = Number(importPreview?.disposed_rows ?? 0)
+    const inStockFromSummary = Number(importPreview?.in_stock_rows ?? 0)
+
+    const calculated = importRows.reduce(
+      (acc, row) => {
+        const normalized = row.normalized
+        const raw = row.raw
+        const rowStatus = String(row.status ?? '').toLowerCase()
+        const normalizedStatus = String(normalized.status ?? '').toLowerCase()
+        acc.totalRows += 1
+        if (rowStatus === 'valid') acc.validRows += 1
+        if (rowStatus === 'error') acc.errorRows += 1
+        if (rowStatus === 'duplicate') acc.duplicateRows += 1
+        if (isMissingLocation(normalized)) acc.missingLocationRows += 1
+        if (hasDisposedMarker(raw, normalizedStatus)) acc.disposedRows += 1
+        if (hasInStockMarker(raw, normalizedStatus)) acc.inStockRows += 1
+        if (rowStatus === 'imported') acc.createdRows += 1
+        if (rowStatus === 'updated') acc.updatedRows += 1
+        return acc
+      },
+      {
+        totalRows: 0,
+        validRows: 0,
+        errorRows: 0,
+        duplicateRows: 0,
+        missingLocationRows: 0,
+        disposedRows: 0,
+        inStockRows: 0,
+        createdRows: 0,
+        updatedRows: 0,
+      },
+    )
+
+    const validRows = validRowsFromSummary > 0 || importRows.length === 0 ? validRowsFromSummary : calculated.validRows
+    const errorRows = errorRowsFromSummary > 0 || importRows.length === 0 ? errorRowsFromSummary : calculated.errorRows
+    const duplicateRows = duplicateRowsFromSummary > 0 || importRows.length === 0 ? duplicateRowsFromSummary : calculated.duplicateRows
+    const missingLocationRows = missingLocationFromSummary > 0 || importRows.length === 0 ? missingLocationFromSummary : calculated.missingLocationRows
+    const disposedRows = disposedFromSummary > 0 || importRows.length === 0 ? disposedFromSummary : calculated.disposedRows
+    const inStockRows = inStockFromSummary > 0 || importRows.length === 0 ? inStockFromSummary : calculated.inStockRows
+
+    return {
+      totalRows,
+      validRows,
+      errorRows,
+      duplicateRows,
+      missingLocationRows,
+      disposedRows,
+      inStockRows,
+      willImportRows: Math.max(validRows, 0),
+      createdRows: calculated.createdRows,
+      updatedRows: calculated.updatedRows,
+    }
+  }, [importPreview, activeBatch, importRows])
+
+  const filteredImportRows = useMemo(() => {
+    return importRows.filter((row) => {
+      const normalized = row.normalized
+      const rowStatus = String(row.status ?? '').toLowerCase()
+      const normalizedStatus = String(normalized.status ?? '').toLowerCase()
+
+      if (previewFilter === 'ALL') return true
+      if (previewFilter === 'VALID') return rowStatus === 'valid'
+      if (previewFilter === 'ERROR') return rowStatus === 'error'
+      if (previewFilter === 'DUPLICATE') return rowStatus === 'duplicate'
+      if (previewFilter === 'MISSING_LOCATION') return isMissingLocation(normalized)
+      if (previewFilter === 'DISPOSED') return hasDisposedMarker(row.raw, normalizedStatus)
+      if (previewFilter === 'IN_STOCK') return hasInStockMarker(row.raw, normalizedStatus)
+      return true
+    })
+  }, [importRows, previewFilter])
+
+  const hasPreviewContext = Boolean(activeBatchId)
+  const hasPreviewRows = importRows.length > 0
+  const canRefreshPreview = Boolean(activeBatchId)
+  const canCommitValidRows = Boolean(activeBatchId && canCommitImport && previewMetrics.validRows > 0)
+  const canDownloadErrors = previewMetrics.errorRows > 0 || previewMetrics.duplicateRows > 0
+
+  const activeBatchStatusLabel = (() => {
+    const status = String(activeBatch?.status ?? '').toLowerCase()
+    if (!status) return '—'
+    if (status === 'uploaded') return 'Загружен'
+    if (status === 'preview_ready') return 'Preview готов'
+    if (status === 'committed') return 'Завершён'
+    return status
+  })()
 
   return (
     <AppShell title="Активы" subtitle="Инвентаризация, привязка к заявкам и срокам обслуживания уже читаются из backend.">
@@ -355,12 +499,12 @@ export default function AssetsPage() {
                 await previewMutation.mutateAsync(batch.id)
               }}
             >
-              Загрузить и проверить
+              {uploadMutation.isPending || previewMutation.isPending ? 'Проверяем...' : 'Загрузить и проверить'}
             </button>
             <button
               type="button"
               className="ghost-button"
-              disabled={!activeBatchId || previewMutation.isPending}
+              disabled={!canRefreshPreview || previewMutation.isPending}
               onClick={() => {
                 if (!activeBatchId) return
                 previewMutation.mutate(activeBatchId)
@@ -371,9 +515,11 @@ export default function AssetsPage() {
             <button
               type="button"
               className="ghost-button"
-              disabled={!activeBatchId || !canCommitImport || commitMutation.isPending}
+              disabled={!canCommitValidRows || commitMutation.isPending}
               onClick={() => {
                 if (!activeBatchId) return
+                const confirmed = window.confirm(`Будет импортировано ${previewMetrics.willImportRows} валидных активов. Продолжить?`)
+                if (!confirmed) return
                 commitMutation.mutate(activeBatchId)
               }}
             >
@@ -382,64 +528,115 @@ export default function AssetsPage() {
             <button
               type="button"
               className="ghost-button"
-              disabled={importRows.length === 0}
+              disabled={!canDownloadErrors}
               onClick={() => downloadErrorRows(importRows)}
             >
-              Скачать отчёт ошибок
+              {canDownloadErrors ? 'Скачать отчёт ошибок' : 'Ошибок нет'}
             </button>
-            <button type="button" className="ghost-button" onClick={() => setActiveBatchId(null)}>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => {
+                setSelectedFile(null)
+                setActiveBatchId(null)
+                setPreviewFilter('ALL')
+              }}
+            >
               Отменить импорт
             </button>
+            <button type="button" className="ghost-button" onClick={() => setSourceFilter('excel_import')}>
+              Показать импортированные активы
+            </button>
+          </div>
+          <div className="import-context">
+            <p className="muted">Выбран файл: {selectedFile?.name ?? 'Файл не выбран'}</p>
+            {hasPreviewContext ? (
+              <>
+                <p className="muted">Загружен файл: {activeBatch?.original_file_name ?? selectedFile?.name ?? '—'}</p>
+                <p className="muted">Batch: {activeBatch?.id ?? activeBatchId}</p>
+                <p className="muted">Статус: {activeBatchStatusLabel}</p>
+              </>
+            ) : null}
           </div>
           {uploadMutation.isError || previewMutation.isError || commitMutation.isError ? (
             <p className="error-message">Не удалось выполнить импорт. Проверьте формат файла и права доступа.</p>
           ) : null}
-          <div className="metric-grid assets-metrics analytics-mini-grid">
-            <article className="metric-card"><span>Всего строк</span><strong>{Number(importPreview?.total_rows ?? importSummaryQuery.data?.total_rows ?? 0)}</strong></article>
-            <article className="metric-card"><span>Валидных</span><strong>{Number(importPreview?.valid_rows ?? 0)}</strong></article>
-            <article className="metric-card"><span>Ошибок</span><strong>{Number(importPreview?.error_rows ?? 0)}</strong></article>
-            <article className="metric-card"><span>Дубликаты</span><strong>{Number(importPreview?.duplicate_rows ?? 0)}</strong></article>
-            <article className="metric-card"><span>Списанные</span><strong>{Number(importPreview?.disposed_rows ?? 0)}</strong></article>
-            <article className="metric-card"><span>Без кабинета</span><strong>{Number(importPreview?.missing_location_rows ?? 0)}</strong></article>
-            <article className="metric-card"><span>Переведено в запасы</span><strong>{Number(importPreview?.in_stock_rows ?? 0)}</strong></article>
-            <article className="metric-card"><span>Импортировано batch</span><strong>{importBatchesQuery.data?.find((item) => item.id === activeBatchId)?.imported_rows ?? 0}</strong></article>
+          {hasPreviewContext ? (
+            <div className="metric-grid assets-metrics import-summary-grid">
+              <article className="metric-card"><span>Всего строк</span><strong>{previewMetrics.totalRows}</strong></article>
+              <article className="metric-card"><span>Валидные</span><strong>{previewMetrics.validRows}</strong></article>
+              <article className="metric-card"><span>Ошибки</span><strong>{previewMetrics.errorRows}</strong></article>
+              <article className="metric-card"><span>Дубликаты</span><strong>{previewMetrics.duplicateRows}</strong></article>
+              <article className="metric-card"><span>Без кабинета</span><strong>{previewMetrics.missingLocationRows}</strong></article>
+              <article className="metric-card"><span>Списано</span><strong>{previewMetrics.disposedRows}</strong></article>
+              <article className="metric-card"><span>В запасах</span><strong>{previewMetrics.inStockRows}</strong></article>
+              <article className="metric-card"><span>Будет импортировано</span><strong>{previewMetrics.willImportRows}</strong></article>
+            </div>
+          ) : null}
+          <div className="import-preview-filter-row">
+            <button type="button" className={`ghost-button ${previewFilter === 'ALL' ? 'admin-tab-active' : ''}`} onClick={() => setPreviewFilter('ALL')}>Все</button>
+            <button type="button" className={`ghost-button ${previewFilter === 'VALID' ? 'admin-tab-active' : ''}`} onClick={() => setPreviewFilter('VALID')}>Только валидные</button>
+            <button type="button" className={`ghost-button ${previewFilter === 'ERROR' ? 'admin-tab-active' : ''}`} onClick={() => setPreviewFilter('ERROR')}>Ошибки</button>
+            <button type="button" className={`ghost-button ${previewFilter === 'DUPLICATE' ? 'admin-tab-active' : ''}`} onClick={() => setPreviewFilter('DUPLICATE')}>Дубликаты</button>
+            <button type="button" className={`ghost-button ${previewFilter === 'MISSING_LOCATION' ? 'admin-tab-active' : ''}`} onClick={() => setPreviewFilter('MISSING_LOCATION')}>Без кабинета</button>
+            <button type="button" className={`ghost-button ${previewFilter === 'DISPOSED' ? 'admin-tab-active' : ''}`} onClick={() => setPreviewFilter('DISPOSED')}>Списанные</button>
+            <button type="button" className={`ghost-button ${previewFilter === 'IN_STOCK' ? 'admin-tab-active' : ''}`} onClick={() => setPreviewFilter('IN_STOCK')}>В запасах</button>
           </div>
-          <div className="ticket-table-wrap analytics-table-space">
-            <table className="ticket-table">
+          <div className="ticket-table-wrap analytics-table-space import-preview-table-wrap">
+            <table className="ticket-table import-preview-table">
               <thead>
                 <tr>
-                  <th>row_number</th>
-                  <th>inventory_number</th>
-                  <th>name</th>
-                  <th>type</th>
-                  <th>status</th>
-                  <th>assigned_to_name</th>
-                  <th>location</th>
-                  <th>purchase_year</th>
-                  <th>error_message</th>
+                  <th>№ строки</th>
+                  <th>Инв. номер</th>
+                  <th>Наименование</th>
+                  <th>Тип</th>
+                  <th>Статус</th>
+                  <th>МОЛ</th>
+                  <th>Кабинет</th>
+                  <th>Год</th>
+                  <th>Ошибка</th>
                 </tr>
               </thead>
               <tbody>
-                {importRows.map((row) => (
+                {filteredImportRows.map((row) => {
+                  const normalizedStatus = String(row.normalized.status ?? '').toLowerCase()
+                  const needsLocation = isMissingLocation(row.normalized)
+                  const isDisposed = hasDisposedMarker(row.raw, normalizedStatus)
+                  const isInStock = hasInStockMarker(row.raw, normalizedStatus)
+                  return (
                   <tr key={row.id}>
                     <td>{row.row_number}</td>
                     <td>{String(row.normalized.inventory_number ?? '—')}</td>
-                    <td>{String(row.normalized.name ?? '—')}</td>
+                    <td className="import-name-cell" title={String(row.normalized.name ?? '—')}>{String(row.normalized.name ?? '—')}</td>
                     <td>{typeLabels[String(row.normalized.asset_type ?? '')] ?? String(row.normalized.asset_type ?? '—')}</td>
-                    <td>{String(row.status)}</td>
+                    <td>
+                      <div className="import-status-cell">
+                        <ImportRowStatusBadge status={String(row.status)} />
+                        {isDisposed ? <ImportFlagBadge kind="disposed" /> : null}
+                        {isInStock ? <ImportFlagBadge kind="in_stock" /> : null}
+                        {needsLocation ? <ImportFlagBadge kind="needs_location" /> : null}
+                      </div>
+                    </td>
                     <td>{String(row.normalized.assigned_to_name ?? '—')}</td>
-                    <td>{String(row.normalized.location ?? '—')}</td>
+                    <td>{normalizeLocationValue(row.normalized.location)}</td>
                     <td>{String(row.normalized.purchase_year ?? '—')}</td>
                     <td>{row.error_message ?? '—'}</td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
+            {!hasPreviewRows ? <p className="muted import-empty-note">Строки preview появятся после проверки файла.</p> : null}
           </div>
           {commitMutation.data ? (
-            <p className="muted">
-              Импорт завершён: обработано {commitMutation.data.total_rows}, импортировано {commitMutation.data.imported_rows}, ошибок {commitMutation.data.error_rows}.
-            </p>
+            <div className="import-commit-summary">
+              <p className="muted">Batch завершён: {activeBatch?.status === 'committed' ? 'да' : 'в процессе'}</p>
+              <p className="muted">Создано: {previewMetrics.createdRows}</p>
+              <p className="muted">Обновлено: {previewMetrics.updatedRows}</p>
+              <p className="muted">Пропущено: {commitMutation.data.skipped_rows ?? 0}</p>
+              <p className="muted">Ошибки: {commitMutation.data.error_rows ?? 0}</p>
+              <p className="muted">Дубликаты: {previewMetrics.duplicateRows}</p>
+            </div>
           ) : null}
         </section>
       ) : null}
