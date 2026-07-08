@@ -23,13 +23,17 @@ export default function CopilotPage() {
   const { session } = useAuth()
   const [description, setDescription] = useState('')
   const [result, setResult] = useState<AiSuggestion | null>(null)
+  const [actionHint, setActionHint] = useState<string | null>(null)
 
   const analyzeMutation = useMutation({
     mutationFn: async (text: string) => {
       if (!session?.access_token) throw new Error('No session')
       return analyzeTicketWithAi(session.access_token, { input_text: text })
     },
-    onSuccess: (payload) => setResult(payload),
+    onSuccess: (payload) => {
+      setActionHint(null)
+      setResult(payload)
+    },
   })
 
   const createTicketMutation = useMutation({
@@ -46,6 +50,9 @@ export default function CopilotPage() {
         priority: payload.recommended_priority,
         assignee_name: payload.recommended_assignee,
       })
+    },
+    onSuccess: () => {
+      setActionHint('Черновик заявки успешно создан на основе AI-анализа.')
     },
   })
 
@@ -67,6 +74,9 @@ export default function CopilotPage() {
         status: 'draft',
         visibility: 'internal',
       })
+    },
+    onSuccess: () => {
+      setActionHint('Черновик статьи базы знаний успешно создан.')
     },
   })
 
@@ -105,6 +115,7 @@ export default function CopilotPage() {
           >
             {analyzeMutation.isPending ? 'Анализ...' : 'Проанализировать'}
           </button>
+          {analyzeMutation.isError ? <p className="error-message">Не удалось выполнить AI-анализ. Повторите запрос.</p> : null}
         </article>
 
         <article className="copilot-panel">
@@ -145,13 +156,34 @@ export default function CopilotPage() {
               </div>
 
               <div className="form-stack">
-                <button type="button" disabled={createTicketMutation.isPending} onClick={() => createTicketMutation.mutate(result)}>
+                <button
+                  type="button"
+                  disabled={createTicketMutation.isPending || createArticleMutation.isPending}
+                  onClick={() => {
+                    const confirmed = window.confirm('Создать заявку из текущего AI-анализа?')
+                    if (!confirmed) return
+                    createTicketMutation.mutate(result)
+                  }}
+                >
                   {createTicketMutation.isPending ? 'Создание заявки...' : 'Создать заявку из анализа'}
                 </button>
-                <button type="button" className="ghost-button" disabled={createArticleMutation.isPending} onClick={() => createArticleMutation.mutate(result)}>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={createArticleMutation.isPending || createTicketMutation.isPending}
+                  onClick={() => {
+                    const confirmed = window.confirm('Создать статью базы знаний из текущего AI-анализа?')
+                    if (!confirmed) return
+                    createArticleMutation.mutate(result)
+                  }}
+                >
                   {createArticleMutation.isPending ? 'Создание статьи...' : 'Создать статью из решения'}
                 </button>
               </div>
+
+              {createTicketMutation.isError ? <p className="error-message">Не удалось создать заявку из AI-анализа.</p> : null}
+              {createArticleMutation.isError ? <p className="error-message">Не удалось создать статью из AI-анализа.</p> : null}
+              {actionHint ? <p className="state-panel">{actionHint}</p> : null}
             </div>
           ) : (
             <p className="muted">Нажмите Проанализировать, чтобы получить рекомендации MockAI.</p>

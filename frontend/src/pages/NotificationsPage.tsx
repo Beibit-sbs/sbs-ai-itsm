@@ -37,6 +37,7 @@ export default function NotificationsPage() {
   const queryClient = useQueryClient()
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [typeFilter, setTypeFilter] = useState('ALL')
+  const [activeNotificationId, setActiveNotificationId] = useState<string | null>(null)
 
   const notificationsQuery = useQuery({
     queryKey: ['notifications', session?.access_token, statusFilter, typeFilter],
@@ -56,8 +57,12 @@ export default function NotificationsPage() {
       return markNotificationAsRead(session.access_token, notificationId)
     },
     onSuccess: async () => {
+      setActiveNotificationId(null)
       await queryClient.invalidateQueries({ queryKey: ['notifications'] })
       await queryClient.invalidateQueries({ queryKey: ['notifications-unread-count'] })
+    },
+    onError: () => {
+      setActiveNotificationId(null)
     },
   })
 
@@ -121,18 +126,29 @@ export default function NotificationsPage() {
             </select>
           </label>
         </div>
-        <button type="button" className="ghost-button tickets-create-button" onClick={() => readAllMutation.mutate()} disabled={readAllMutation.isPending}>
+        <button
+          type="button"
+          className="ghost-button tickets-create-button"
+          onClick={() => {
+            const confirmed = window.confirm('Отметить все текущие уведомления как прочитанные?')
+            if (!confirmed) return
+            readAllMutation.mutate()
+          }}
+          disabled={readAllMutation.isPending || notifications.length === 0}
+        >
           {readAllMutation.isPending ? 'Обновление…' : 'Отметить все как прочитанные'}
         </button>
       </section>
 
+      {markReadMutation.isError || readAllMutation.isError ? <p className="error-message">Не удалось обновить статус уведомлений.</p> : null}
+
       <section className="foundation-card notification-list-shell">
         {notificationsQuery.isPending ? (
-          <p className="muted">Загрузка уведомлений…</p>
+          <p className="state-panel state-panel-loading">Загрузка уведомлений…</p>
         ) : notificationsQuery.isError ? (
           <p className="error-message">Не удалось загрузить уведомления.</p>
         ) : notifications.length === 0 ? (
-          <p className="muted">По выбранным фильтрам уведомлений нет.</p>
+          <p className="state-panel state-panel-empty">По выбранным фильтрам уведомлений нет.</p>
         ) : (
           <div className="notification-grid">
             {[...grouped.unread, ...grouped.read].map((notification) => (
@@ -154,8 +170,16 @@ export default function NotificationsPage() {
                   </small>
                 ) : null}
                 {notification.status !== 'READ' ? (
-                  <button type="button" className="ghost-button" onClick={() => markReadMutation.mutate(notification.id)} disabled={markReadMutation.isPending}>
-                    Отметить прочитанным
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => {
+                      setActiveNotificationId(notification.id)
+                      markReadMutation.mutate(notification.id)
+                    }}
+                    disabled={markReadMutation.isPending || readAllMutation.isPending}
+                  >
+                    {markReadMutation.isPending && activeNotificationId === notification.id ? 'Обновление…' : 'Отметить прочитанным'}
                   </button>
                 ) : null}
               </article>

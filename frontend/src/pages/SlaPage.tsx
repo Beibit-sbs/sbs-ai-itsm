@@ -87,9 +87,11 @@ export default function SlaPage() {
           <p className="eyebrow">SLA POLICIES</p>
           <h2>Политики обслуживания</h2>
           {policiesQuery.isPending ? (
-            <p className="muted">Загрузка SLA…</p>
+            <p className="state-panel state-panel-loading">Загрузка SLA…</p>
           ) : policiesQuery.isError ? (
             <p className="error-message">Не удалось получить список SLA-политик.</p>
+          ) : policies.length === 0 ? (
+            <p className="state-panel state-panel-empty">Политики SLA не найдены.</p>
           ) : (
             <div className="sla-grid">
               {policies.map((policy) => (
@@ -118,11 +120,11 @@ export default function SlaPage() {
           <p className="eyebrow">BREACH QUEUE</p>
           <h2>Нарушения SLA</h2>
           {breachesQuery.isPending ? (
-            <p className="muted">Загрузка нарушений…</p>
+            <p className="state-panel state-panel-loading">Загрузка нарушений…</p>
           ) : breachesQuery.isError ? (
             <p className="error-message">Не удалось получить список нарушений SLA.</p>
           ) : breaches.length === 0 ? (
-            <p className="muted">Активных нарушений сейчас нет.</p>
+            <p className="state-panel state-panel-empty">Активных нарушений сейчас нет.</p>
           ) : (
             <div className="activity-list">
               {breaches.map((breach) => (

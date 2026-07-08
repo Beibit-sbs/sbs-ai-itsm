@@ -51,11 +51,22 @@ export default function EmailLogPage() {
             <Link to="/notifications">Уведомления</Link>
             <Link to="/notifications/email-log" className="active">Email log</Link>
           </div>
-          <button type="button" className="ghost-button" onClick={() => testEmailMutation.mutate()} disabled={testEmailMutation.isPending}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => {
+              const confirmed = window.confirm('Сгенерировать тестовое письмо в mock-email журнале?')
+              if (!confirmed) return
+              testEmailMutation.mutate()
+            }}
+            disabled={testEmailMutation.isPending}
+          >
             {testEmailMutation.isPending ? 'Создание…' : 'Тестовый mock-email'}
           </button>
         </div>
       </section>
+
+      {testEmailMutation.isError ? <p className="error-message">Не удалось создать тестовый mock-email.</p> : null}
 
       <section className="metric-grid dashboard-metrics">
         <article className="metric-card">
@@ -77,11 +88,11 @@ export default function EmailLogPage() {
 
       <section className="foundation-card notification-list-shell">
         {emailLogQuery.isPending ? (
-          <p className="muted">Загрузка email log…</p>
+          <p className="state-panel state-panel-loading">Загрузка email log…</p>
         ) : emailLogQuery.isError ? (
           <p className="error-message">Не удалось загрузить email log.</p>
         ) : logs.length === 0 ? (
-          <p className="muted">Лог пуст. Создайте тестовый mock-email.</p>
+          <p className="state-panel state-panel-empty">Лог пуст. Создайте тестовый mock-email.</p>
         ) : (
           <div className="ticket-table-wrap">
             <table className="ticket-table">

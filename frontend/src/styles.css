@@ -19,7 +19,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
 	font: inherit;
 }
 
@@ -144,7 +145,24 @@ input {
 	outline: none;
 }
 
+textarea {
+	width: 100%;
+	border: 1px solid #36536d;
+	border-radius: 13px;
+	padding: 14px 15px;
+	color: white;
+	background: #07111f;
+	outline: none;
+	resize: vertical;
+	min-height: 96px;
+}
+
 input:focus {
+	border-color: #50caff;
+	box-shadow: 0 0 0 3px #50caff22;
+}
+
+textarea:focus {
 	border-color: #50caff;
 	box-shadow: 0 0 0 3px #50caff22;
 }
@@ -510,6 +528,10 @@ button {
 	padding: 18px 20px;
 }
 
+.tickets-create-button {
+	align-self: end;
+}
+
 .tickets-toolbar-group {
 	display: grid;
 	grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -545,6 +567,14 @@ select:focus {
 	overflow-x: auto;
 }
 
+.ticket-table-shell {
+	margin-top: 18px;
+	padding: 20px;
+	border: 1px solid #243f57;
+	border-radius: 18px;
+	background: #0c1a29d9;
+}
+
 .ticket-table {
 	width: 100%;
 	border-collapse: collapse;
@@ -571,6 +601,158 @@ select:focus {
 	margin: 4px 0 0;
 	font-size: .82rem;
 	color: #7f9ab0;
+}
+
+.row-action {
+	min-width: 100px;
+}
+
+.row-selected {
+	background: #17344e66;
+}
+
+.row-overdue {
+	background: #5e202022;
+}
+
+.ticket-asset-cell,
+.ticket-sla-cell {
+	display: grid;
+	gap: 4px;
+}
+
+.ticket-sla-cell small {
+	color: #7f9ab0;
+}
+
+.inline-pill {
+	display: inline-flex;
+	align-items: center;
+	padding: 4px 9px;
+	border-radius: 999px;
+	font-size: .75rem;
+	font-weight: 700;
+	border: 1px solid transparent;
+}
+
+.detail-fields {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px;
+}
+
+.detail-fields div {
+	padding: 10px;
+	border: 1px solid #244057;
+	border-radius: 12px;
+	background: #0f1f30;
+	display: grid;
+	gap: 4px;
+}
+
+.detail-fields span {
+	color: #8aa5bb;
+	font-size: .74rem;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+	font-weight: 700;
+}
+
+.detail-fields strong {
+	font-size: .9rem;
+	color: #d9ecf8;
+}
+
+.form-stack {
+	display: grid;
+	gap: 10px;
+}
+
+.comment-box {
+	padding: 12px;
+	border-radius: 12px;
+	border: 1px solid #244057;
+	background: #0f1f30;
+	display: grid;
+	gap: 10px;
+}
+
+.comment-box h4,
+.ticket-detail-panel h3 {
+	margin: 0;
+}
+
+.ticket-detail-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 14px;
+}
+
+.ticket-detail-panel {
+	padding: 14px;
+	border-radius: 14px;
+	border: 1px solid #244057;
+	background: #0f1f30;
+	display: grid;
+	gap: 12px;
+}
+
+.activity-panel {
+	margin-top: 14px;
+}
+
+.activity-columns {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 14px;
+}
+
+.asset-table-layout {
+	display: grid;
+	grid-template-columns: 1.4fr .9fr;
+	gap: 14px;
+}
+
+.asset-table-wrap,
+.asset-detail-panel {
+	padding: 16px;
+	border: 1px solid #243f57;
+	border-radius: 16px;
+	background: #0c1a29d9;
+}
+
+.asset-detail-panel {
+	display: grid;
+	gap: 12px;
+	align-content: start;
+}
+
+.asset-detail-panel h3 {
+	margin: 0;
+}
+
+.state-panel {
+	padding: 14px;
+	border-radius: 12px;
+	border: 1px solid #244057;
+	background: #0f1f30;
+	color: #b8cde0;
+}
+
+.state-panel-loading {
+	border-color: #35617d;
+	background: #11283c;
+}
+
+.state-panel-empty {
+	border-style: dashed;
+	color: #8fa6bb;
+}
+
+.state-panel-error {
+	border-color: #ff777766;
+	background: #4a232b;
+	color: #ffd4d4;
 }
 
 .modal-form {

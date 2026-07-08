@@ -53,6 +53,7 @@ export default function IntegrationsPage() {
   const [typeFilter, setTypeFilter] = useState('ALL')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [previewResult, setPreviewResult] = useState('')
+  const [actionError, setActionError] = useState('')
 
   const overviewQuery = useQuery({
     queryKey: ['integration-analytics-overview', session?.access_token],
@@ -103,9 +104,11 @@ export default function IntegrationsPage() {
       return runIntegrationHealthCheck(session.access_token, systemId)
     },
     onSuccess: async (data) => {
+      setActionError('')
       setPreviewResult(JSON.stringify(data, null, 2))
       await refetchCore()
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Health check failed'),
   })
 
   const testMutation = useMutation({
@@ -114,9 +117,11 @@ export default function IntegrationsPage() {
       return runIntegrationTestConnection(session.access_token, systemId)
     },
     onSuccess: async (data) => {
+      setActionError('')
       setPreviewResult(JSON.stringify(data, null, 2))
       await refetchCore()
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Connection test failed'),
   })
 
   const importMutation = useMutation({
@@ -125,9 +130,11 @@ export default function IntegrationsPage() {
       return createIntegrationImportJob(session.access_token, payload)
     },
     onSuccess: async (data) => {
+      setActionError('')
       setPreviewResult(JSON.stringify(data, null, 2))
       await refetchCore()
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Import preview failed'),
   })
 
   const simulateMutation = useMutation({
@@ -136,9 +143,11 @@ export default function IntegrationsPage() {
       return simulateIntegrationWebhook(session.access_token, webhookId, { payload: { source: 'ui-demo', severity: 'high' }, create_demo_ticket: true })
     },
     onSuccess: async (data) => {
+      setActionError('')
       setPreviewResult(JSON.stringify(data, null, 2))
       await refetchCore()
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Webhook simulation failed'),
   })
 
   const mockActionMutation = useMutation({
@@ -151,9 +160,11 @@ export default function IntegrationsPage() {
       return runMockWebhookReceive(session.access_token, true)
     },
     onSuccess: async (data) => {
+      setActionError('')
       setPreviewResult(JSON.stringify(data, null, 2))
       await refetchCore()
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Mock action failed'),
   })
 
   const overview = overviewQuery.data?.integrations
@@ -208,6 +219,8 @@ export default function IntegrationsPage() {
         </div>
       </section>
 
+      {actionError ? <p className="error-message">{actionError}</p> : null}
+
       {activeTab === 'overview' ? (
         <section className="foundation-card dashboard-split admin-panel">
           <div>
@@ -227,6 +240,8 @@ export default function IntegrationsPage() {
             <p className="eyebrow">RECENT EVENTS</p>
             <h2>Последние integration события</h2>
             <div className="activity-list">
+              {overviewQuery.isPending ? <p className="state-panel state-panel-loading">Загрузка событий…</p> : null}
+              {!overviewQuery.isPending && (overview?.recent_integration_events ?? []).length === 0 ? <p className="state-panel state-panel-empty">События интеграций пока отсутствуют.</p> : null}
               {(overview?.recent_integration_events ?? []).map((item) => (
                 <article className="activity-item" key={item.id}>
                   <header><strong>{item.event_type}</strong><span className={`badge ${statusBadge(item.status)}`}>{item.status}</span></header>
@@ -262,6 +277,8 @@ export default function IntegrationsPage() {
               <table className="ticket-table">
                 <thead><tr><th>System</th><th>Type</th><th>Status</th><th>Last health</th><th>Capabilities</th><th /></tr></thead>
                 <tbody>
+                  {systemsQuery.isPending ? <tr><td colSpan={6}><p className="state-panel state-panel-loading">Загрузка систем…</p></td></tr> : null}
+                  {!systemsQuery.isPending && systems.length === 0 ? <tr><td colSpan={6}><p className="state-panel state-panel-empty">Системы по фильтрам не найдены.</p></td></tr> : null}
                   {systems.map((item) => (
                     <tr key={item.id}>
                       <td><strong>{item.name}</strong><p className="table-subtext">{item.code}</p></td>
@@ -271,13 +288,18 @@ export default function IntegrationsPage() {
                       <td>{item.capabilities.join(', ')}</td>
                       <td>
                         <div className="analytics-actions">
-                          <button type="button" className="ghost-button" onClick={() => healthMutation.mutate(item.id)}>Health check</button>
-                          <button type="button" className="ghost-button" onClick={() => testMutation.mutate(item.id)}>Test connection</button>
+                          <button type="button" className="ghost-button" onClick={() => healthMutation.mutate(item.id)} disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}>Health check</button>
+                          <button type="button" className="ghost-button" onClick={() => testMutation.mutate(item.id)} disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}>Test connection</button>
                           {(item.system_type === 'ldap' || item.system_type === 'zimbra' || item.system_type === 'platonus' || item.system_type === 'moodle') ? (
                             <button
                               type="button"
                               className="ghost-button"
-                              onClick={() => importMutation.mutate({ external_system_id: item.id, job_type: `${item.system_type}_preview` })}
+                              onClick={() => {
+                                const confirmed = window.confirm(`Запустить import preview для ${item.name}?`)
+                                if (!confirmed) return
+                                importMutation.mutate({ external_system_id: item.id, job_type: `${item.system_type}_preview` })
+                              }}
+                              disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}
                             >
                               Import preview
                             </button>
@@ -299,6 +321,8 @@ export default function IntegrationsPage() {
             <p className="eyebrow">PROVIDER REGISTRY</p>
             <h2>Провайдеры</h2>
             <div className="activity-list">
+              {providersQuery.isPending ? <p className="state-panel state-panel-loading">Загрузка провайдеров…</p> : null}
+              {!providersQuery.isPending && providers.length === 0 ? <p className="state-panel state-panel-empty">Провайдеры не найдены.</p> : null}
               {providers.map((item) => (
                 <article className="activity-item" key={item.code}>
                   <header><strong>{item.name}</strong><span className={`badge ${statusBadge(item.status)}`}>{item.status}</span></header>
@@ -332,6 +356,8 @@ export default function IntegrationsPage() {
             <table className="ticket-table">
               <thead><tr><th>Job type</th><th>Status</th><th>Total</th><th>Success</th><th>Failed</th><th>Started</th><th>Finished</th><th>Error</th></tr></thead>
               <tbody>
+                {jobsQuery.isPending ? <tr><td colSpan={8}><p className="state-panel state-panel-loading">Загрузка import jobs…</p></td></tr> : null}
+                {!jobsQuery.isPending && jobs.length === 0 ? <tr><td colSpan={8}><p className="state-panel state-panel-empty">Import jobs отсутствуют.</p></td></tr> : null}
                 {jobs.map((item) => (
                   <tr key={item.id}>
                     <td>{item.job_type}</td>
@@ -356,6 +382,8 @@ export default function IntegrationsPage() {
             <table className="ticket-table">
               <thead><tr><th>Name</th><th>Path</th><th>Target</th><th>Status</th><th>Secret ref</th><th /></tr></thead>
               <tbody>
+                {webhooksQuery.isPending ? <tr><td colSpan={6}><p className="state-panel state-panel-loading">Загрузка webhooks…</p></td></tr> : null}
+                {!webhooksQuery.isPending && webhooks.length === 0 ? <tr><td colSpan={6}><p className="state-panel state-panel-empty">Webhook endpoints отсутствуют.</p></td></tr> : null}
                 {webhooks.map((item) => (
                   <tr key={item.id}>
                     <td>{item.name}</td>
@@ -363,7 +391,11 @@ export default function IntegrationsPage() {
                     <td>{item.target_system}</td>
                     <td><span className={`badge ${item.is_active ? 'badge-positive' : 'badge-danger'}`}>{item.is_active ? 'active' : 'inactive'}</span></td>
                     <td>{item.secret_ref ?? '—'}</td>
-                    <td><button type="button" className="ghost-button" onClick={() => simulateMutation.mutate(item.id)}>Simulate</button></td>
+                    <td><button type="button" className="ghost-button" onClick={() => {
+                      const confirmed = window.confirm(`Симулировать webhook ${item.name}?`)
+                      if (!confirmed) return
+                      simulateMutation.mutate(item.id)
+                    }} disabled={simulateMutation.isPending}>Simulate</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -378,6 +410,8 @@ export default function IntegrationsPage() {
             <table className="ticket-table">
               <thead><tr><th>Date</th><th>Direction</th><th>Type</th><th>Status</th><th>External system</th><th>Correlation</th><th>Error</th></tr></thead>
               <tbody>
+                {eventsQuery.isPending ? <tr><td colSpan={7}><p className="state-panel state-panel-loading">Загрузка integration events…</p></td></tr> : null}
+                {!eventsQuery.isPending && events.length === 0 ? <tr><td colSpan={7}><p className="state-panel state-panel-empty">Integration events отсутствуют.</p></td></tr> : null}
                 {events.map((item) => (
                   <tr key={item.id}>
                     <td>{formatDateTime(item.created_at)}</td>
@@ -401,6 +435,8 @@ export default function IntegrationsPage() {
             <table className="ticket-table">
               <thead><tr><th>Source</th><th>Target</th><th>External system</th><th>Mapping</th><th>Status</th></tr></thead>
               <tbody>
+                {mappingsQuery.isPending ? <tr><td colSpan={5}><p className="state-panel state-panel-loading">Загрузка mappings…</p></td></tr> : null}
+                {!mappingsQuery.isPending && mappings.length === 0 ? <tr><td colSpan={5}><p className="state-panel state-panel-empty">Mapping-конфигурации отсутствуют.</p></td></tr> : null}
                 {mappings.map((item) => (
                   <tr key={item.id}>
                     <td>{item.source_entity}</td>
@@ -422,11 +458,11 @@ export default function IntegrationsPage() {
             <p className="eyebrow">MOCK ACTIONS</p>
             <h2>Preview сценарии</h2>
             <div className="analytics-actions">
-              <button type="button" onClick={() => mockActionMutation.mutate('ldap')}>Pull LDAP users</button>
-              <button type="button" onClick={() => mockActionMutation.mutate('zimbra')}>Pull Zimbra mailboxes</button>
-              <button type="button" onClick={() => mockActionMutation.mutate('platonus')}>Pull Platonus users</button>
-              <button type="button" onClick={() => mockActionMutation.mutate('moodle')}>Pull Moodle users</button>
-              <button type="button" onClick={() => mockActionMutation.mutate('webhook')}>Simulate webhook event</button>
+              <button type="button" onClick={() => mockActionMutation.mutate('ldap')} disabled={mockActionMutation.isPending}>Pull LDAP users</button>
+              <button type="button" onClick={() => mockActionMutation.mutate('zimbra')} disabled={mockActionMutation.isPending}>Pull Zimbra mailboxes</button>
+              <button type="button" onClick={() => mockActionMutation.mutate('platonus')} disabled={mockActionMutation.isPending}>Pull Platonus users</button>
+              <button type="button" onClick={() => mockActionMutation.mutate('moodle')} disabled={mockActionMutation.isPending}>Pull Moodle users</button>
+              <button type="button" onClick={() => mockActionMutation.mutate('webhook')} disabled={mockActionMutation.isPending}>Simulate webhook event</button>
             </div>
           </div>
           <div>

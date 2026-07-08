@@ -45,6 +45,7 @@ export default function AdminPage() {
   const [auditActionFilter, setAuditActionFilter] = useState('')
   const [auditActorFilter, setAuditActorFilter] = useState('')
   const [auditEntityFilter, setAuditEntityFilter] = useState('')
+  const [actionError, setActionError] = useState<string>('')
   const [newUser, setNewUser] = useState({
     email: '',
     full_name: '',
@@ -126,10 +127,12 @@ export default function AdminPage() {
       })
     },
     onSuccess: async () => {
+      setActionError('')
       setNewUser({ email: '', full_name: '', position: '', department: '', phone: '', password: 'Sbs!2026', role_id: '' })
       await queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       await queryClient.invalidateQueries({ queryKey: ['admin-audit'] })
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Не удалось создать пользователя'),
   })
 
   const toggleUserMutation = useMutation({
@@ -138,10 +141,12 @@ export default function AdminPage() {
       return payload.active ? activateAdminUser(session.access_token, payload.userId) : deactivateAdminUser(session.access_token, payload.userId)
     },
     onSuccess: async () => {
+      setActionError('')
       await queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       await queryClient.invalidateQueries({ queryKey: ['admin-audit'] })
       await queryClient.invalidateQueries({ queryKey: ['security-session-overview'] })
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Не удалось изменить статус пользователя'),
   })
 
   const assignRoleMutation = useMutation({
@@ -150,9 +155,11 @@ export default function AdminPage() {
       return assignUserRoles(session.access_token, payload.userId, [payload.roleId])
     },
     onSuccess: async () => {
+      setActionError('')
       await queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       await queryClient.invalidateQueries({ queryKey: ['admin-audit'] })
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Не удалось назначить роль'),
   })
 
   const settingMutation = useMutation({
@@ -161,9 +168,11 @@ export default function AdminPage() {
       return patchAdminSetting(session.access_token, payload.key, payload.value)
     },
     onSuccess: async () => {
+      setActionError('')
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] })
       await queryClient.invalidateQueries({ queryKey: ['admin-audit'] })
     },
+    onError: (error) => setActionError(error instanceof Error ? error.message : 'Не удалось изменить настройку'),
   })
 
   const users = usersQuery.data ?? []
@@ -259,6 +268,8 @@ export default function AdminPage() {
         </div>
       </section>
 
+      {actionError ? <p className="error-message">{actionError}</p> : null}
+
       {activeTab === 'users' ? (
         <>
           <section className="foundation-card tickets-toolbar">
@@ -304,6 +315,20 @@ export default function AdminPage() {
                   </tr>
                 </thead>
                 <tbody>
+                  {usersQuery.isPending ? (
+                    <tr>
+                      <td colSpan={7}>
+                        <p className="state-panel state-panel-loading">Загрузка пользователей…</p>
+                      </td>
+                    </tr>
+                  ) : null}
+                  {!usersQuery.isPending && filteredUsers.length === 0 ? (
+                    <tr>
+                      <td colSpan={7}>
+                        <p className="state-panel state-panel-empty">Пользователи не найдены по текущим фильтрам.</p>
+                      </td>
+                    </tr>
+                  ) : null}
                   {filteredUsers.map((user) => {
                     return (
                       <tr key={user.id}>
@@ -316,7 +341,20 @@ export default function AdminPage() {
                         <td>{formatDateTime(user.last_login_at)}</td>
                         <td>{user.is_active ? 'active' : 'inactive'}</td>
                         <td>
-                          <select onChange={(event) => assignRoleMutation.mutate({ userId: user.id, roleId: event.target.value })} defaultValue="">
+                          <select
+                            onChange={(event) => {
+                              const roleId = event.target.value
+                              if (!roleId) return
+                              const confirmed = window.confirm('Назначить выбранную роль пользователю?')
+                              if (!confirmed) {
+                                event.target.value = ''
+                                return
+                              }
+                              assignRoleMutation.mutate({ userId: user.id, roleId })
+                            }}
+                            defaultValue=""
+                            disabled={assignRoleMutation.isPending || toggleUserMutation.isPending}
+                          >
                             <option value="">Назначить роль</option>
                             {roles.map((role: AdminRole) => (
                               <option key={role.id} value={role.id}>
@@ -329,7 +367,13 @@ export default function AdminPage() {
                           <button
                             type="button"
                             className="ghost-button"
-                            onClick={() => toggleUserMutation.mutate({ userId: user.id, active: !user.is_active })}
+                            onClick={() => {
+                              const nextActive = !user.is_active
+                              const confirmed = window.confirm(nextActive ? 'Активировать пользователя?' : 'Деактивировать пользователя?')
+                              if (!confirmed) return
+                              toggleUserMutation.mutate({ userId: user.id, active: nextActive })
+                            }}
+                            disabled={toggleUserMutation.isPending || assignRoleMutation.isPending}
                           >
                             {user.is_active ? 'Деактивировать' : 'Активировать'}
                           </button>
@@ -390,6 +434,7 @@ export default function AdminPage() {
               <button type="submit" disabled={createUserMutation.isPending}>
                 {createUserMutation.isPending ? 'Создание…' : 'Создать пользователя'}
               </button>
+              {createUserMutation.isError ? <p className="error-message">Создание пользователя завершилось ошибкой.</p> : null}
             </form>
           </section>
         </>
@@ -401,6 +446,8 @@ export default function AdminPage() {
             <p className="eyebrow">ROLES</p>
             <h2>Системные и tenant роли</h2>
             <div className="activity-list">
+              {rolesQuery.isPending ? <p className="state-panel state-panel-loading">Загрузка ролей…</p> : null}
+              {!rolesQuery.isPending && roles.length === 0 ? <p className="state-panel state-panel-empty">Роли не найдены.</p> : null}
               {roles.map((role) => (
                 <article className="activity-item" key={role.id}>
                   <header>
@@ -417,6 +464,8 @@ export default function AdminPage() {
             <p className="eyebrow">PERMISSIONS</p>
             <h2>Права по модулям</h2>
             <div className="activity-list">
+              {permissionsQuery.isPending ? <p className="state-panel state-panel-loading">Загрузка прав…</p> : null}
+              {!permissionsQuery.isPending && Object.entries(groupedPermissions).length === 0 ? <p className="state-panel state-panel-empty">Права доступа не найдены.</p> : null}
               {Object.entries(groupedPermissions).map(([module, items]) => (
                 <article className="activity-item" key={module}>
                   <header>
@@ -463,6 +512,20 @@ export default function AdminPage() {
                   </tr>
                 </thead>
                 <tbody>
+                  {auditQuery.isPending ? (
+                    <tr>
+                      <td colSpan={5}>
+                        <p className="state-panel state-panel-loading">Загрузка аудита…</p>
+                      </td>
+                    </tr>
+                  ) : null}
+                  {!auditQuery.isPending && auditLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={5}>
+                        <p className="state-panel state-panel-empty">Записи аудита не найдены.</p>
+                      </td>
+                    </tr>
+                  ) : null}
                   {auditLogs.map((log) => (
                     <tr key={log.id}>
                       <td>{formatDateTime(log.created_at)}</td>
@@ -498,6 +561,20 @@ export default function AdminPage() {
                 </tr>
               </thead>
               <tbody>
+                {settingsQuery.isPending ? (
+                  <tr>
+                    <td colSpan={5}>
+                      <p className="state-panel state-panel-loading">Загрузка настроек…</p>
+                    </td>
+                  </tr>
+                ) : null}
+                {!settingsQuery.isPending && settings.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>
+                      <p className="state-panel state-panel-empty">Настройки не найдены.</p>
+                    </td>
+                  </tr>
+                ) : null}
                 {settings.map((item) => (
                   <tr key={item.id}>
                     <td>{item.key}</td>
@@ -509,9 +586,12 @@ export default function AdminPage() {
                         <button
                           type="button"
                           className="ghost-button"
+                          disabled={settingMutation.isPending}
                           onClick={() => {
                             const nextValue = window.prompt(`Новое значение для ${item.key}`, item.value ?? '')
                             if (nextValue == null) return
+                            const confirmed = window.confirm(`Сохранить новое значение для ${item.key}?`)
+                            if (!confirmed) return
                             settingMutation.mutate({ key: item.key, value: nextValue })
                           }}
                         >
@@ -557,6 +637,8 @@ export default function AdminPage() {
               <p className="eyebrow">LOGIN EVENTS</p>
               <h2>Последние события входа</h2>
               <div className="activity-list">
+                {loginEventsQuery.isPending ? <p className="state-panel state-panel-loading">Загрузка login-событий…</p> : null}
+                {!loginEventsQuery.isPending && (loginEventsQuery.data ?? []).length === 0 ? <p className="state-panel state-panel-empty">Событий входа не найдено.</p> : null}
                 {(loginEventsQuery.data ?? []).slice(0, 10).map((event) => (
                   <article className="activity-item" key={event.id}>
                     <header>
@@ -573,6 +655,8 @@ export default function AdminPage() {
               <p className="eyebrow">RISK DETAILS</p>
               <h2>Последние события безопасности</h2>
               <div className="activity-list">
+                {riskSummaryQuery.isPending ? <p className="state-panel state-panel-loading">Загрузка security событий…</p> : null}
+                {!riskSummaryQuery.isPending && (security?.recent_security_events ?? []).length === 0 ? <p className="state-panel state-panel-empty">Событий безопасности не найдено.</p> : null}
                 {(security?.recent_security_events ?? []).slice(0, 10).map((event, index) => (
                   <article className="activity-item" key={String(event.id ?? index)}>
                     <header>

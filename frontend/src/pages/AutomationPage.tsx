@@ -188,6 +188,8 @@ export default function AutomationPage() {
           <table className="ticket-table">
             <thead><tr><th>Rule</th><th>Trigger</th><th>Priority</th><th>Status</th><th>Action</th></tr></thead>
             <tbody>
+              {rulesQuery.isPending ? <tr><td colSpan={5}><p className="state-panel state-panel-loading">Загрузка правил…</p></td></tr> : null}
+              {!rulesQuery.isPending && (rulesQuery.data ?? []).length === 0 ? <tr><td colSpan={5}><p className="state-panel state-panel-empty">Правила автоматизации отсутствуют.</p></td></tr> : null}
               {(rulesQuery.data ?? []).map((rule) => (
                 <tr key={rule.id}>
                   <td><strong>{rule.name}</strong><p className="table-subtext">{rule.code}</p></td>
@@ -198,7 +200,13 @@ export default function AutomationPage() {
                     <button
                       type="button"
                       className="ghost-button"
-                      onClick={() => patchRuleMutation.mutate({ ruleId: rule.id, isActive: !rule.is_active })}
+                      onClick={() => {
+                        const nextActive = !rule.is_active
+                        const confirmed = window.confirm(nextActive ? 'Включить правило автоматизации?' : 'Отключить правило автоматизации?')
+                        if (!confirmed) return
+                        patchRuleMutation.mutate({ ruleId: rule.id, isActive: nextActive })
+                      }}
+                      disabled={patchRuleMutation.isPending}
                     >
                       {rule.is_active ? 'Disable' : 'Enable'}
                     </button>
@@ -327,6 +335,8 @@ export default function AutomationPage() {
             <table className="ticket-table">
               <thead><tr><th>ID</th><th>Status</th><th>Step</th><th>Action</th></tr></thead>
               <tbody>
+                {executionsQuery.isPending ? <tr><td colSpan={4}><p className="state-panel state-panel-loading">Загрузка исполнений…</p></td></tr> : null}
+                {!executionsQuery.isPending && (executionsQuery.data ?? []).length === 0 ? <tr><td colSpan={4}><p className="state-panel state-panel-empty">Исполнения runbooks пока отсутствуют.</p></td></tr> : null}
                 {(executionsQuery.data ?? []).map((execution) => (
                   <tr key={execution.id}>
                     <td>{execution.id}</td>
@@ -338,10 +348,22 @@ export default function AutomationPage() {
                           className="ghost-button"
                           type="button"
                           onClick={() => updateExecutionMutation.mutate({ executionId: execution.id, current_step: execution.current_step + 1 })}
+                          disabled={updateExecutionMutation.isPending}
                         >
                           Update Step
                         </button>
-                        <button className="ghost-button" type="button" onClick={() => updateExecutionMutation.mutate({ executionId: execution.id, status: 'completed' })}>Mark Completed</button>
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          onClick={() => {
+                            const confirmed = window.confirm('Отметить исполнение как completed?')
+                            if (!confirmed) return
+                            updateExecutionMutation.mutate({ executionId: execution.id, status: 'completed' })
+                          }}
+                          disabled={updateExecutionMutation.isPending}
+                        >
+                          Mark Completed
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -357,6 +379,8 @@ export default function AutomationPage() {
           <table className="ticket-table">
             <thead><tr><th>Title</th><th>Status</th><th>Requested By</th><th>Decision</th></tr></thead>
             <tbody>
+              {approvalsQuery.isPending ? <tr><td colSpan={4}><p className="state-panel state-panel-loading">Загрузка approval requests…</p></td></tr> : null}
+              {!approvalsQuery.isPending && (approvalsQuery.data ?? []).length === 0 ? <tr><td colSpan={4}><p className="state-panel state-panel-empty">Approval requests отсутствуют.</p></td></tr> : null}
               {(approvalsQuery.data ?? []).map((approval) => (
                 <tr key={approval.id}>
                   <td>{approval.title}</td>
@@ -364,8 +388,29 @@ export default function AutomationPage() {
                   <td>{approval.requested_by}</td>
                   <td>
                     <div className="analytics-actions">
-                      <button type="button" onClick={() => decideApprovalMutation.mutate({ approvalId: approval.id, decision: 'APPROVED' })}>Approve</button>
-                      <button type="button" className="ghost-button" onClick={() => decideApprovalMutation.mutate({ approvalId: approval.id, decision: 'REJECTED' })}>Reject</button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const confirmed = window.confirm('Подтвердить APPROVED для этой заявки?')
+                          if (!confirmed) return
+                          decideApprovalMutation.mutate({ approvalId: approval.id, decision: 'APPROVED' })
+                        }}
+                        disabled={decideApprovalMutation.isPending}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => {
+                          const confirmed = window.confirm('Подтвердить REJECTED для этой заявки?')
+                          if (!confirmed) return
+                          decideApprovalMutation.mutate({ approvalId: approval.id, decision: 'REJECTED' })
+                        }}
+                        disabled={decideApprovalMutation.isPending}
+                      >
+                        Reject
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -391,6 +436,8 @@ export default function AutomationPage() {
           <div>
             <p className="eyebrow">RUNBOOKS</p>
             <div className="activity-list">
+              {suggestionQuery.isPending ? <p className="state-panel state-panel-loading">Подбираем runbooks…</p> : null}
+              {!suggestionQuery.isPending && (suggestionQuery.data?.suggested_runbooks ?? []).length === 0 ? <p className="state-panel state-panel-empty">Подходящие runbooks не найдены.</p> : null}
               {(suggestionQuery.data?.suggested_runbooks ?? []).map((item) => (
                 <article className="activity-item" key={item.id}>
                   <header><strong>{item.title}</strong><span>{item.severity}</span></header>

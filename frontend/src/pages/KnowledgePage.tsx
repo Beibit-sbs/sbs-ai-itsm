@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   addKnowledgeFeedback,
@@ -47,6 +47,22 @@ export default function KnowledgePage() {
   const [selectedArticleId, setSelectedArticleId] = useState<string | null>(null)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [form, setForm] = useState<ArticleFormState>(emptyForm)
+
+  useEffect(() => {
+    if (!selectedArticleId && !isCreateOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      if (selectedArticleId) {
+        setSelectedArticleId(null)
+        return
+      }
+      if (isCreateOpen) {
+        setIsCreateOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selectedArticleId, isCreateOpen])
 
   const categoriesQuery = useQuery({
     queryKey: ['knowledge-categories', session?.access_token],
@@ -183,14 +199,13 @@ export default function KnowledgePage() {
         </button>
       </section>
 
-      <section className="asset-list-shell">
+      <section className="ticket-table-shell">
         {articlesQuery.isPending ? (
-          <p className="muted">Загрузка базы знаний…</p>
+          <p className="state-panel state-panel-loading">Загрузка базы знаний…</p>
         ) : articlesQuery.isError ? (
           <p className="error-message">Не удалось получить статьи.</p>
         ) : (
-          <div className="asset-table-layout">
-            <div className="asset-table-wrap">
+          <div className="ticket-table-wrap">
               <table className="ticket-table">
                 <thead>
                   <tr>
@@ -204,6 +219,13 @@ export default function KnowledgePage() {
                   </tr>
                 </thead>
                 <tbody>
+                  {filteredArticles.length === 0 ? (
+                    <tr>
+                      <td colSpan={7}>
+                        <p className="state-panel state-panel-empty">По текущим фильтрам статьи не найдены.</p>
+                      </td>
+                    </tr>
+                  ) : null}
                   {filteredArticles.map((article) => (
                     <tr key={article.id} className={selectedArticleId === article.id ? 'row-selected' : ''}>
                       <td>{article.article_number}</td>
@@ -224,36 +246,6 @@ export default function KnowledgePage() {
                   ))}
                 </tbody>
               </table>
-            </div>
-
-            <aside className="asset-detail-panel">
-              {!selectedArticle ? (
-                <p className="muted">Выберите статью, чтобы увидеть подробности.</p>
-              ) : (
-                <>
-                  <p className="eyebrow">КАРТОЧКА СТАТЬИ</p>
-                  <h3>{selectedArticle.title}</h3>
-                  <p className="asset-description">{selectedArticle.summary}</p>
-                  <p>{selectedArticle.content}</p>
-                  <div className="detail-fields">
-                    <div><span>Категория</span><strong>{selectedArticle.category_name ?? '—'}</strong></div>
-                    <div><span>Ticket category</span><strong>{selectedArticle.ticket_category ?? '—'}</strong></div>
-                    <div><span>Asset type</span><strong>{selectedArticle.asset_type ?? '—'}</strong></div>
-                    <div><span>Теги</span><strong>{selectedArticle.tags.join(', ') || '—'}</strong></div>
-                    <div><span>Автор</span><strong>{selectedArticle.author_name}</strong></div>
-                    <div><span>Публикация</span><strong>{formatDate(selectedArticle.published_at)}</strong></div>
-                  </div>
-                  <div className="status-list">
-                    <span>👍 Helpful: {selectedArticle.helpful_count}</span>
-                    <span>👎 Not helpful: {selectedArticle.not_helpful_count}</span>
-                  </div>
-                  <div className="form-stack">
-                    <button type="button" onClick={() => feedbackMutation.mutate({ articleId: selectedArticle.id, isHelpful: true })}>Полезно</button>
-                    <button type="button" className="ghost-button" onClick={() => feedbackMutation.mutate({ articleId: selectedArticle.id, isHelpful: false })}>Не полезно</button>
-                  </div>
-                </>
-              )}
-            </aside>
           </div>
         )}
       </section>
@@ -340,6 +332,67 @@ export default function KnowledgePage() {
               </label>
               <button type="submit" disabled={createMutation.isPending}>{createMutation.isPending ? 'Сохранение…' : 'Создать статью'}</button>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {selectedArticleId ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setSelectedArticleId(null)}>
+          <div className="modal-card modal-card-large" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">КАРТОЧКА СТАТЬИ</p>
+                <h2>{selectedArticle?.article_number ?? 'Загрузка...'}</h2>
+                <p className="modal-subtitle">{selectedArticle?.title ?? 'Получаем детали статьи...'}</p>
+              </div>
+              <button type="button" className="ghost-button" onClick={() => setSelectedArticleId(null)}>Закрыть</button>
+            </div>
+
+            {articleQuery.isPending ? <p className="state-panel state-panel-loading">Загрузка карточки статьи…</p> : null}
+            {articleQuery.isError ? <p className="error-message">Не удалось загрузить карточку статьи.</p> : null}
+
+            {selectedArticle ? (
+              <div className="ticket-detail-grid">
+                <section className="ticket-detail-panel">
+                  <h3>{selectedArticle.title}</h3>
+                  <p className="asset-description">{selectedArticle.summary}</p>
+                  <p>{selectedArticle.content}</p>
+                  <div className="detail-fields">
+                    <div><span>Категория</span><strong>{selectedArticle.category_name ?? '—'}</strong></div>
+                    <div><span>Ticket category</span><strong>{selectedArticle.ticket_category ?? '—'}</strong></div>
+                    <div><span>Asset type</span><strong>{selectedArticle.asset_type ?? '—'}</strong></div>
+                    <div><span>Теги</span><strong>{selectedArticle.tags.join(', ') || '—'}</strong></div>
+                    <div><span>Автор</span><strong>{selectedArticle.author_name}</strong></div>
+                    <div><span>Публикация</span><strong>{formatDate(selectedArticle.published_at)}</strong></div>
+                  </div>
+                </section>
+
+                <section className="ticket-detail-panel">
+                  <h3>Оценка полезности</h3>
+                  <div className="status-list">
+                    <span>👍 Helpful: {selectedArticle.helpful_count}</span>
+                    <span>👎 Not helpful: {selectedArticle.not_helpful_count}</span>
+                  </div>
+                  <div className="form-stack">
+                    <button
+                      type="button"
+                      onClick={() => feedbackMutation.mutate({ articleId: selectedArticle.id, isHelpful: true })}
+                      disabled={feedbackMutation.isPending}
+                    >
+                      {feedbackMutation.isPending ? 'Обновление…' : 'Полезно'}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => feedbackMutation.mutate({ articleId: selectedArticle.id, isHelpful: false })}
+                      disabled={feedbackMutation.isPending}
+                    >
+                      Не полезно
+                    </button>
+                  </div>
+                </section>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

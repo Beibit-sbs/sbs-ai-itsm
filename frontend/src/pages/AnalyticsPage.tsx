@@ -142,6 +142,15 @@ export default function AnalyticsPage() {
   const knowledge = knowledgeQuery.data
   const security = securityQuery.data
   const automation = automationQuery.data
+  const hasTabError =
+    overviewQuery.isError ||
+    executiveQuery.isError ||
+    ticketQuery.isError ||
+    slaQuery.isError ||
+    assetQuery.isError ||
+    knowledgeQuery.isError ||
+    securityQuery.isError ||
+    automationQuery.isError
 
   return (
     <AppShell title="Аналитика" subtitle="Executive dashboard, SLA, активы, AI, безопасность и demo-отчёты для управленческого контура.">
@@ -213,6 +222,8 @@ export default function AnalyticsPage() {
         </div>
       </section>
 
+      {hasTabError ? <p className="error-message">Часть аналитических данных временно недоступна. Проверьте API и повторите загрузку.</p> : null}
+
       {activeTab === 'executive' ? (
         <section className="foundation-card dashboard-split admin-panel">
           <div>
@@ -244,6 +255,8 @@ export default function AnalyticsPage() {
             <p className="eyebrow">RECOMMENDATIONS</p>
             <h2>Рекомендации руководителю</h2>
             <div className="activity-list">
+              {executiveQuery.isPending ? <p className="state-panel state-panel-loading">Загрузка рекомендаций…</p> : null}
+              {!executiveQuery.isPending && (executive?.top_5_recommendations ?? []).length === 0 ? <p className="state-panel state-panel-empty">Рекомендации отсутствуют.</p> : null}
               {(executive?.top_5_recommendations ?? []).map((item) => (
                 <article className="activity-item" key={item}>
                   <p>{item}</p>
@@ -259,6 +272,7 @@ export default function AnalyticsPage() {
             </div>
             <p className="eyebrow analytics-subsection">TOP-5 PROBLEMS</p>
             <div className="activity-list">
+              {!executiveQuery.isPending && (executive?.top_5_problems ?? []).length === 0 ? <p className="state-panel state-panel-empty">Проблемы не выявлены.</p> : null}
               {(executive?.top_5_problems ?? []).map((item) => (
                 <article className="activity-item" key={item.title}>
                   <header>
@@ -390,6 +404,7 @@ export default function AnalyticsPage() {
             <p className="eyebrow">RISK ZONES</p>
             <h2>Проблемные активы</h2>
             <div className="activity-list">
+              {!assetQuery.isPending && (assets?.problem_assets ?? []).length === 0 ? <p className="state-panel state-panel-empty">Проблемные активы не найдены.</p> : null}
               {(assets?.problem_assets ?? []).map((item) => (
                 <article className="activity-item" key={item.asset_tag}>
                   <header><strong>{item.asset_tag}</strong><span className="badge badge-danger">{item.status}</span></header>
@@ -399,6 +414,7 @@ export default function AnalyticsPage() {
             </div>
             <p className="eyebrow analytics-subsection">Гарантия скоро истекает</p>
             <div className="activity-list">
+              {!assetQuery.isPending && (assets?.warranty_expiring_soon ?? []).length === 0 ? <p className="state-panel state-panel-empty">Активов с ближайшим окончанием гарантии нет.</p> : null}
               {(assets?.warranty_expiring_soon ?? []).map((item) => (
                 <article className="activity-item" key={item.asset_tag}>
                   <header><strong>{item.asset_tag}</strong><span>{formatDateTime(item.warranty_until)}</span></header>
@@ -439,6 +455,7 @@ export default function AnalyticsPage() {
             <p className="eyebrow">KNOWLEDGE</p>
             <h2>Топ статьи и пробелы</h2>
             <div className="activity-list">
+              {!knowledgeQuery.isPending && (knowledge?.top_helpful_articles ?? []).length === 0 ? <p className="state-panel state-panel-empty">Полезные статьи пока отсутствуют.</p> : null}
               {(knowledge?.top_helpful_articles ?? []).map((item) => (
                 <article className="activity-item" key={item.article_number}>
                   <header><strong>{item.article_number}</strong><span>{item.helpful_count}</span></header>
@@ -448,6 +465,7 @@ export default function AnalyticsPage() {
             </div>
             <p className="eyebrow analytics-subsection">Категории без статей</p>
             <div className="activity-list">
+              {!knowledgeQuery.isPending && (knowledge?.categories_without_articles ?? []).length === 0 ? <p className="state-panel state-panel-empty">Все категории покрыты статьями.</p> : null}
               {(knowledge?.categories_without_articles ?? []).map((item) => (
                 <article className="activity-item" key={item.code}><header><strong>{item.code}</strong><span>{item.name}</span></header></article>
               ))}
@@ -479,6 +497,7 @@ export default function AnalyticsPage() {
             <p className="eyebrow">RECENT EVENTS</p>
             <h2>Последние security события</h2>
             <div className="activity-list">
+              {!securityQuery.isPending && (security?.risk_summary?.recent_security_events ?? []).length === 0 ? <p className="state-panel state-panel-empty">Недавних security событий нет.</p> : null}
               {(security?.risk_summary.recent_security_events ?? []).map((item, index) => (
                 <article className="activity-item" key={String(item.id ?? index)}>
                   <header><strong>{String(item.action ?? 'security.event')}</strong><span>{String(item.actor_email ?? 'n/a')}</span></header>
@@ -514,6 +533,7 @@ export default function AnalyticsPage() {
             <p className="eyebrow">TOP RULES</p>
             <h2>Наиболее часто запускаемые</h2>
             <div className="activity-list">
+              {!automationQuery.isPending && (automation?.top_triggered_rules ?? []).length === 0 ? <p className="state-panel state-panel-empty">Запуски правил пока отсутствуют.</p> : null}
               {(automation?.top_triggered_rules ?? []).map((item) => (
                 <article className="activity-item" key={item.rule_id}>
                   <header><strong>{item.rule_name}</strong><span>{item.count}</span></header>
@@ -536,20 +556,39 @@ export default function AnalyticsPage() {
               <button type="button" onClick={() => createSnapshotMutation.mutate()} disabled={createSnapshotMutation.isPending}>
                 {createSnapshotMutation.isPending ? 'Создание…' : 'Создать snapshot'}
               </button>
-              <button type="button" onClick={() => exportMutation.mutate()} disabled={exportMutation.isPending}>
+              <button
+                type="button"
+                onClick={() => {
+                  const confirmed = window.confirm('Сформировать demo export payload?')
+                  if (!confirmed) return
+                  exportMutation.mutate()
+                }}
+                disabled={exportMutation.isPending}
+              >
                 {exportMutation.isPending ? 'Экспорт…' : 'Demo export'}
               </button>
             </div>
+            {createSavedMutation.isError || createSnapshotMutation.isError || exportMutation.isError ? (
+              <p className="error-message">Одна из операций отчётности завершилась ошибкой.</p>
+            ) : null}
             <div className="ticket-table-wrap analytics-table-space">
               <table className="ticket-table">
                 <thead><tr><th>Saved report</th><th>Type</th><th>Updated</th></tr></thead>
-                <tbody>{(savedReportsQuery.data ?? []).map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.report_type}</td><td>{formatDateTime(item.updated_at)}</td></tr>)}</tbody>
+                <tbody>
+                  {savedReportsQuery.isPending ? <tr><td colSpan={3}><p className="state-panel state-panel-loading">Загрузка сохранённых отчётов…</p></td></tr> : null}
+                  {!savedReportsQuery.isPending && (savedReportsQuery.data ?? []).length === 0 ? <tr><td colSpan={3}><p className="state-panel state-panel-empty">Сохранённые отчёты отсутствуют.</p></td></tr> : null}
+                  {(savedReportsQuery.data ?? []).map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.report_type}</td><td>{formatDateTime(item.updated_at)}</td></tr>)}
+                </tbody>
               </table>
             </div>
             <div className="ticket-table-wrap analytics-table-space">
               <table className="ticket-table">
                 <thead><tr><th>Snapshot</th><th>Type</th><th>Created</th></tr></thead>
-                <tbody>{(snapshotsQuery.data ?? []).map((item) => <tr key={item.id}><td>{item.created_by}</td><td>{item.report_type}</td><td>{formatDateTime(item.created_at)}</td></tr>)}</tbody>
+                <tbody>
+                  {snapshotsQuery.isPending ? <tr><td colSpan={3}><p className="state-panel state-panel-loading">Загрузка snapshots…</p></td></tr> : null}
+                  {!snapshotsQuery.isPending && (snapshotsQuery.data ?? []).length === 0 ? <tr><td colSpan={3}><p className="state-panel state-panel-empty">Снимки отчётов отсутствуют.</p></td></tr> : null}
+                  {(snapshotsQuery.data ?? []).map((item) => <tr key={item.id}><td>{item.created_by}</td><td>{item.report_type}</td><td>{formatDateTime(item.created_at)}</td></tr>)}
+                </tbody>
               </table>
             </div>
           </div>
