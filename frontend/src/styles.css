@@ -731,6 +731,26 @@ select:focus {
 	margin: 0;
 }
 
+.asset-detail-title,
+.asset-detail-value-long {
+	word-break: break-word;
+	overflow-wrap: anywhere;
+}
+
+.asset-detail-inline-badges {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.asset-name-cell {
+	max-width: 360px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 .state-panel {
 	padding: 14px;
 	border-radius: 12px;

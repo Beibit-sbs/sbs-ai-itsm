@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   commitAssetImport,
+  type Asset,
   fetchAsset,
   fetchAssetImportBatches,
   fetchAssetImportRows,
@@ -18,6 +19,7 @@ import AppShell from '../components/AppShell'
 import HealthBadge from '../components/HealthBadge'
 
 type PreviewFilter = 'ALL' | 'VALID' | 'ERROR' | 'DUPLICATE' | 'MISSING_LOCATION' | 'DISPOSED' | 'IN_STOCK'
+type AssetsMode = 'registry' | 'import'
 
 const statusLabels: Record<string, string> = {
   in_use: 'В эксплуатации',
@@ -57,6 +59,11 @@ function formatDate(value: string | null | undefined) {
   return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(value))
 }
 
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return '—'
+  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+}
+
 function AssetStatusBadge({ status }: { status: string }) {
   return <span className={`asset-status asset-status-${status}`}>{statusLabels[status] ?? status}</span>
 }
@@ -87,6 +94,22 @@ function normalizeLocationValue(rawLocation: unknown) {
   const value = String(rawLocation ?? '').trim()
   if (!value || value.toLowerCase() === 'location unknown') return 'Кабинет не указан'
   return value
+}
+
+function verificationLabel(value: string | null | undefined) {
+  const normalized = String(value ?? '').toLowerCase()
+  if (!normalized) return '—'
+  if (normalized === 'needs_location') return 'Требуется кабинет'
+  if (normalized === 'verified') return 'Проверено'
+  return normalized
+}
+
+function sourceLabel(value: string | null | undefined) {
+  const normalized = String(value ?? '').toLowerCase()
+  if (!normalized || normalized === 'manual') return 'manual'
+  if (normalized === 'excel_import') return 'excel_import'
+  if (normalized === 'demo_seed') return 'demo'
+  return normalized
 }
 
 function hasDisposedMarker(raw: Record<string, unknown>, normalizedStatus: string) {
@@ -150,9 +173,11 @@ export default function AssetsPage() {
   const [assignedFilter, setAssignedFilter] = useState('ALL')
   const [yearFilter, setYearFilter] = useState('ALL')
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null)
+  const [selectedAssetFallback, setSelectedAssetFallback] = useState<Asset | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null)
   const [previewFilter, setPreviewFilter] = useState<PreviewFilter>('ALL')
+  const [activeAssetsMode, setActiveAssetsMode] = useState<AssetsMode>('registry')
 
   const canPreviewImport = Boolean(session?.user.permissions.includes('assets.import.preview'))
   const canCommitImport = Boolean(session?.user.permissions.includes('assets.import.commit'))
@@ -246,23 +271,27 @@ export default function AssetsPage() {
       await queryClient.invalidateQueries({ queryKey: ['asset-import-rows'] })
       await queryClient.invalidateQueries({ queryKey: ['asset-import-summary'] })
       await queryClient.invalidateQueries({ queryKey: ['assets'] })
-      setSourceFilter('excel_import')
     },
   })
 
   const assets = assetsQuery.data ?? []
 
   useEffect(() => {
-    if (!selectedAssetId && assets.length > 0) {
-      setSelectedAssetId(assets[0].id)
-    }
-  }, [assets, selectedAssetId])
-
-  useEffect(() => {
     if (!activeBatchId && importBatchesQuery.data && importBatchesQuery.data.length > 0) {
       setActiveBatchId(importBatchesQuery.data[0].id)
     }
   }, [activeBatchId, importBatchesQuery.data])
+
+  useEffect(() => {
+    if (!selectedAssetId) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setSelectedAssetId(null)
+      setSelectedAssetFallback(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selectedAssetId])
 
   const filteredAssets = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -311,7 +340,7 @@ export default function AssetsPage() {
     return Array.from(counter.values()).filter((count) => count > 1).length
   }, [assets])
 
-  const selectedAsset = selectedAssetQuery.data
+  const selectedAsset = selectedAssetQuery.data ?? selectedAssetFallback
   const relatedTickets: AssetTicket[] = relatedTicketsQuery.data ?? []
   const importRows = importRowsQuery.data ?? []
   const activeBatch = importBatchesQuery.data?.find((item) => item.id === activeBatchId)
@@ -409,6 +438,17 @@ export default function AssetsPage() {
     return status
   })()
 
+  const closeAssetDetail = () => {
+    setSelectedAssetId(null)
+    setSelectedAssetFallback(null)
+  }
+
+  const showImportedAssets = async () => {
+    setSourceFilter('excel_import')
+    setActiveAssetsMode('registry')
+    await queryClient.invalidateQueries({ queryKey: ['assets'] })
+  }
+
   return (
     <AppShell title="Активы" subtitle="Инвентаризация, привязка к заявкам и срокам обслуживания уже читаются из backend.">
       <section className="foundation-card">
@@ -427,50 +467,52 @@ export default function AssetsPage() {
         </div>
       </section>
 
-      <section className="metric-grid assets-metrics">
-        <article className="metric-card">
-          <span>Всего импортировано</span>
-          <strong>{assetsQuery.isPending ? '…' : importedCount}</strong>
-          <p>Активы с source = excel_import.</p>
-        </article>
-        <article className="metric-card">
-          <span>Без кабинета</span>
-          <strong>{assetsQuery.isPending ? '…' : missingLocationCount}</strong>
-          <p>Активы с verification_status = needs_location.</p>
-        </article>
-        <article className="metric-card">
-          <span>Списано</span>
-          <strong>{assetsQuery.isPending ? '…' : disposedCount}</strong>
-          <p>Статус disposed.</p>
-        </article>
-        <article className="metric-card">
-          <span>Активные</span>
-          <strong>{assetsQuery.isPending ? '…' : activeCount}</strong>
-          <p>Статус active/in_use.</p>
-        </article>
-        <article className="metric-card">
-          <span>Требует проверки</span>
-          <strong>{assetsQuery.isPending ? '…' : verificationRequiredCount}</strong>
-          <p>Нужна верификация локации.</p>
-        </article>
-        <article className="metric-card">
-          <span>Дубли инв. номеров</span>
-          <strong>{assetsQuery.isPending ? '…' : duplicateInventoryCount}</strong>
-          <p>Контроль качества данных.</p>
-        </article>
-        <article className="metric-card">
-          <span>Проблемные активы</span>
-          <strong>{assetsQuery.isPending ? '…' : problemAssets}</strong>
-          <p>Неисправные или в ремонте.</p>
-        </article>
-        <article className="metric-card">
-          <span>Скоро окончится гарантия</span>
-          <strong>{assetsQuery.isPending ? '…' : warrantySoon}</strong>
-          <p>Окно гарантии менее 45 дней.</p>
-        </article>
-      </section>
+      {activeAssetsMode === 'registry' ? (
+        <section className="metric-grid assets-metrics">
+          <article className="metric-card">
+            <span>Всего импортировано</span>
+            <strong>{assetsQuery.isPending ? '…' : importedCount}</strong>
+            <p>Активы с source = excel_import.</p>
+          </article>
+          <article className="metric-card">
+            <span>Без кабинета</span>
+            <strong>{assetsQuery.isPending ? '…' : missingLocationCount}</strong>
+            <p>Активы с verification_status = needs_location.</p>
+          </article>
+          <article className="metric-card">
+            <span>Списано</span>
+            <strong>{assetsQuery.isPending ? '…' : disposedCount}</strong>
+            <p>Статус disposed.</p>
+          </article>
+          <article className="metric-card">
+            <span>Активные</span>
+            <strong>{assetsQuery.isPending ? '…' : activeCount}</strong>
+            <p>Статус active/in_use.</p>
+          </article>
+          <article className="metric-card">
+            <span>Требует проверки</span>
+            <strong>{assetsQuery.isPending ? '…' : verificationRequiredCount}</strong>
+            <p>Нужна верификация локации.</p>
+          </article>
+          <article className="metric-card">
+            <span>Дубли инв. номеров</span>
+            <strong>{assetsQuery.isPending ? '…' : duplicateInventoryCount}</strong>
+            <p>Контроль качества данных.</p>
+          </article>
+          <article className="metric-card">
+            <span>Проблемные активы</span>
+            <strong>{assetsQuery.isPending ? '…' : problemAssets}</strong>
+            <p>Неисправные или в ремонте.</p>
+          </article>
+          <article className="metric-card">
+            <span>Скоро окончится гарантия</span>
+            <strong>{assetsQuery.isPending ? '…' : warrantySoon}</strong>
+            <p>Окно гарантии менее 45 дней.</p>
+          </article>
+        </section>
+      ) : null}
 
-      {canPreviewImport ? (
+      {activeAssetsMode === 'import' && canPreviewImport ? (
         <section className="foundation-card admin-panel">
           <div>
             <p className="eyebrow">ASSET IMPORT</p>
@@ -544,8 +586,8 @@ export default function AssetsPage() {
             >
               Отменить импорт
             </button>
-            <button type="button" className="ghost-button" onClick={() => setSourceFilter('excel_import')}>
-              Показать импортированные активы
+            <button type="button" className="ghost-button" onClick={() => setActiveAssetsMode('registry')}>
+              Назад к реестру активов
             </button>
           </div>
           <div className="import-context">
@@ -638,92 +680,115 @@ export default function AssetsPage() {
               <p className="muted">Дубликаты: {previewMetrics.duplicateRows}</p>
             </div>
           ) : null}
+          {commitMutation.data ? (
+            <div className="analytics-actions">
+              <button type="button" onClick={() => void showImportedAssets()}>Показать импортированные активы</button>
+              <button type="button" className="ghost-button" onClick={() => setActiveAssetsMode('import')}>Остаться в импорте</button>
+            </div>
+          ) : null}
+          <p className="state-panel state-panel-empty">После импорта активы появятся в реестре. Нажмите «Назад к реестру активов».</p>
         </section>
       ) : null}
 
-      <section className="foundation-card tickets-toolbar">
-        <div className="tickets-toolbar-group">
-          <label className="inline-field">
-            <span>Поиск</span>
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="№, название, серийный номер, сотрудник..." />
-          </label>
-          <label className="inline-field">
-            <span>Тип</span>
-            <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
-              <option value="ALL">Все типы</option>
-              {typeOptions.map((type) => (
-                <option key={type} value={type}>
-                  {typeLabels[type] ?? type}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="inline-field">
-            <span>Статус</span>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              <option value="ALL">Все статусы</option>
-              {statusOptions.map((status) => (
-                <option key={status} value={status}>
-                  {statusLabels[status] ?? status}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="inline-field">
-            <span>Источник</span>
-            <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
-              <option value="ALL">Все источники</option>
-              {sourceOptions.map((source) => (
-                <option key={source} value={source}>{source}</option>
-              ))}
-            </select>
-          </label>
-          <label className="inline-field">
-            <span>Verification</span>
-            <select value={verificationFilter} onChange={(event) => setVerificationFilter(event.target.value)}>
-              <option value="ALL">Все</option>
-              {verificationOptions.map((item) => (
-                <option key={item} value={item}>{item}</option>
-              ))}
-            </select>
-          </label>
-          <label className="inline-field">
-            <span>МОЛ</span>
-            <select value={assignedFilter} onChange={(event) => setAssignedFilter(event.target.value)}>
-              <option value="ALL">Все</option>
-              {assignedOptions.map((item) => (
-                <option key={item} value={item}>{item}</option>
-              ))}
-            </select>
-          </label>
-          <label className="inline-field">
-            <span>Год</span>
-            <select value={yearFilter} onChange={(event) => setYearFilter(event.target.value)}>
-              <option value="ALL">Все</option>
-              {yearOptions.map((item) => (
-                <option key={item} value={item}>{item}</option>
-              ))}
-            </select>
-          </label>
-          <label className="inline-field">
-            <span>Флаги</span>
-            <div className="status-list">
-              <label><input type="checkbox" checked={withoutLocation} onChange={(event) => setWithoutLocation(event.target.checked)} /> без кабинета</label>
-              <label><input type="checkbox" checked={disposedOnly} onChange={(event) => setDisposedOnly(event.target.checked)} /> списанные</label>
-            </div>
-          </label>
-        </div>
-      </section>
+      {activeAssetsMode === 'import' && !canPreviewImport ? (
+        <section className="foundation-card admin-panel">
+          <p className="state-panel state-panel-error">У вашей роли нет прав на импорт активов из Excel.</p>
+          <button type="button" className="ghost-button" onClick={() => setActiveAssetsMode('registry')}>Назад к реестру активов</button>
+        </section>
+      ) : null}
 
-      <section className="asset-list-shell">
-        {assetsQuery.isPending ? (
-          <p className="muted">Загрузка активов…</p>
-        ) : assetsQuery.isError ? (
-          <p className="error-message">Не удалось получить список активов.</p>
-        ) : (
-          <div className="asset-table-layout">
-            <div className="asset-table-wrap">
-              <table className="ticket-table">
+      {activeAssetsMode === 'registry' ? (
+        <>
+          <section className="foundation-card tickets-toolbar">
+            <div className="tickets-toolbar-group">
+              <label className="inline-field">
+                <span>Поиск</span>
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="№, название, серийный номер, сотрудник..." />
+              </label>
+              <label className="inline-field">
+                <span>Тип</span>
+                <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+                  <option value="ALL">Все типы</option>
+                  {typeOptions.map((type) => (
+                    <option key={type} value={type}>
+                      {typeLabels[type] ?? type}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="inline-field">
+                <span>Статус</span>
+                <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                  <option value="ALL">Все статусы</option>
+                  {statusOptions.map((status) => (
+                    <option key={status} value={status}>
+                      {statusLabels[status] ?? status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="inline-field">
+                <span>Источник</span>
+                <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
+                  <option value="ALL">Все источники</option>
+                  {sourceOptions.map((source) => (
+                    <option key={source} value={source}>{source}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="inline-field">
+                <span>Verification</span>
+                <select value={verificationFilter} onChange={(event) => setVerificationFilter(event.target.value)}>
+                  <option value="ALL">Все</option>
+                  {verificationOptions.map((item) => (
+                    <option key={item} value={item}>{item}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="inline-field">
+                <span>МОЛ</span>
+                <select value={assignedFilter} onChange={(event) => setAssignedFilter(event.target.value)}>
+                  <option value="ALL">Все</option>
+                  {assignedOptions.map((item) => (
+                    <option key={item} value={item}>{item}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="inline-field">
+                <span>Год</span>
+                <select value={yearFilter} onChange={(event) => setYearFilter(event.target.value)}>
+                  <option value="ALL">Все</option>
+                  {yearOptions.map((item) => (
+                    <option key={item} value={item}>{item}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="inline-field">
+                <span>Флаги</span>
+                <div className="status-list">
+                  <label><input type="checkbox" checked={withoutLocation} onChange={(event) => setWithoutLocation(event.target.checked)} /> без кабинета</label>
+                  <label><input type="checkbox" checked={disposedOnly} onChange={(event) => setDisposedOnly(event.target.checked)} /> списанные</label>
+                </div>
+              </label>
+            </div>
+            <button
+              type="button"
+              className="ghost-button tickets-create-button"
+              disabled={!canPreviewImport}
+              onClick={() => setActiveAssetsMode('import')}
+            >
+              Импорт из Excel
+            </button>
+          </section>
+
+          <section className="asset-list-shell">
+            {assetsQuery.isPending ? (
+              <p className="muted">Загрузка активов…</p>
+            ) : assetsQuery.isError ? (
+              <p className="error-message">Не удалось получить список активов.</p>
+            ) : (
+              <div className="asset-table-wrap">
+                <table className="ticket-table">
                 <thead>
                   <tr>
                     <th>Актив</th>
@@ -736,11 +801,18 @@ export default function AssetsPage() {
                   </tr>
                 </thead>
                 <tbody>
+                  {filteredAssets.length === 0 ? (
+                    <tr>
+                      <td colSpan={7}>
+                        <p className="state-panel state-panel-empty">По текущим фильтрам активы не найдены.</p>
+                      </td>
+                    </tr>
+                  ) : null}
                   {filteredAssets.map((asset) => (
                     <tr key={asset.id} className={selectedAssetId === asset.id ? 'row-selected' : ''}>
                       <td>
                         <strong>{asset.asset_tag}</strong>
-                        <p className="table-subtext">{asset.name}</p>
+                        <p className="table-subtext asset-name-cell" title={asset.name}>{asset.name}</p>
                       </td>
                       <td>{typeLabels[asset.type ?? asset.asset_type] ?? asset.type ?? asset.asset_type}</td>
                       <td>
@@ -756,66 +828,107 @@ export default function AssetsPage() {
                         </div>
                       </td>
                       <td>
-                        <button type="button" className="ghost-button row-action" onClick={() => setSelectedAssetId(asset.id)}>
+                        <button
+                          type="button"
+                          className="ghost-button row-action"
+                          onClick={() => {
+                            setSelectedAssetId(asset.id)
+                            setSelectedAssetFallback(asset)
+                          }}
+                        >
                           Детали
                         </button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
-              </table>
+                </table>
+              </div>
+            )}
+          </section>
+        </>
+      ) : null}
+
+      {selectedAssetId ? (
+        <div className="modal-backdrop" role="presentation" onClick={closeAssetDetail}>
+          <section className="modal-card modal-card-xl" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">КАРТОЧКА АКТИВА</p>
+                <h2>{selectedAsset?.asset_tag ?? 'Загрузка...'}</h2>
+                <p className="modal-subtitle asset-detail-title">{selectedAsset?.name ?? 'Получаем детальную информацию по активу...'}</p>
+              </div>
+              <button type="button" className="ghost-button" onClick={closeAssetDetail}>Закрыть</button>
             </div>
 
-            <aside className="asset-detail-panel">
-              {selectedAssetQuery.isPending || relatedTicketsQuery.isPending ? (
-                <p className="muted">Загрузка карточки актива…</p>
-              ) : selectedAssetQuery.isError || !selectedAsset ? (
-                <p className="muted">Выберите актив для просмотра подробностей.</p>
-              ) : (
-                <>
-                  <p className="eyebrow">КАРТОЧКА АКТИВА</p>
-                  <h3>{selectedAsset.asset_tag}</h3>
-                  <p className="asset-description">{selectedAsset.name}</p>
+            {selectedAssetQuery.isPending && !selectedAsset ? <p className="state-panel state-panel-loading">Загрузка карточки актива…</p> : null}
+            {selectedAssetQuery.isError && !selectedAsset ? <p className="error-message">Не удалось загрузить карточку актива.</p> : null}
+            {selectedAssetQuery.isError && selectedAsset ? (
+              <p className="state-panel state-panel-error">Детальная карточка временно недоступна. Показаны данные из таблицы активов.</p>
+            ) : null}
+
+            {selectedAsset ? (
+              <div className="ticket-detail-grid">
+                <section className="ticket-detail-panel">
+                  <h3>Основные данные</h3>
                   <div className="detail-fields">
+                    <div><span>Asset tag</span><strong>{selectedAsset.asset_tag}</strong></div>
+                    <div><span>Инвентарный номер</span><strong>{selectedAsset.inventory_number ?? '—'}</strong></div>
+                    <div><span>Наименование</span><strong className="asset-detail-value-long">{selectedAsset.name}</strong></div>
                     <div><span>Тип</span><strong>{typeLabels[selectedAsset.type ?? selectedAsset.asset_type] ?? selectedAsset.type ?? selectedAsset.asset_type}</strong></div>
                     <div><span>Оригинальный тип</span><strong>{selectedAsset.original_type ?? '—'}</strong></div>
-                    <div><span>Серийный номер</span><strong>{selectedAsset.serial_number ?? '—'}</strong></div>
-                    <div><span>Инв. номер</span><strong>{selectedAsset.inventory_number ?? '—'}</strong></div>
                     <div><span>Производитель</span><strong>{selectedAsset.manufacturer ?? '—'}</strong></div>
                     <div><span>Модель</span><strong>{selectedAsset.model ?? '—'}</strong></div>
-                    <div><span>Источник</span><strong>{selectedAsset.source ?? 'manual'}</strong></div>
-                    <div><span>Назначен</span><strong>{selectedAsset.assigned_to_name ?? '—'}</strong></div>
+                    <div><span>Серийный номер</span><strong>{selectedAsset.serial_number ?? '—'}</strong></div>
+                    <div><span>Источник</span><strong>{sourceLabel(selectedAsset.source)}</strong></div>
+                    <div><span>Назначен</span><strong>{selectedAsset.assigned_to_name ?? 'Не назначен'}</strong></div>
                     <div><span>МОЛ / отдел</span><strong>{selectedAsset.department ?? '—'}</strong></div>
-                    <div><span>Локация</span><strong>{selectedAsset.location}</strong></div>
-                    <div><span>Год</span><strong>{selectedAsset.purchase_year ?? '—'}</strong></div>
-                    <div><span>Verification</span><strong>{selectedAsset.verification_status ?? '—'}</strong></div>
+                    <div><span>Локация</span><strong>{normalizeLocationValue(selectedAsset.location)}</strong></div>
+                    <div><span>Год закупки</span><strong>{selectedAsset.purchase_year ?? '—'}</strong></div>
+                    <div><span>Статус</span><strong><AssetStatusBadge status={selectedAsset.status} /></strong></div>
+                    <div>
+                      <span>Verification</span>
+                      <strong className="asset-detail-inline-badges">
+                        {verificationLabel(selectedAsset.verification_status)}
+                        {String(selectedAsset.verification_status ?? '').toLowerCase() === 'needs_location' ? (
+                          <span className="badge badge-warning">Требует кабинета</span>
+                        ) : null}
+                      </strong>
+                    </div>
+                    <div><span>Здоровье</span><strong>{selectedAsset.health ?? '—'}</strong></div>
                     <div><span>Гарантия до</span><strong>{formatDate(selectedAsset.warranty_until)}</strong></div>
-                    <div><span>Здоровье</span><strong>{selectedAsset.health}</strong></div>
+                    <div><span>Импортирован</span><strong>{formatDateTime(selectedAsset.imported_at)}</strong></div>
+                    <div><span>Source batch ID</span><strong className="asset-detail-value-long">{selectedAsset.source_batch_id ?? '—'}</strong></div>
                   </div>
+                </section>
 
-                  <div className="activity-list">
-                    <h4>Связанные заявки</h4>
-                    {relatedTickets.length === 0 ? (
-                      <p className="muted">Заявок по этому активу пока нет.</p>
-                    ) : (
-                      relatedTickets.map((ticket) => (
+                <section className="ticket-detail-panel">
+                  <h3>Связанные заявки</h3>
+                  {relatedTicketsQuery.isPending ? <p className="state-panel state-panel-loading">Загрузка связанных заявок…</p> : null}
+                  {relatedTicketsQuery.isError ? <p className="error-message">Не удалось получить связанные заявки.</p> : null}
+                  {!relatedTicketsQuery.isPending && !relatedTicketsQuery.isError && relatedTickets.length === 0 ? (
+                    <p className="state-panel state-panel-empty">Связанных заявок пока нет.</p>
+                  ) : null}
+                  {!relatedTicketsQuery.isPending && !relatedTicketsQuery.isError && relatedTickets.length > 0 ? (
+                    <div className="activity-list">
+                      {relatedTickets.map((ticket) => (
                         <article className="activity-item" key={ticket.id}>
                           <header>
-                            <strong>{ticket.ticket_number}</strong>
+                            <strong>{ticket.ticket_number ?? ticket.id.slice(0, 8)}</strong>
                             <span>{ticket.sla_status ?? '—'}</span>
                           </header>
                           <p>{ticket.title}</p>
                           <small>{ticket.priority} · {ticket.status}</small>
                         </article>
-                      ))
-                    )}
-                  </div>
-                </>
-              )}
-            </aside>
-          </div>
-        )}
-      </section>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              </div>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
     </AppShell>
   )
 }
