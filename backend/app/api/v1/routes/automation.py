@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
@@ -21,9 +21,19 @@ from app.models.runbook_execution import RunbookExecution
 from app.models.ticket import Ticket
 from app.models.user import User
 from app.services.audit import log_audit
-from app.services.automation import AutomationEngine, build_ticket_context, collect_automation_overview
+from app.services.automation import (
+    AutomationEngine,
+    approve_request,
+    build_ticket_context,
+    collect_automation_overview,
+    execute_rule,
+    reject_request,
+    retry_execution,
+    run_manual_rule,
+    run_runbook,
+)
 from app.services.notifications import create_domain_event_notification
-from app.services.rbac import is_saas_root, require_permissions
+from app.services.rbac import has_permission, is_saas_root, require_permissions
 
 router = APIRouter(prefix="/automation")
 
@@ -38,9 +48,22 @@ class AutomationRuleResponse(BaseModel):
     conditions_json: dict[str, Any] | list[Any]
     actions_json: list[dict[str, Any]]
     is_active: bool
+    requires_approval: bool
+    approval_role: str | None
+    cooldown_minutes: int
+    last_run_at: datetime | None
+    run_count: int
+    failure_count: int
     priority: int
     created_at: datetime
     updated_at: datetime
+
+
+class AutomationRulePageResponse(BaseModel):
+    items: list[AutomationRuleResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 class AutomationRuleCreateRequest(BaseModel):
@@ -52,6 +75,9 @@ class AutomationRuleCreateRequest(BaseModel):
     conditions_json: dict[str, Any] | list[Any] = Field(default_factory=dict)
     actions_json: list[dict[str, Any]] = Field(default_factory=list)
     is_active: bool = True
+    requires_approval: bool = False
+    approval_role: str | None = None
+    cooldown_minutes: int = 0
     priority: int = 100
 
 
@@ -62,6 +88,9 @@ class AutomationRulePatchRequest(BaseModel):
     conditions_json: dict[str, Any] | list[Any] | None = None
     actions_json: list[dict[str, Any]] | None = None
     is_active: bool | None = None
+    requires_approval: bool | None = None
+    approval_role: str | None = None
+    cooldown_minutes: int | None = None
     priority: int | None = None
 
 
@@ -69,23 +98,38 @@ class AutomationRunResponse(BaseModel):
     id: str
     tenant_id: str | None
     rule_id: str
+    runbook_id: str | None
     trigger_type: str
     trigger_entity_type: str | None
     trigger_entity_id: str | None
     status: str
+    input_payload_json: dict[str, Any] | None
+    output_payload_json: dict[str, Any] | None
     started_at: datetime | None
     finished_at: datetime | None
+    executed_by_id: str | None
+    approval_request_id: str | None
     result_summary: dict[str, Any]
     error_message: str | None
     created_at: datetime
+
+
+class AutomationExecutionPageResponse(BaseModel):
+    items: list[AutomationRunResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 class AutomationActionLogResponse(BaseModel):
     id: str
     tenant_id: str | None
     automation_run_id: str
+    execution_id: str | None
     action_type: str
+    action_payload_json: dict[str, Any]
     status: str
+    result_payload_json: dict[str, Any]
     input_json: dict[str, Any]
     output_json: dict[str, Any]
     error_message: str | None
@@ -102,9 +146,14 @@ class ManualRunRequest(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
 
 
+class RunRequest(BaseModel):
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunbookResponse(BaseModel):
     id: str
     tenant_id: str | None
+    name: str | None
     code: str
     title: str
     description: str | None
@@ -113,12 +162,21 @@ class RunbookResponse(BaseModel):
     steps_json: list[dict[str, Any]]
     estimated_minutes: int
     is_active: bool
+    requires_approval: bool
     created_at: datetime
     updated_at: datetime
 
 
+class RunbookPageResponse(BaseModel):
+    items: list[RunbookResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 class RunbookCreateRequest(BaseModel):
     tenant_id: str | None = None
+    name: str | None = None
     code: str
     title: str
     description: str | None = None
@@ -127,9 +185,11 @@ class RunbookCreateRequest(BaseModel):
     steps_json: list[dict[str, Any]] = Field(default_factory=list)
     estimated_minutes: int = 15
     is_active: bool = True
+    requires_approval: bool = False
 
 
 class RunbookPatchRequest(BaseModel):
+    name: str | None = None
     title: str | None = None
     description: str | None = None
     category: str | None = None
@@ -137,6 +197,7 @@ class RunbookPatchRequest(BaseModel):
     steps_json: list[dict[str, Any]] | None = None
     estimated_minutes: int | None = None
     is_active: bool | None = None
+    requires_approval: bool | None = None
 
 
 class RunbookExecutionResponse(BaseModel):
@@ -170,16 +231,28 @@ class ApprovalRequestResponse(BaseModel):
     description: str | None
     entity_type: str
     entity_id: str | None
+    requested_by_id: str | None
+    approver_id: str | None
     requested_by: str
     approver_name: str | None
     status: str
+    reason: str | None
     decision_comment: str | None
+    requested_at: datetime
+    metadata_json: dict[str, Any]
     created_at: datetime
     decided_at: datetime | None
 
 
+class ApprovalRequestPageResponse(BaseModel):
+    items: list[ApprovalRequestResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 class ApprovalDecisionRequest(BaseModel):
-    decision: str
+    decision: str | None = None
     comment: str | None = None
 
 
@@ -217,6 +290,12 @@ def _filter_by_tenant(statement: Select, model: Any, current_user: AuthUserRespo
     return statement.where((model.tenant_id == current_user.tenant_id) | (model.tenant_id.is_(None)))
 
 
+def _require_any_permission(current_user: AuthUserResponse, *permissions: str) -> None:
+    if any(has_permission(current_user, permission) for permission in permissions):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Missing one of permissions: {', '.join(permissions)}")
+
+
 def _rule_response(item: AutomationRule) -> AutomationRuleResponse:
     return AutomationRuleResponse(
         id=item.id,
@@ -228,6 +307,12 @@ def _rule_response(item: AutomationRule) -> AutomationRuleResponse:
         conditions_json=_parse_json(item.conditions_json, {}),
         actions_json=_parse_json(item.actions_json, []),
         is_active=item.is_active,
+        requires_approval=item.requires_approval,
+        approval_role=item.approval_role,
+        cooldown_minutes=item.cooldown_minutes,
+        last_run_at=item.last_run_at,
+        run_count=item.run_count,
+        failure_count=item.failure_count,
         priority=item.priority,
         created_at=item.created_at,
         updated_at=item.updated_at,
@@ -239,12 +324,17 @@ def _run_response(item: AutomationRun) -> AutomationRunResponse:
         id=item.id,
         tenant_id=item.tenant_id,
         rule_id=item.rule_id,
+        runbook_id=item.runbook_id,
         trigger_type=item.trigger_type,
         trigger_entity_type=item.trigger_entity_type,
         trigger_entity_id=item.trigger_entity_id,
         status=item.status,
+        input_payload_json=_parse_json(item.input_payload_json, {}),
+        output_payload_json=_parse_json(item.output_payload_json, {}),
         started_at=item.started_at,
         finished_at=item.finished_at,
+        executed_by_id=item.executed_by_id,
+        approval_request_id=item.approval_request_id,
         result_summary=_parse_json(item.result_summary, {}),
         error_message=item.error_message,
         created_at=item.created_at,
@@ -256,8 +346,11 @@ def _action_log_response(item: AutomationActionLog) -> AutomationActionLogRespon
         id=item.id,
         tenant_id=item.tenant_id,
         automation_run_id=item.automation_run_id,
+        execution_id=item.execution_id,
         action_type=item.action_type,
+        action_payload_json=_parse_json(item.action_payload_json, {}),
         status=item.status,
+        result_payload_json=_parse_json(item.result_payload_json, {}),
         input_json=_parse_json(item.input_json, {}),
         output_json=_parse_json(item.output_json, {}),
         error_message=item.error_message,
@@ -269,6 +362,7 @@ def _runbook_response(item: Runbook) -> RunbookResponse:
     return RunbookResponse(
         id=item.id,
         tenant_id=item.tenant_id,
+        name=item.name,
         code=item.code,
         title=item.title,
         description=item.description,
@@ -277,6 +371,7 @@ def _runbook_response(item: Runbook) -> RunbookResponse:
         steps_json=_parse_json(item.steps_json, []),
         estimated_minutes=item.estimated_minutes,
         is_active=item.is_active,
+        requires_approval=item.requires_approval,
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -306,10 +401,15 @@ def _approval_response(item: ApprovalRequest) -> ApprovalRequestResponse:
         description=item.description,
         entity_type=item.entity_type,
         entity_id=item.entity_id,
+        requested_by_id=item.requested_by_id,
+        approver_id=item.approver_id,
         requested_by=item.requested_by,
         approver_name=item.approver_name,
         status=item.status,
+        reason=item.reason,
         decision_comment=item.decision_comment,
+        requested_at=item.requested_at,
+        metadata_json=_parse_json(item.metadata_json, {}),
         created_at=item.created_at,
         decided_at=item.decided_at,
     )
@@ -321,20 +421,42 @@ def get_overview(current_user: AuthUserResponse = Depends(get_current_user), db:
     return collect_automation_overview(db, _tenant_scope(current_user))
 
 
-@router.get("/rules", response_model=list[AutomationRuleResponse])
+@router.get("/rules", response_model=AutomationRulePageResponse)
 def list_rules(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
     trigger_type: str | None = Query(default=None),
+    is_active: bool | None = Query(default=None),
     active: bool | None = Query(default=None),
-) -> list[AutomationRuleResponse]:
-    require_permissions(current_user, "automation.rules.read")
-    statement = _filter_by_tenant(select(AutomationRule).order_by(AutomationRule.priority.asc(), AutomationRule.created_at.asc()), AutomationRule, current_user)
+    q: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+) -> AutomationRulePageResponse:
+    _require_any_permission(current_user, "automation.read", "automation.rules.read")
+    statement = _filter_by_tenant(select(AutomationRule), AutomationRule, current_user)
     if trigger_type:
         statement = statement.where(AutomationRule.trigger_type == trigger_type)
-    if active is not None:
-        statement = statement.where(AutomationRule.is_active == active)
-    return [_rule_response(item) for item in db.scalars(statement).all()]
+    effective_active = is_active if is_active is not None else active
+    if effective_active is not None:
+        statement = statement.where(AutomationRule.is_active == effective_active)
+    if q:
+        token = f"%{q.strip()}%"
+        statement = statement.where(or_(AutomationRule.name.ilike(token), AutomationRule.code.ilike(token), AutomationRule.description.ilike(token)))
+
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    items = db.scalars(
+        statement.order_by(AutomationRule.priority.asc(), AutomationRule.created_at.asc()).offset((page - 1) * page_size).limit(page_size)
+    ).all()
+    return AutomationRulePageResponse(items=[_rule_response(item) for item in items], total=total, page=page, page_size=page_size)
+
+
+@router.get("/rules/{rule_id}", response_model=AutomationRuleResponse)
+def get_rule(rule_id: str, current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> AutomationRuleResponse:
+    _require_any_permission(current_user, "automation.read", "automation.rules.read")
+    item = db.scalar(_filter_by_tenant(select(AutomationRule).where(AutomationRule.id == rule_id), AutomationRule, current_user))
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
+    return _rule_response(item)
 
 
 @router.post("/rules", response_model=AutomationRuleResponse, status_code=status.HTTP_201_CREATED)
@@ -344,7 +466,7 @@ def create_rule(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AutomationRuleResponse:
-    require_permissions(current_user, "automation.rules.manage")
+    _require_any_permission(current_user, "automation.create", "automation.rules.manage")
     if db.scalar(select(AutomationRule).where(AutomationRule.code == request.code, AutomationRule.tenant_id == (_tenant_scope(current_user) or request.tenant_id))) is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rule code already exists")
 
@@ -360,6 +482,10 @@ def create_rule(
         conditions_json=json.dumps(request.conditions_json, ensure_ascii=False),
         actions_json=json.dumps(request.actions_json, ensure_ascii=False),
         is_active=request.is_active,
+        requires_approval=request.requires_approval,
+        approval_role=request.approval_role,
+        cooldown_minutes=request.cooldown_minutes,
+        created_by_id=current_user.id,
         priority=request.priority,
         created_at=now,
         updated_at=now,
@@ -388,7 +514,7 @@ def patch_rule(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AutomationRuleResponse:
-    require_permissions(current_user, "automation.rules.manage")
+    _require_any_permission(current_user, "automation.update", "automation.rules.manage")
     item = db.scalar(_filter_by_tenant(select(AutomationRule).where(AutomationRule.id == rule_id), AutomationRule, current_user))
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
@@ -402,6 +528,7 @@ def patch_rule(
             setattr(item, field_name, json.dumps(value, ensure_ascii=False))
             continue
         setattr(item, field_name, value)
+    item.updated_by_id = current_user.id
     item.updated_at = _now()
     log_audit(
         db,
@@ -418,6 +545,62 @@ def patch_rule(
     return _rule_response(item)
 
 
+@router.post("/rules/{rule_id}/enable", response_model=AutomationRuleResponse)
+def enable_rule(
+    rule_id: str,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutomationRuleResponse:
+    _require_any_permission(current_user, "automation.update", "automation.rules.manage")
+    item = db.scalar(_filter_by_tenant(select(AutomationRule).where(AutomationRule.id == rule_id), AutomationRule, current_user))
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
+    item.is_active = True
+    item.updated_by_id = current_user.id
+    item.updated_at = _now()
+    log_audit(
+        db,
+        action="automation_rule_enabled",
+        entity_type="automation_rule",
+        entity_id=item.id,
+        actor_user=_actor(db, current_user),
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+    )
+    db.commit()
+    db.refresh(item)
+    return _rule_response(item)
+
+
+@router.post("/rules/{rule_id}/disable", response_model=AutomationRuleResponse)
+def disable_rule(
+    rule_id: str,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutomationRuleResponse:
+    _require_any_permission(current_user, "automation.update", "automation.rules.manage")
+    item = db.scalar(_filter_by_tenant(select(AutomationRule).where(AutomationRule.id == rule_id), AutomationRule, current_user))
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
+    item.is_active = False
+    item.updated_by_id = current_user.id
+    item.updated_at = _now()
+    log_audit(
+        db,
+        action="automation_rule_disabled",
+        entity_type="automation_rule",
+        entity_id=item.id,
+        actor_user=_actor(db, current_user),
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+    )
+    db.commit()
+    db.refresh(item)
+    return _rule_response(item)
+
+
 @router.post("/rules/{rule_id}/dry-run")
 def dry_run_rule(
     rule_id: str,
@@ -425,88 +608,173 @@ def dry_run_rule(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    require_permissions(current_user, "automation.rules.execute")
+    _require_any_permission(current_user, "automation.dry_run", "automation.rules.execute")
     rule = db.scalar(_filter_by_tenant(select(AutomationRule).where(AutomationRule.id == rule_id), AutomationRule, current_user))
     if rule is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
 
     context = dict(request.context)
+    context.setdefault("trigger_type", request.trigger_type)
     context.setdefault("entity_type", context.get("entity_type", "manual"))
-    context.setdefault("entity_id", context.get("entity_id"))
-    return AutomationEngine.dry_run_rule(rule, context)
+    context.setdefault("entity_id", context.get("entity_id", f"dry-run-{rule.id}"))
+    actor = _actor(db, current_user)
+    if actor is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
+    dry_preview = AutomationEngine.dry_run_rule(rule, context)
+    execution = execute_rule(db, rule, context, current_user=actor, dry_run=True)
+    db.commit()
+    db.refresh(execution)
+    return {
+        **dry_preview,
+        "execution": _run_response(execution),
+    }
+
+
+@router.post("/rules/{rule_id}/run")
+def run_rule(
+    rule_id: str,
+    request: RunRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_any_permission(current_user, "automation.run", "automation.rules.execute")
+    actor = _actor(db, current_user)
+    if actor is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
+    payload = dict(request.payload)
+    payload.setdefault("trigger_type", "manual")
+    payload.setdefault("entity_type", payload.get("entity_type", "manual"))
+    payload.setdefault("entity_id", payload.get("entity_id", f"manual-{rule_id}"))
+    try:
+        run = run_manual_rule(db, rule_id, payload, actor, dry_run=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    log_audit(
+        db,
+        action="automation_rule_executed",
+        entity_type="automation_execution",
+        entity_id=run.id,
+        actor_user=actor,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={"run_id": run.id, "status": run.status},
+    )
+    if run.status in {"failed", "waiting_approval"}:
+        create_domain_event_notification(
+            db,
+            tenant_id=current_user.tenant_id,
+            event_type="approval_required" if run.status == "waiting_approval" else "automation_failed",
+            title="Automation требует согласования" if run.status == "waiting_approval" else "Automation run завершился с ошибкой",
+            message=f"Execution {run.id} status={run.status}",
+            recipient_name=current_user.full_name,
+            recipient_email=current_user.email,
+            recipient_user_id=current_user.id,
+            severity="warning",
+            entity_type="automation_execution",
+            entity_id=run.id,
+            action_url="/automation",
+            metadata={"rule_id": run.rule_id, "status": run.status},
+        )
+    db.commit()
+    db.refresh(run)
+    return {"execution": _run_response(run), "summary": _parse_json(run.result_summary, {})}
 
 
 @router.post("/rules/{rule_id}/manual-run")
-def manual_run_rule(
+def legacy_manual_run_rule(
     rule_id: str,
     request: ManualRunRequest,
     http_request: Request,
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    require_permissions(current_user, "automation.rules.execute")
-    rule = db.scalar(_filter_by_tenant(select(AutomationRule).where(AutomationRule.id == rule_id), AutomationRule, current_user))
-    if rule is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
-    if not rule.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rule is inactive")
+    payload = dict(request.context)
+    payload.setdefault("trigger_type", request.trigger_type)
+    result = run_rule(rule_id, RunRequest(payload=payload), http_request, current_user, db)
+    return {"run": result["execution"], "summary": result["summary"]}
 
-    context = dict(request.context)
-    context.setdefault("entity_type", context.get("entity_type", "manual"))
-    context.setdefault("entity_id", context.get("entity_id"))
-    run = AutomationEngine.create_run(
-        db,
-        rule=rule,
-        trigger_type=request.trigger_type,
-        trigger_entity_type=str(context.get("entity_type")),
-        trigger_entity_id=str(context.get("entity_id")) if context.get("entity_id") is not None else None,
-    )
-    summary = AutomationEngine.execute_actions(db, run=run, rule=rule, context=context, actor_email=current_user.email)
-    log_audit(
-        db,
-        action="automation_manual_run_executed",
-        entity_type="automation_rule",
-        entity_id=rule.id,
-        actor_user=_actor(db, current_user),
-        ip_address=http_request.client.host if http_request.client else None,
-        user_agent=http_request.headers.get("user-agent"),
-        metadata={"run_id": run.id, "status": run.status},
-    )
-    if run.status in {"failed", "completed_with_errors"}:
-        create_domain_event_notification(
-            db,
-            tenant_id=current_user.tenant_id,
-            event_type="automation_failed",
-            title=f"Automation run завершился с ошибками ({rule.code})",
-            message=f"Manual run {run.id} завершился со статусом {run.status}.",
-            recipient_name=current_user.full_name,
-            recipient_email=current_user.email,
-            recipient_user_id=current_user.id,
-            severity="warning",
-            entity_type="automation_run",
-            entity_id=run.id,
-            action_url="/automation",
-            metadata={"rule_id": rule.id, "status": run.status},
-        )
-    db.commit()
-    db.refresh(run)
-    return {"run": _run_response(run), "summary": summary}
+
+@router.get("/executions", response_model=AutomationExecutionPageResponse)
+def list_executions(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    rule_id: str | None = Query(default=None),
+    trigger_type: str | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+) -> AutomationExecutionPageResponse:
+    _require_any_permission(current_user, "automation.executions.read", "automation.runs.read")
+    statement = _filter_by_tenant(select(AutomationRun), AutomationRun, current_user)
+    if rule_id:
+        statement = statement.where(AutomationRun.rule_id == rule_id)
+    if trigger_type:
+        statement = statement.where(AutomationRun.trigger_type == trigger_type)
+    if status_filter:
+        statement = statement.where(AutomationRun.status == status_filter)
+
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    items = db.scalars(statement.order_by(AutomationRun.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    return AutomationExecutionPageResponse(items=[_run_response(item) for item in items], total=total, page=page, page_size=page_size)
 
 
 @router.get("/runs", response_model=list[AutomationRunResponse])
-def list_runs(
+def list_runs_legacy(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
     trigger_type: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
 ) -> list[AutomationRunResponse]:
-    require_permissions(current_user, "automation.runs.read")
-    statement = _filter_by_tenant(select(AutomationRun).order_by(AutomationRun.created_at.desc()), AutomationRun, current_user)
-    if trigger_type:
-        statement = statement.where(AutomationRun.trigger_type == trigger_type)
-    if status_filter:
-        statement = statement.where(AutomationRun.status == status_filter)
-    return [_run_response(item) for item in db.scalars(statement).all()]
+    page = list_executions(current_user, db, None, trigger_type, status_filter, 1, 200)
+    return page.items
+
+
+@router.get("/executions/{execution_id}", response_model=dict[str, Any])
+def get_execution(execution_id: str, current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    _require_any_permission(current_user, "automation.executions.read", "automation.logs.read")
+    run = db.scalar(_filter_by_tenant(select(AutomationRun).where(AutomationRun.id == execution_id), AutomationRun, current_user))
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution not found")
+    logs = db.scalars(
+        _filter_by_tenant(
+            select(AutomationActionLog).where(AutomationActionLog.automation_run_id == run.id).order_by(AutomationActionLog.created_at.asc()),
+            AutomationActionLog,
+            current_user,
+        )
+    ).all()
+    return {"execution": _run_response(run), "action_logs": [_action_log_response(item) for item in logs]}
+
+
+@router.post("/executions/{execution_id}/retry", response_model=AutomationRunResponse)
+def retry_failed_execution(
+    execution_id: str,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutomationRunResponse:
+    _require_any_permission(current_user, "automation.executions.retry", "automation.executions.manage")
+    actor = _actor(db, current_user)
+    if actor is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
+    try:
+        retried = retry_execution(db, execution_id, actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    log_audit(
+        db,
+        action="automation_execution_retried",
+        entity_type="automation_execution",
+        entity_id=retried.id,
+        actor_user=actor,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={"source_execution_id": execution_id},
+    )
+    db.commit()
+    db.refresh(retried)
+    return _run_response(retried)
 
 
 @router.get("/runs/{run_id}/logs", response_model=list[AutomationActionLogResponse])
@@ -523,13 +791,34 @@ def list_action_logs(run_id: str, current_user: AuthUserResponse = Depends(get_c
     return [_action_log_response(item) for item in db.scalars(statement).all()]
 
 
-@router.get("/runbooks", response_model=list[RunbookResponse])
-def list_runbooks(current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db), active: bool | None = Query(default=None)) -> list[RunbookResponse]:
+@router.get("/runbooks", response_model=RunbookPageResponse)
+def list_runbooks(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    active: bool | None = Query(default=None),
+    q: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+) -> RunbookPageResponse:
     require_permissions(current_user, "automation.runbooks.read")
-    statement = _filter_by_tenant(select(Runbook).order_by(Runbook.title.asc()), Runbook, current_user)
+    statement = _filter_by_tenant(select(Runbook), Runbook, current_user)
     if active is not None:
         statement = statement.where(Runbook.is_active == active)
-    return [_runbook_response(item) for item in db.scalars(statement).all()]
+    if q:
+        token = f"%{q.strip()}%"
+        statement = statement.where(or_(Runbook.title.ilike(token), Runbook.code.ilike(token), Runbook.description.ilike(token)))
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    items = db.scalars(statement.order_by(Runbook.title.asc()).offset((page - 1) * page_size).limit(page_size)).all()
+    return RunbookPageResponse(items=[_runbook_response(item) for item in items], total=total, page=page, page_size=page_size)
+
+
+@router.get("/runbooks/{runbook_id}", response_model=RunbookResponse)
+def get_runbook(runbook_id: str, current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> RunbookResponse:
+    require_permissions(current_user, "automation.runbooks.read")
+    item = db.scalar(_filter_by_tenant(select(Runbook).where(Runbook.id == runbook_id), Runbook, current_user))
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runbook not found")
+    return _runbook_response(item)
 
 
 @router.post("/runbooks", response_model=RunbookResponse, status_code=status.HTTP_201_CREATED)
@@ -539,12 +828,13 @@ def create_runbook(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> RunbookResponse:
-    require_permissions(current_user, "automation.runbooks.manage")
+    _require_any_permission(current_user, "automation.runbooks.create", "automation.runbooks.manage")
     tenant_id = request.tenant_id if is_saas_root(current_user) else current_user.tenant_id
     now = _now()
     item = Runbook(
         id=str(uuid.uuid4()),
         tenant_id=tenant_id,
+        name=request.name,
         code=request.code,
         title=request.title,
         description=request.description,
@@ -553,6 +843,8 @@ def create_runbook(
         steps_json=json.dumps(request.steps_json, ensure_ascii=False),
         estimated_minutes=request.estimated_minutes,
         is_active=request.is_active,
+        requires_approval=request.requires_approval,
+        created_by_id=current_user.id,
         created_at=now,
         updated_at=now,
     )
@@ -580,7 +872,7 @@ def patch_runbook(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> RunbookResponse:
-    require_permissions(current_user, "automation.runbooks.manage")
+    _require_any_permission(current_user, "automation.runbooks.update", "automation.runbooks.manage")
     item = db.scalar(_filter_by_tenant(select(Runbook).where(Runbook.id == runbook_id), Runbook, current_user))
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runbook not found")
@@ -590,6 +882,7 @@ def patch_runbook(
             setattr(item, field_name, json.dumps(value, ensure_ascii=False))
             continue
         setattr(item, field_name, value)
+    item.updated_by_id = current_user.id
     item.updated_at = _now()
     log_audit(
         db,
@@ -604,6 +897,46 @@ def patch_runbook(
     db.commit()
     db.refresh(item)
     return _runbook_response(item)
+
+
+@router.post("/runbooks/{runbook_id}/dry-run", response_model=AutomationRunResponse)
+def dry_run_runbook(
+    runbook_id: str,
+    request: RunRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutomationRunResponse:
+    _require_any_permission(current_user, "automation.dry_run", "automation.runbooks.run", "automation.runbooks.manage", "automation.rules.execute")
+    actor = _actor(db, current_user)
+    if actor is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
+    try:
+        execution = run_runbook(db, runbook_id, request.payload, actor, dry_run=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(execution)
+    return _run_response(execution)
+
+
+@router.post("/runbooks/{runbook_id}/run", response_model=AutomationRunResponse)
+def run_runbook_endpoint(
+    runbook_id: str,
+    request: RunRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutomationRunResponse:
+    _require_any_permission(current_user, "automation.runbooks.run", "automation.executions.manage", "automation.runbooks.manage", "automation.rules.execute")
+    actor = _actor(db, current_user)
+    if actor is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
+    try:
+        execution = run_runbook(db, runbook_id, request.payload, actor, dry_run=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(execution)
+    return _run_response(execution)
 
 
 @router.get("/runbook-executions", response_model=list[RunbookExecutionResponse])
@@ -696,17 +1029,30 @@ def patch_runbook_execution(
     return _runbook_execution_response(item)
 
 
-@router.get("/approvals", response_model=list[ApprovalRequestResponse])
+@router.get("/approvals", response_model=ApprovalRequestPageResponse)
 def list_approvals(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
     status_filter: str | None = Query(default=None, alias="status"),
-) -> list[ApprovalRequestResponse]:
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+) -> ApprovalRequestPageResponse:
     require_permissions(current_user, "automation.approvals.read")
-    statement = _filter_by_tenant(select(ApprovalRequest).order_by(ApprovalRequest.created_at.desc()), ApprovalRequest, current_user)
+    statement = _filter_by_tenant(select(ApprovalRequest), ApprovalRequest, current_user)
     if status_filter:
         statement = statement.where(ApprovalRequest.status == status_filter)
-    return [_approval_response(item) for item in db.scalars(statement).all()]
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    items = db.scalars(statement.order_by(ApprovalRequest.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    return ApprovalRequestPageResponse(items=[_approval_response(item) for item in items], total=total, page=page, page_size=page_size)
+
+
+@router.get("/approvals/{approval_id}", response_model=ApprovalRequestResponse)
+def get_approval(approval_id: str, current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> ApprovalRequestResponse:
+    require_permissions(current_user, "automation.approvals.read")
+    item = db.scalar(_filter_by_tenant(select(ApprovalRequest).where(ApprovalRequest.id == approval_id), ApprovalRequest, current_user))
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval request not found")
+    return _approval_response(item)
 
 
 @router.patch("/approvals/{approval_id}", response_model=ApprovalRequestResponse)
@@ -717,34 +1063,37 @@ def patch_approval(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ApprovalRequestResponse:
-    require_permissions(current_user, "automation.approvals.manage")
+    _require_any_permission(current_user, "automation.approvals.decide", "automation.approvals.manage")
     item = db.scalar(_filter_by_tenant(select(ApprovalRequest).where(ApprovalRequest.id == approval_id), ApprovalRequest, current_user))
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval request not found")
 
-    decision = request.decision.strip().upper()
-    if decision not in {"APPROVED", "REJECTED"}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Decision must be APPROVED or REJECTED")
+    decision = (request.decision or "").strip().lower()
+    actor = _actor(db, current_user)
+    if actor is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
+    if decision == "approved":
+        item = approve_request(db, approval_id, actor, request.comment)
+    elif decision == "rejected":
+        item = reject_request(db, approval_id, actor, request.comment)
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Decision must be approved or rejected")
 
-    item.status = decision
-    item.approver_name = current_user.full_name
-    item.decision_comment = request.comment
-    item.decided_at = _now()
     log_audit(
         db,
         action="approval_request_decided",
         entity_type="approval_request",
         entity_id=item.id,
-        actor_user=_actor(db, current_user),
+        actor_user=actor,
         ip_address=http_request.client.host if http_request.client else None,
         user_agent=http_request.headers.get("user-agent"),
-        metadata={"decision": decision},
+        metadata={"decision": decision, "comment": request.comment},
     )
-    if decision == "REJECTED":
+    if decision == "rejected":
         create_domain_event_notification(
             db,
             tenant_id=current_user.tenant_id,
-            event_type="approval_required",
+            event_type="approval_rejected",
             title="Approval request отклонен",
             message=f"Запрос '{item.title}' был отклонен пользователем {current_user.full_name}.",
             recipient_name=current_user.full_name,
@@ -756,9 +1105,49 @@ def patch_approval(
             action_url="/automation",
             metadata={"decision": decision},
         )
+    else:
+        create_domain_event_notification(
+            db,
+            tenant_id=current_user.tenant_id,
+            event_type="approval_approved",
+            title="Approval request подтвержден",
+            message=f"Запрос '{item.title}' подтвержден пользователем {current_user.full_name}.",
+            recipient_name=current_user.full_name,
+            recipient_email=current_user.email,
+            recipient_user_id=current_user.id,
+            severity="info",
+            entity_type="approval_request",
+            entity_id=item.id,
+            action_url="/automation",
+            metadata={"decision": decision},
+        )
     db.commit()
     db.refresh(item)
     return _approval_response(item)
+
+
+@router.post("/approvals/{approval_id}/approve", response_model=ApprovalRequestResponse)
+def approve_approval(
+    approval_id: str,
+    request: ApprovalDecisionRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ApprovalRequestResponse:
+    request.decision = "approved"
+    return patch_approval(approval_id, request, http_request, current_user, db)
+
+
+@router.post("/approvals/{approval_id}/reject", response_model=ApprovalRequestResponse)
+def reject_approval(
+    approval_id: str,
+    request: ApprovalDecisionRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ApprovalRequestResponse:
+    request.decision = "rejected"
+    return patch_approval(approval_id, request, http_request, current_user, db)
 
 
 @router.get("/tickets/{ticket_id}/suggestions", response_model=SuggestionResponse)

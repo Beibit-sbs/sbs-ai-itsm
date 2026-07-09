@@ -53,6 +53,39 @@ def _ci_text(value: Any) -> str:
     return str(value or "").lower()
 
 
+SAFE_ACTION_TYPES = {
+    "assign_ticket",
+    "change_ticket_priority",
+    "add_ticket_comment",
+    "transition_ticket_status",
+    "notify_assignee",
+    "notify_sla_risk",
+    "escalate_ticket",
+    "create_manager_notification",
+    "assign_asset_responsible",
+    "request_asset_verification",
+    "notify_asset_owner",
+    "suggest_knowledge_article",
+    "create_draft_article_from_ticket",
+    "create_notification",
+    "send_mock_email",
+    "notify_role",
+    "run_saved_report",
+    "export_report_mock",
+    "create_security_notification",
+    "require_admin_review",
+}
+
+DANGEROUS_ACTION_TYPES = {
+    "close_ticket",
+    "dispose_asset",
+    "change_priority_critical",
+    "bulk_update",
+    "retry_failed_integration",
+    "security_action",
+}
+
+
 def _get_context_value(context: dict[str, Any], path: str) -> Any:
     current: Any = context
     for part in path.split("."):
@@ -137,8 +170,11 @@ class AutomationEngine:
             id=_uuid(),
             tenant_id=run.tenant_id,
             automation_run_id=run.id,
+            execution_id=run.id,
             action_type=action_type,
+            action_payload_json=_json_dump(input_payload or {}),
             status=status,
+            result_payload_json=_json_dump(output_payload or {}),
             input_json=_json_dump(input_payload or {}),
             output_json=_json_dump(output_payload or {}),
             error_message=error_message,
@@ -146,6 +182,627 @@ class AutomationEngine:
         )
         db.add(item)
         return item
+
+    @staticmethod
+    def evaluate_conditions(rule: AutomationRule, context: dict[str, Any]) -> bool:
+        return evaluate_conditions(rule, context)
+
+    @staticmethod
+    def dry_run_rule(rule: AutomationRule, context: dict[str, Any]) -> dict[str, Any]:
+        actions = _json_load_object(rule.actions_json, [])
+        if not isinstance(actions, list):
+            actions = []
+        return {
+            "rule_id": rule.id,
+            "rule_code": rule.code,
+            "rule_name": rule.name,
+            "trigger_type": rule.trigger_type,
+            "matched": evaluate_conditions(rule, context),
+            "planned_actions": actions,
+            "mode": "safe_demo",
+        }
+
+    @staticmethod
+    def evaluate_rules(
+        db: Session,
+        *,
+        tenant_id: str | None,
+        trigger_type: str,
+        context: dict[str, Any],
+        actor_email: str | None = None,
+    ) -> list[AutomationRun]:
+        return evaluate_rules(db, tenant_id=tenant_id, trigger_type=trigger_type, context=context, actor_email=actor_email)
+
+    @staticmethod
+    def suggest_runbooks_for_ticket(db: Session, ticket: Ticket, tenant_id: str | None) -> dict[str, Any]:
+        return suggest_runbooks_for_ticket(db, ticket, tenant_id)
+
+
+def evaluate_conditions(rule: AutomationRule, context: dict[str, Any]) -> bool:
+    raw_conditions = _json_load_object(rule.conditions_json, [])
+    if raw_conditions in (None, {}, []):
+        return True
+
+    mode = "all"
+    conditions: list[dict[str, Any]]
+    if isinstance(raw_conditions, dict):
+        mode = str(raw_conditions.get("mode", "all")).lower()
+        conditions = raw_conditions.get("conditions", [])
+        if "any" in raw_conditions:
+            mode = "any"
+            conditions = raw_conditions.get("any", [])
+        if "all" in raw_conditions:
+            mode = "all"
+            conditions = raw_conditions.get("all", [])
+    elif isinstance(raw_conditions, list):
+        conditions = raw_conditions
+    else:
+        return True
+
+    if not conditions:
+        return True
+
+    results: list[bool] = []
+    for item in conditions:
+        path = str(item.get("path", "")).strip()
+        op = str(item.get("operator", "eq")).lower().strip()
+        expected = item.get("value")
+        if not path:
+            results.append(True)
+            continue
+        actual = _get_context_value(context, path)
+        if op in {"eq", "=="}:
+            passed = _ci_text(actual) == _ci_text(expected)
+        elif op in {"contains", "includes"}:
+            passed = _ci_text(expected) in _ci_text(actual)
+        elif op in {"gte", ">="}:
+            try:
+                passed = float(actual) >= float(expected)
+            except (TypeError, ValueError):
+                passed = False
+        elif op in {"lte", "<="}:
+            try:
+                passed = float(actual) <= float(expected)
+            except (TypeError, ValueError):
+                passed = False
+        elif op == "in":
+            if not isinstance(expected, list):
+                passed = False
+            else:
+                passed = _ci_text(actual) in {_ci_text(value) for value in expected}
+        else:
+            passed = False
+        results.append(passed)
+
+    return any(results) if mode == "any" else all(results)
+
+
+def _status(value: str) -> str:
+    return value.strip().lower()
+
+
+def _context_ticket(db: Session, context: dict[str, Any]) -> Ticket | None:
+    ticket_id = _get_context_value(context, "ticket.id") or context.get("ticket_id")
+    if not ticket_id:
+        return None
+    return db.scalar(select(Ticket).where(Ticket.id == str(ticket_id)))
+
+
+def execute_action(db: Session, action: dict[str, Any], context: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
+    action_type = str(action.get("type", "")).strip()
+    ticket = _context_ticket(db, context)
+
+    if action_type in DANGEROUS_ACTION_TYPES:
+        return {
+            "action_type": action_type,
+            "status": "dry_run" if dry_run else "skipped",
+            "result": {"reason": "dangerous_action_requires_approval"},
+        }
+
+    if action_type not in SAFE_ACTION_TYPES and action_type not in {
+        "change_priority",
+        "add_comment",
+        "create_mock_email_log",
+        "create_audit_log",
+        "attach_runbook",
+        "create_approval_request",
+        "create_task_note",
+        "create_integration_event_log",
+    }:
+        return {
+            "action_type": action_type,
+            "status": "skipped",
+            "result": {"reason": "unsupported_action"},
+        }
+
+    if dry_run:
+        return {
+            "action_type": action_type,
+            "status": "dry_run",
+            "result": {"planned": True, "payload": action},
+        }
+
+    result: dict[str, Any] = {"mode": "internal_safe"}
+
+    if action_type in {"assign_ticket"} and ticket is not None:
+        assignee = str(action.get("assignee") or action.get("value") or "agent.support@sbs.local")
+        ticket.assignee_name = assignee
+        ticket.updated_at = _now()
+        result["assigned_to"] = assignee
+
+    elif action_type in {"change_ticket_priority", "change_priority"} and ticket is not None:
+        priority = str(action.get("priority") or action.get("value") or "HIGH").upper()
+        ticket.priority = priority
+        ticket.updated_at = _now()
+        result["priority"] = priority
+
+    elif action_type in {"add_ticket_comment", "add_comment"} and ticket is not None:
+        comment_body = str(action.get("comment") or action.get("message") or "Automation comment")
+        db.add(
+            TicketComment(
+                id=_uuid(),
+                ticket_id=ticket.id,
+                author_name="Automation Engine",
+                author_role="automation",
+                body=comment_body,
+                created_at=_now(),
+            )
+        )
+        result["comment"] = comment_body
+
+    elif action_type in {"transition_ticket_status"} and ticket is not None:
+        next_status = str(action.get("status") or "IN_PROGRESS").upper()
+        ticket.status = next_status
+        ticket.updated_at = _now()
+        result["status"] = next_status
+
+    elif action_type in {"create_notification", "notify_assignee", "notify_role", "create_manager_notification", "create_security_notification", "require_admin_review", "notify_sla_risk", "notify_asset_owner"}:
+        recipient_email = str(action.get("recipient_email") or action.get("to_email") or (ticket.assignee_name if ticket else "manager@sbs.local"))
+        db.add(
+            Notification(
+                id=_uuid(),
+                type="automation",
+                title=str(action.get("title") or f"Automation {action_type}"),
+                message=str(action.get("message") or "Automation generated notification."),
+                recipient_name=str(action.get("recipient_name") or recipient_email),
+                recipient_email=recipient_email,
+                channel="in_app",
+                status="UNREAD",
+                related_ticket_id=ticket.id if ticket else None,
+                created_at=_now(),
+            )
+        )
+        result["recipient"] = recipient_email
+
+    elif action_type in {"send_mock_email", "create_mock_email_log", "export_report_mock"}:
+        to_email = str(action.get("to_email") or (ticket.requester_email if ticket else "demo@sbs.local"))
+        db.add(
+            EmailMessageLog(
+                id=_uuid(),
+                provider="mock_automation",
+                to_email=to_email,
+                subject=str(action.get("subject") or "Automation mock email"),
+                body=str(action.get("body") or "Mock-safe email log record."),
+                status="SENT",
+                error_message=None,
+                related_ticket_id=ticket.id if ticket else None,
+                created_at=_now(),
+                sent_at=_now(),
+            )
+        )
+        result["to_email"] = to_email
+
+    elif action_type in {"suggest_knowledge_article", "create_draft_article_from_ticket"}:
+        article = db.scalar(select(KnowledgeArticle).order_by(KnowledgeArticle.helpful_count.desc()))
+        result["article_id"] = article.id if article else None
+        result["article_title"] = article.title if article else None
+
+    elif action_type in {"run_saved_report", "escalate_ticket", "assign_asset_responsible", "request_asset_verification"}:
+        result["accepted"] = True
+
+    elif action_type == "create_integration_event_log":
+        event = create_integration_event(
+            db,
+            tenant_id=context.get("tenant_id"),
+            external_system_id=None,
+            direction="outbound",
+            event_type="automation_demo_event",
+            status="logged_only",
+            request_summary={"action_type": action_type},
+            response_summary={"message": "Safe event"},
+        )
+        result["integration_event_id"] = event.id
+
+    elif action_type == "create_audit_log":
+        result["audit_logged"] = True
+
+    else:
+        result["message"] = "safe no-op"
+
+    return {
+        "action_type": action_type,
+        "status": "success",
+        "result": result,
+    }
+
+
+def create_approval_for_execution(db: Session, execution: AutomationRun, approver_role: str | None) -> ApprovalRequest:
+    approver = approver_role or "it_manager"
+    request_item = ApprovalRequest(
+        id=_uuid(),
+        tenant_id=execution.tenant_id,
+        title="Automation approval required",
+        description="Approval required for automation execution.",
+        entity_type="automation_execution",
+        entity_id=execution.id,
+        requested_by=execution.executed_by_id or "automation@sbs.local",
+        approver_name=approver,
+        status="pending",
+        reason="dangerous_or_approval_required_action",
+        requested_at=_now(),
+        created_at=_now(),
+        metadata_json=_json_dump({"execution_id": execution.id, "rule_id": execution.rule_id}),
+    )
+    db.add(request_item)
+    db.flush()
+    execution.approval_request_id = request_item.id
+    execution.status = "waiting_approval"
+    return request_item
+
+
+def execute_rule(db: Session, rule: AutomationRule, context: dict[str, Any], current_user: User | None = None, dry_run: bool = False) -> AutomationRun:
+    now = _now()
+    if not rule.is_active and not dry_run:
+        raise ValueError("Rule is inactive")
+
+    if not dry_run and rule.cooldown_minutes > 0 and rule.last_run_at is not None:
+        elapsed = (now - rule.last_run_at).total_seconds() / 60.0
+        if elapsed < rule.cooldown_minutes:
+            run = AutomationRun(
+                id=_uuid(),
+                tenant_id=rule.tenant_id,
+                rule_id=rule.id,
+                runbook_id=None,
+                trigger_type=str(context.get("trigger_type") or rule.trigger_type),
+                trigger_entity_type=context.get("entity_type"),
+                trigger_entity_id=context.get("entity_id"),
+                status="skipped",
+                input_payload_json=_json_dump(context),
+                output_payload_json=_json_dump({"reason": "cooldown"}),
+                started_at=now,
+                finished_at=now,
+                executed_by_id=current_user.id if current_user else None,
+                result_summary=_json_dump({"reason": "cooldown"}),
+                error_message=None,
+                created_at=now,
+            )
+            db.add(run)
+            return run
+
+    run = AutomationRun(
+        id=_uuid(),
+        tenant_id=rule.tenant_id,
+        rule_id=rule.id,
+        runbook_id=None,
+        trigger_type=str(context.get("trigger_type") or rule.trigger_type),
+        trigger_entity_type=context.get("entity_type"),
+        trigger_entity_id=context.get("entity_id"),
+        status="dry_run" if dry_run else "running",
+        input_payload_json=_json_dump(context),
+        output_payload_json=None,
+        started_at=now,
+        finished_at=None,
+        executed_by_id=current_user.id if current_user else None,
+        result_summary=None,
+        error_message=None,
+        created_at=now,
+    )
+    db.add(run)
+    db.flush()
+
+    actions = _json_load_object(rule.actions_json, [])
+    if not isinstance(actions, list):
+        actions = []
+
+    requires_approval = bool(rule.requires_approval)
+    if not requires_approval:
+        requires_approval = any(str(action.get("type", "")).strip() in DANGEROUS_ACTION_TYPES for action in actions)
+
+    if requires_approval and not dry_run:
+        create_approval_for_execution(db, run, rule.approval_role)
+        run.output_payload_json = _json_dump({"approval_required": True})
+        run.finished_at = now
+        run.result_summary = _json_dump({"status": "waiting_approval"})
+        if current_user is not None:
+            log_audit(
+                db,
+                action="approval_requested",
+                entity_type="automation_execution",
+                entity_id=run.id,
+                actor_user=current_user,
+                tenant_id=rule.tenant_id,
+                metadata={"rule_id": rule.id},
+            )
+        return run
+
+    failures = 0
+    outputs: list[dict[str, Any]] = []
+    for action in actions:
+        result = execute_action(db, action, context, dry_run=dry_run)
+        outputs.append(result)
+        if result["status"] == "failed":
+            failures += 1
+        AutomationEngine.log_action(
+            db,
+            run=run,
+            action_type=result["action_type"],
+            status=result["status"],
+            input_payload=action,
+            output_payload=result.get("result", {}),
+            error_message=result.get("error"),
+        )
+
+    run.status = "failed" if failures else ("dry_run" if dry_run else "success")
+    run.finished_at = _now()
+    run.output_payload_json = _json_dump({"actions": outputs})
+    run.result_summary = _json_dump({"actions": outputs, "failures": failures})
+    run.error_message = f"{failures} action(s) failed" if failures else None
+
+    if not dry_run:
+        rule.last_run_at = run.finished_at
+        rule.run_count = int(rule.run_count or 0) + 1
+        if failures:
+            rule.failure_count = int(rule.failure_count or 0) + 1
+
+    if current_user is not None:
+        log_audit(
+            db,
+            action="automation_rule_dry_run" if dry_run else "automation_rule_executed",
+            entity_type="automation_rule",
+            entity_id=rule.id,
+            actor_user=current_user,
+            tenant_id=rule.tenant_id,
+            metadata={"execution_id": run.id, "status": run.status},
+        )
+        if run.status == "failed":
+            log_audit(
+                db,
+                action="automation_execution_failed",
+                entity_type="automation_execution",
+                entity_id=run.id,
+                actor_user=current_user,
+                tenant_id=rule.tenant_id,
+                metadata={"rule_id": rule.id},
+            )
+
+    return run
+
+
+def run_manual_rule(db: Session, rule_id: str, payload: dict[str, Any], current_user: User, dry_run: bool = False) -> AutomationRun:
+    rule = db.get(AutomationRule, rule_id)
+    if rule is None:
+        raise ValueError("Rule not found")
+    context = dict(payload or {})
+    context.setdefault("trigger_type", "manual")
+    context.setdefault("entity_type", context.get("entity_type", "manual"))
+    return execute_rule(db, rule, context, current_user=current_user, dry_run=dry_run)
+
+
+def evaluate_rules(
+    db: Session,
+    *,
+    tenant_id: str | None,
+    trigger_type: str,
+    context: dict[str, Any],
+    actor_email: str | None = None,
+) -> list[AutomationRun]:
+    statement = select(AutomationRule).where(AutomationRule.is_active == True, AutomationRule.trigger_type == trigger_type)  # noqa: E712
+    statement = _rule_scope(statement, tenant_id).order_by(AutomationRule.priority.asc(), AutomationRule.created_at.asc())
+    actor = _as_user(db, actor_email, tenant_id)
+    runs: list[AutomationRun] = []
+    for rule in db.scalars(statement).all():
+        if not evaluate_conditions(rule, context):
+            continue
+        runs.append(execute_rule(db, rule, context, current_user=actor, dry_run=False))
+    return runs
+
+
+def suggest_runbooks_for_ticket(db: Session, ticket: Ticket, tenant_id: str | None) -> dict[str, Any]:
+    text = f"{ticket.title or ''} {ticket.description or ''}".lower()
+
+    statement = select(Runbook).where(Runbook.is_active == True)  # noqa: E712
+    if tenant_id is not None:
+        statement = statement.where((Runbook.tenant_id == tenant_id) | (Runbook.tenant_id.is_(None)))
+    runbooks = db.scalars(statement.order_by(Runbook.severity.desc(), Runbook.title.asc())).all()
+
+    keywords = {
+        "интернет": "Проверка отсутствия интернета в кабинете",
+        "wi-fi": "Массовый сбой Wi-Fi",
+        "wifi": "Массовый сбой Wi-Fi",
+        "принтер": "Не работает принтер",
+        "парол": "Сброс пароля пользователя",
+        "platonus": "Нет доступа к Platonus",
+        "moodle": "Нет доступа к Moodle",
+        "фишинг": "Подозрение на фишинговое письмо",
+        "компьютер": "Не включается компьютер",
+        "проектор": "Проверка проектора",
+        "почта": "Сбой корпоративной почты",
+        "zimbra": "Проверка Zimbra mock health",
+        "ldap": "Проверка LDAP mock sync",
+        "сеть": "Проверка коммутатора",
+        "сервер": "Проверка сервера",
+        "critical": "Обработка критичной заявки",
+    }
+
+    matched_titles = {title for key, title in keywords.items() if key in text}
+    suggested = [rb for rb in runbooks if rb.title in matched_titles]
+    if not suggested:
+        suggested = runbooks[:3]
+
+    context = build_ticket_context(ticket)
+    dry_runs = []
+    rules_statement = select(AutomationRule).where(AutomationRule.is_active == True, AutomationRule.trigger_type == "ticket_created")  # noqa: E712
+    rules_statement = _rule_scope(rules_statement, tenant_id)
+    for rule in db.scalars(rules_statement).all():
+        result = AutomationEngine.dry_run_rule(rule, context)
+        if result["matched"]:
+            dry_runs.append(result)
+
+    return {
+        "ticket_id": ticket.id,
+        "suggested_runbooks": [
+            {
+                "id": item.id,
+                "code": item.code,
+                "title": item.title,
+                "category": item.category,
+                "severity": item.severity,
+                "estimated_minutes": item.estimated_minutes,
+            }
+            for item in suggested
+        ],
+        "matched_rules": dry_runs,
+    }
+
+
+def run_runbook(db: Session, runbook_id: str, payload: dict[str, Any], current_user: User, dry_run: bool = False) -> AutomationRun:
+    runbook = db.get(Runbook, runbook_id)
+    if runbook is None:
+        raise ValueError("Runbook not found")
+
+    fallback_rule_id = payload.get("rule_id")
+    if fallback_rule_id is None:
+        fallback_rule = db.scalar(
+            select(AutomationRule)
+            .where((AutomationRule.tenant_id == runbook.tenant_id) | (AutomationRule.tenant_id.is_(None)))
+            .order_by(AutomationRule.priority.asc(), AutomationRule.created_at.asc())
+        )
+        if fallback_rule is None:
+            raise ValueError("No automation rule available for runbook execution")
+        fallback_rule_id = fallback_rule.id
+
+    execution = AutomationRun(
+        id=_uuid(),
+        tenant_id=runbook.tenant_id,
+        rule_id=str(fallback_rule_id),
+        runbook_id=runbook.id,
+        trigger_type="manual",
+        trigger_entity_type="runbook",
+        trigger_entity_id=runbook.id,
+        status="dry_run" if dry_run else "running",
+        input_payload_json=_json_dump(payload or {}),
+        output_payload_json=None,
+        started_at=_now(),
+        finished_at=None,
+        executed_by_id=current_user.id,
+        approval_request_id=None,
+        result_summary=None,
+        error_message=None,
+        created_at=_now(),
+    )
+    db.add(execution)
+    db.flush()
+
+    if runbook.requires_approval and not dry_run:
+        create_approval_for_execution(db, execution, "it_manager")
+        execution.finished_at = _now()
+        execution.result_summary = _json_dump({"status": "waiting_approval"})
+        log_audit(
+            db,
+            action="approval_requested",
+            entity_type="runbook",
+            entity_id=runbook.id,
+            actor_user=current_user,
+            tenant_id=runbook.tenant_id,
+            metadata={"execution_id": execution.id},
+        )
+        return execution
+
+    execution.status = "dry_run" if dry_run else "success"
+    execution.finished_at = _now()
+    execution.output_payload_json = _json_dump({"runbook": runbook.title, "steps": _json_load_object(runbook.steps_json, [])})
+    execution.result_summary = _json_dump({"runbook": runbook.title, "dry_run": dry_run})
+    log_audit(
+        db,
+        action="runbook_dry_run" if dry_run else "runbook_executed",
+        entity_type="runbook",
+        entity_id=runbook.id,
+        actor_user=current_user,
+        tenant_id=runbook.tenant_id,
+        metadata={"execution_id": execution.id},
+    )
+    return execution
+
+
+def approve_request(db: Session, approval_id: str, current_user: User, comment: str | None) -> ApprovalRequest:
+    request = db.get(ApprovalRequest, approval_id)
+    if request is None:
+        raise ValueError("Approval request not found")
+    request.status = "approved"
+    request.approver_id = current_user.id
+    request.approver_name = current_user.full_name
+    request.decision_comment = comment
+    request.decided_at = _now()
+    log_audit(
+        db,
+        action="approval_approved",
+        entity_type="approval_request",
+        entity_id=request.id,
+        actor_user=current_user,
+        tenant_id=request.tenant_id,
+        metadata={"entity_type": request.entity_type, "entity_id": request.entity_id},
+    )
+    return request
+
+
+def reject_request(db: Session, approval_id: str, current_user: User, comment: str | None) -> ApprovalRequest:
+    request = db.get(ApprovalRequest, approval_id)
+    if request is None:
+        raise ValueError("Approval request not found")
+    request.status = "rejected"
+    request.approver_id = current_user.id
+    request.approver_name = current_user.full_name
+    request.decision_comment = comment
+    request.decided_at = _now()
+    log_audit(
+        db,
+        action="approval_rejected",
+        entity_type="approval_request",
+        entity_id=request.id,
+        actor_user=current_user,
+        tenant_id=request.tenant_id,
+        metadata={"entity_type": request.entity_type, "entity_id": request.entity_id},
+    )
+    return request
+
+
+def retry_execution(db: Session, execution_id: str, current_user: User) -> AutomationRun:
+    execution = db.get(AutomationRun, execution_id)
+    if execution is None:
+        raise ValueError("Execution not found")
+    if _status(execution.status) not in {"failed", "skipped"}:
+        raise ValueError("Only failed/skipped executions can be retried")
+    if execution.rule_id and execution.rule_id != "manual_runbook":
+        rule = db.get(AutomationRule, execution.rule_id)
+        if rule is None:
+            raise ValueError("Rule not found")
+        context = _json_load_object(execution.input_payload_json, {})
+        retried = execute_rule(db, rule, context, current_user=current_user, dry_run=False)
+    else:
+        if not execution.runbook_id:
+            raise ValueError("Execution cannot be retried")
+        payload = _json_load_object(execution.input_payload_json, {})
+        retried = run_runbook(db, execution.runbook_id, payload, current_user=current_user, dry_run=False)
+    log_audit(
+        db,
+        action="automation_execution_retried",
+        entity_type="automation_execution",
+        entity_id=retried.id,
+        actor_user=current_user,
+        tenant_id=retried.tenant_id,
+        metadata={"source_execution_id": execution.id},
+    )
+    return retried
 
     @staticmethod
     def evaluate_conditions(rule: AutomationRule, context: dict[str, Any]) -> bool:
@@ -354,7 +1011,7 @@ class AutomationEngine:
                         entity_id=str(action.get("entity_id", ticket.id if ticket else rule.id)),
                         requested_by=actor_email or "automation@sbs.local",
                         approver_name=str(action.get("approver_name", "IT Manager")),
-                        status="PENDING",
+                        status="pending",
                         decision_comment=None,
                         created_at=_now(),
                     )
@@ -437,7 +1094,7 @@ class AutomationEngine:
             "actions": outputs,
             "mode": "safe_demo",
         }
-        run.status = "completed" if failed_count == 0 else "completed_with_errors"
+        run.status = "success" if failed_count == 0 else "failed"
         run.finished_at = _now()
         run.result_summary = _json_dump(summary)
         run.error_message = None if failed_count == 0 else f"{failed_count} action(s) failed"
@@ -587,9 +1244,9 @@ def collect_automation_overview(db: Session, tenant_id: str | None = None) -> di
     today = datetime.now(UTC).date()
     runs_today = [item for item in runs if item.created_at.date() == today]
     failed_runs = [item for item in runs if item.status in {"failed", "completed_with_errors"}]
-    successful_runs = [item for item in runs if item.status == "completed"]
+    successful_runs = [item for item in runs if item.status in {"completed", "success"}]
     success_rate = round((len(successful_runs) / len(runs) * 100), 1) if runs else 100.0
-    pending_approvals = [item for item in approvals if item.status == "PENDING"]
+    pending_approvals = [item for item in approvals if item.status.lower() == "pending"]
 
     trigger_counter: dict[str, int] = {}
     for run in runs:
@@ -629,6 +1286,27 @@ def collect_automation_overview(db: Session, tenant_id: str | None = None) -> di
         ],
         "triggers": [{"trigger_type": key, "count": value} for key, value in sorted(trigger_counter.items(), key=lambda value: value[1], reverse=True)],
     }
+
+
+def trigger_automation_event(
+    db: Session,
+    *,
+    tenant_id: str | None,
+    trigger_type: str,
+    context: dict[str, Any],
+    actor_email: str | None,
+) -> list[AutomationRun]:
+    try:
+        return AutomationEngine.evaluate_rules(
+            db,
+            tenant_id=tenant_id,
+            trigger_type=trigger_type,
+            context=context,
+            actor_email=actor_email,
+        )
+    except Exception:
+        # Event hooks must never break core business operations.
+        return []
 
 
 def seed_workflow_automation_data(db: Session, tenant_id: str, actor_email: str) -> None:
@@ -891,7 +1569,7 @@ def seed_workflow_automation_data(db: Session, tenant_id: str, actor_email: str)
         rule_items = list(rule_map.values())
         for index in range(20):
             rule = rule_items[index % len(rule_items)]
-            status = "completed" if index % 5 else "completed_with_errors"
+            status = "success" if index % 5 else "failed"
             run = AutomationRun(
                 id=_uuid(),
                 tenant_id=tenant_id,
@@ -938,7 +1616,7 @@ def seed_workflow_automation_data(db: Session, tenant_id: str, actor_email: str)
                     entity_id=f"demo-ticket-{index + 1}",
                     requested_by=actor_email,
                     approver_name="IT Manager",
-                    status="PENDING" if index % 3 else "APPROVED",
+                    status="pending" if index % 3 else "approved",
                     decision_comment="Approved in demo" if index % 3 == 0 else None,
                     created_at=now,
                     decided_at=now if index % 3 == 0 else None,

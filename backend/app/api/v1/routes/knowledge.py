@@ -16,6 +16,7 @@ from app.models.knowledge_category import KnowledgeCategory
 from app.models.knowledge_usage_log import KnowledgeUsageLog
 from app.models.ticket import Ticket
 from app.models.user import User
+from app.services.automation import trigger_automation_event
 from app.services.audit import log_audit
 from app.services.knowledge_ai import article_payload, create_article_from_ticket, next_article_number, search_articles
 from app.services.notifications import create_domain_event_notification
@@ -324,6 +325,13 @@ def create_article(
             action_url="/knowledge",
             metadata={"article_number": article.article_number, "title": article.title},
         )
+        trigger_automation_event(
+            db,
+            tenant_id=current_user.tenant_id,
+            trigger_type="knowledge_article_published",
+            context={"entity_type": "knowledge_article", "entity_id": article.id, "article": {"id": article.id, "title": article.title}},
+            actor_email=current_user.email,
+        )
     db.commit()
     db.refresh(article)
     return _article_to_response(article, {category.id: category})
@@ -386,6 +394,13 @@ def patch_article(
             entity_id=article.id,
             action_url="/knowledge",
             metadata={"article_number": article.article_number, "title": article.title},
+        )
+        trigger_automation_event(
+            db,
+            tenant_id=current_user.tenant_id,
+            trigger_type="knowledge_article_published",
+            context={"entity_type": "knowledge_article", "entity_id": article.id, "article": {"id": article.id, "title": article.title}},
+            actor_email=current_user.email,
         )
     db.commit()
     db.refresh(article)

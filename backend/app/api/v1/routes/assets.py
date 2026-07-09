@@ -21,6 +21,7 @@ from app.models.asset_import_row import AssetImportRow
 from app.models.tenant import Tenant
 from app.models.ticket import Ticket
 from app.models.user import User
+from app.services.automation import trigger_automation_event
 from app.services.asset_import import FILE_SIZE_LIMIT_BYTES, AssetImportService
 from app.services.asset_sla import calculate_asset_health
 from app.services.audit import log_audit
@@ -868,6 +869,13 @@ def move_asset(
         action_url="/assets",
         metadata={"asset_tag": asset.asset_tag, "location": asset.location},
     )
+    trigger_automation_event(
+        db,
+        tenant_id=asset.tenant_id,
+        trigger_type="asset_moved",
+        context={"entity_type": "asset", "entity_id": asset.id, "asset": {"id": asset.id, "asset_tag": asset.asset_tag, "location": asset.location}},
+        actor_email=current_user.email,
+    )
     db.commit()
     return get_asset(asset.id, current_user, db)
 
@@ -926,6 +934,13 @@ def verify_asset(
         entity_id=asset.id,
         action_url="/assets",
         metadata={"asset_tag": asset.asset_tag, "verification_status": asset.verification_status},
+    )
+    trigger_automation_event(
+        db,
+        tenant_id=asset.tenant_id,
+        trigger_type="asset_verified",
+        context={"entity_type": "asset", "entity_id": asset.id, "asset": {"id": asset.id, "asset_tag": asset.asset_tag, "verification_status": asset.verification_status}},
+        actor_email=current_user.email,
     )
     db.commit()
     return get_asset(asset.id, current_user, db)
@@ -999,6 +1014,13 @@ def dispose_asset(
         entity_id=asset.id,
         action_url="/assets",
         metadata={"asset_tag": asset.asset_tag, "writeoff_reason": request.writeoff_reason},
+    )
+    trigger_automation_event(
+        db,
+        tenant_id=asset.tenant_id,
+        trigger_type="asset_disposed",
+        context={"entity_type": "asset", "entity_id": asset.id, "asset": {"id": asset.id, "asset_tag": asset.asset_tag, "status": asset.status}},
+        actor_email=current_user.email,
     )
     db.commit()
     return get_asset(asset.id, current_user, db)

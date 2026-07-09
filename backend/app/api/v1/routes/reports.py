@@ -19,6 +19,7 @@ from app.models.saved_report import SavedReport
 from app.models.user import User
 from app.services.analytics import report_payload_for_type
 from app.services.audit import log_audit
+from app.services.automation import trigger_automation_event
 from app.services.notifications import create_domain_event_notification
 from app.services.rbac import require_permissions
 
@@ -349,6 +350,13 @@ def export_report(
         entity_id=request.report_type,
         action_url="/analytics",
         metadata={"report_type": request.report_type, "format": request.format},
+    )
+    trigger_automation_event(
+        db,
+        tenant_id=current_user.tenant_id,
+        trigger_type="report_exported",
+        context={"entity_type": "report_export", "entity_id": request.report_type, "report": {"type": request.report_type, "format": request.format}},
+        actor_email=current_user.email,
     )
     db.commit()
     return response

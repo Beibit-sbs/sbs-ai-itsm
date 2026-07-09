@@ -911,12 +911,17 @@ export type AutomationRun = {
   id: string
   tenant_id: string | null
   rule_id: string
+  runbook_id?: string | null
   trigger_type: string
   trigger_entity_type: string | null
   trigger_entity_id: string | null
   status: string
+  input_payload_json?: Record<string, unknown> | null
+  output_payload_json?: Record<string, unknown> | null
   started_at: string | null
   finished_at: string | null
+  executed_by_id?: string | null
+  approval_request_id?: string | null
   result_summary: Record<string, unknown>
   error_message: string | null
   created_at: string
@@ -926,8 +931,11 @@ export type AutomationActionLog = {
   id: string
   tenant_id: string | null
   automation_run_id: string
+  execution_id?: string | null
   action_type: string
+  action_payload_json?: Record<string, unknown>
   status: string
+  result_payload_json?: Record<string, unknown>
   input_json: Record<string, unknown>
   output_json: Record<string, unknown>
   error_message: string | null
@@ -937,6 +945,7 @@ export type AutomationActionLog = {
 export type Runbook = {
   id: string
   tenant_id: string | null
+  name?: string | null
   code: string
   title: string
   description: string | null
@@ -945,6 +954,7 @@ export type Runbook = {
   steps_json: Array<Record<string, unknown>>
   estimated_minutes: number
   is_active: boolean
+  requires_approval?: boolean
   created_at: string
   updated_at: string
 }
@@ -970,12 +980,22 @@ export type ApprovalRequest = {
   description: string | null
   entity_type: string
   entity_id: string | null
+  requested_by_id?: string | null
+  approver_id?: string | null
   requested_by: string
   approver_name: string | null
   status: string
+  reason?: string | null
   decision_comment: string | null
+  requested_at?: string
+  metadata_json?: Record<string, unknown>
   created_at: string
   decided_at: string | null
+}
+
+export type AutomationExecutionDetail = {
+  execution: AutomationRun
+  action_logs: AutomationActionLog[]
 }
 
 export type TicketAutomationSuggestion = {
@@ -2374,17 +2394,84 @@ export async function fetchAutomationOverview(accessToken: string): Promise<Auto
 }
 
 export async function fetchAutomationRules(accessToken: string): Promise<AutomationRule[]> {
-  const response = await fetch(`${API_BASE_URL}/automation/rules`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
-  return readJsonResponse<AutomationRule[]>(response)
+  const page = await fetchAutomationRulesPage(accessToken, {})
+  return page.items
 }
 
-export async function patchAutomationRule(accessToken: string, ruleId: string, request: Partial<Pick<AutomationRule, 'name' | 'description' | 'trigger_type' | 'is_active' | 'priority'>> & { conditions_json?: Record<string, unknown> | Array<unknown>; actions_json?: Array<Record<string, unknown>> }): Promise<AutomationRule> {
+export async function fetchAutomationRulesPage(
+  accessToken: string,
+  params: { page?: number; page_size?: number; is_active?: boolean; trigger_type?: string; q?: string },
+): Promise<PaginatedResponse<AutomationRule>> {
+  const searchParams = new URLSearchParams()
+  if (params.page !== undefined) searchParams.set('page', String(params.page))
+  if (params.page_size !== undefined) searchParams.set('page_size', String(params.page_size))
+  if (params.is_active !== undefined) searchParams.set('is_active', String(params.is_active))
+  if (params.trigger_type) searchParams.set('trigger_type', params.trigger_type)
+  if (params.q) searchParams.set('q', params.q)
+  const suffix = searchParams.toString() ? `?${searchParams.toString()}` : ''
+  const response = await fetch(`${API_BASE_URL}/automation/rules${suffix}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<PaginatedResponse<AutomationRule>>(response)
+}
+
+export async function fetchAutomationRule(accessToken: string, ruleId: string): Promise<AutomationRule> {
   const response = await fetch(`${API_BASE_URL}/automation/rules/${ruleId}`, {
-    method: 'PATCH',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AutomationRule>(response)
+}
+
+export async function createAutomationRule(
+  accessToken: string,
+  payload: {
+    code: string
+    name: string
+    description?: string | null
+    trigger_type: string
+    conditions_json?: Record<string, unknown> | Array<unknown>
+    actions_json?: Array<Record<string, unknown>>
+    is_active?: boolean
+    requires_approval?: boolean
+    approval_role?: string | null
+    cooldown_minutes?: number
+    priority?: number
+  },
+): Promise<AutomationRule> {
+  const response = await fetch(`${API_BASE_URL}/automation/rules`, {
+    method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<AutomationRule>(response)
+}
+
+export async function updateAutomationRule(
+  accessToken: string,
+  ruleId: string,
+  request: Partial<Pick<AutomationRule, 'name' | 'description' | 'trigger_type' | 'is_active' | 'priority'>> & {
+    requires_approval?: boolean
+    approval_role?: string | null
+    cooldown_minutes?: number
+    conditions_json?: Record<string, unknown> | Array<unknown>
+    actions_json?: Array<Record<string, unknown>>
+  },
+): Promise<AutomationRule> {
+  return patchAutomationRule(accessToken, ruleId, request)
+}
+
+export async function enableAutomationRule(accessToken: string, ruleId: string): Promise<AutomationRule> {
+  const response = await fetch(`${API_BASE_URL}/automation/rules/${ruleId}/enable`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AutomationRule>(response)
+}
+
+export async function disableAutomationRule(accessToken: string, ruleId: string): Promise<AutomationRule> {
+  const response = await fetch(`${API_BASE_URL}/automation/rules/${ruleId}/disable`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
   })
   return readJsonResponse<AutomationRule>(response)
 }
@@ -2398,34 +2485,182 @@ export async function dryRunAutomationRule(accessToken: string, ruleId: string, 
   return readJsonResponse<Record<string, unknown>>(response)
 }
 
-export async function manualRunAutomationRule(accessToken: string, ruleId: string, request: { trigger_type?: string; context?: Record<string, unknown> }): Promise<{ run: AutomationRun; summary: Record<string, unknown> }> {
-  const response = await fetch(`${API_BASE_URL}/automation/rules/${ruleId}/manual-run`, {
+export async function runAutomationRule(accessToken: string, ruleId: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE_URL}/automation/rules/${ruleId}/run`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+    body: JSON.stringify({ payload }),
   })
-  return readJsonResponse<{ run: AutomationRun; summary: Record<string, unknown> }>(response)
+  return readJsonResponse<Record<string, unknown>>(response)
+}
+
+export async function manualRunAutomationRule(accessToken: string, ruleId: string, request: { trigger_type?: string; context?: Record<string, unknown> }): Promise<{ run: AutomationRun; summary: Record<string, unknown> }> {
+  const result = await runAutomationRule(accessToken, ruleId, {
+    ...(request.context ?? {}),
+    trigger_type: request.trigger_type ?? 'manual',
+  })
+  return {
+    run: (result.execution as AutomationRun) ?? (result.run as AutomationRun),
+    summary: (result.summary as Record<string, unknown>) ?? {},
+  }
+}
+
+export async function fetchAutomationExecutionsPage(
+  accessToken: string,
+  params: { page?: number; page_size?: number; status?: string; rule_id?: string; trigger_type?: string },
+): Promise<PaginatedResponse<AutomationRun>> {
+  const searchParams = new URLSearchParams()
+  if (params.page !== undefined) searchParams.set('page', String(params.page))
+  if (params.page_size !== undefined) searchParams.set('page_size', String(params.page_size))
+  if (params.status) searchParams.set('status', params.status)
+  if (params.rule_id) searchParams.set('rule_id', params.rule_id)
+  if (params.trigger_type) searchParams.set('trigger_type', params.trigger_type)
+  const suffix = searchParams.toString() ? `?${searchParams.toString()}` : ''
+  const response = await fetch(`${API_BASE_URL}/automation/executions${suffix}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<PaginatedResponse<AutomationRun>>(response)
 }
 
 export async function fetchAutomationRuns(accessToken: string): Promise<AutomationRun[]> {
-  const response = await fetch(`${API_BASE_URL}/automation/runs`, {
+  const page = await fetchAutomationExecutionsPage(accessToken, { page: 1, page_size: API_MAX_PAGE_SIZE })
+  return page.items
+}
+
+export async function fetchAutomationExecution(accessToken: string, executionId: string): Promise<AutomationExecutionDetail> {
+  const response = await fetch(`${API_BASE_URL}/automation/executions/${executionId}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<AutomationRun[]>(response)
+  return readJsonResponse<AutomationExecutionDetail>(response)
+}
+
+export async function retryAutomationExecution(accessToken: string, executionId: string): Promise<AutomationRun> {
+  const response = await fetch(`${API_BASE_URL}/automation/executions/${executionId}/retry`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AutomationRun>(response)
 }
 
 export async function fetchAutomationRunLogs(accessToken: string, runId: string): Promise<AutomationActionLog[]> {
-  const response = await fetch(`${API_BASE_URL}/automation/runs/${runId}/logs`, {
+  const detail = await fetchAutomationExecution(accessToken, runId)
+  return detail.action_logs
+}
+
+export async function fetchRunbooksPage(
+  accessToken: string,
+  params: { page?: number; page_size?: number; active?: boolean; q?: string },
+): Promise<PaginatedResponse<Runbook>> {
+  const searchParams = new URLSearchParams()
+  if (params.page !== undefined) searchParams.set('page', String(params.page))
+  if (params.page_size !== undefined) searchParams.set('page_size', String(params.page_size))
+  if (params.active !== undefined) searchParams.set('active', String(params.active))
+  if (params.q) searchParams.set('q', params.q)
+  const suffix = searchParams.toString() ? `?${searchParams.toString()}` : ''
+  const response = await fetch(`${API_BASE_URL}/automation/runbooks${suffix}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<AutomationActionLog[]>(response)
+  return readJsonResponse<PaginatedResponse<Runbook>>(response)
 }
 
 export async function fetchRunbooks(accessToken: string): Promise<Runbook[]> {
-  const response = await fetch(`${API_BASE_URL}/automation/runbooks`, {
+  const page = await fetchRunbooksPage(accessToken, { page: 1, page_size: API_MAX_PAGE_SIZE })
+  return page.items
+}
+
+export async function fetchRunbook(accessToken: string, runbookId: string): Promise<Runbook> {
+  const response = await fetch(`${API_BASE_URL}/automation/runbooks/${runbookId}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<Runbook[]>(response)
+  return readJsonResponse<Runbook>(response)
+}
+
+export async function createRunbook(accessToken: string, payload: Record<string, unknown>): Promise<Runbook> {
+  const response = await fetch(`${API_BASE_URL}/automation/runbooks`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<Runbook>(response)
+}
+
+export async function updateRunbook(accessToken: string, runbookId: string, payload: Record<string, unknown>): Promise<Runbook> {
+  const response = await fetch(`${API_BASE_URL}/automation/runbooks/${runbookId}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<Runbook>(response)
+}
+
+export async function dryRunRunbook(accessToken: string, runbookId: string, payload: Record<string, unknown>): Promise<AutomationRun> {
+  const response = await fetch(`${API_BASE_URL}/automation/runbooks/${runbookId}/dry-run`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ payload }),
+  })
+  return readJsonResponse<AutomationRun>(response)
+}
+
+export async function runRunbook(accessToken: string, runbookId: string, payload: Record<string, unknown>): Promise<AutomationRun> {
+  const response = await fetch(`${API_BASE_URL}/automation/runbooks/${runbookId}/run`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ payload }),
+  })
+  return readJsonResponse<AutomationRun>(response)
+}
+
+export async function fetchAutomationApprovalsPage(
+  accessToken: string,
+  params: { page?: number; page_size?: number; status?: string },
+): Promise<PaginatedResponse<ApprovalRequest>> {
+  const searchParams = new URLSearchParams()
+  if (params.page !== undefined) searchParams.set('page', String(params.page))
+  if (params.page_size !== undefined) searchParams.set('page_size', String(params.page_size))
+  if (params.status) searchParams.set('status', params.status)
+  const suffix = searchParams.toString() ? `?${searchParams.toString()}` : ''
+  const response = await fetch(`${API_BASE_URL}/automation/approvals${suffix}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<PaginatedResponse<ApprovalRequest>>(response)
+}
+
+export async function fetchApprovalRequests(accessToken: string): Promise<ApprovalRequest[]> {
+  const page = await fetchAutomationApprovalsPage(accessToken, { page: 1, page_size: API_MAX_PAGE_SIZE })
+  return page.items
+}
+
+export async function fetchAutomationApproval(accessToken: string, approvalId: string): Promise<ApprovalRequest> {
+  const response = await fetch(`${API_BASE_URL}/automation/approvals/${approvalId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<ApprovalRequest>(response)
+}
+
+export async function approveAutomationApproval(accessToken: string, approvalId: string, payload: { comment?: string }): Promise<ApprovalRequest> {
+  const response = await fetch(`${API_BASE_URL}/automation/approvals/${approvalId}/approve`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<ApprovalRequest>(response)
+}
+
+export async function rejectAutomationApproval(accessToken: string, approvalId: string, payload: { comment?: string }): Promise<ApprovalRequest> {
+  const response = await fetch(`${API_BASE_URL}/automation/approvals/${approvalId}/reject`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return readJsonResponse<ApprovalRequest>(response)
+}
+
+export async function decideApprovalRequest(accessToken: string, approvalId: string, request: { decision: 'APPROVED' | 'REJECTED'; comment?: string }): Promise<ApprovalRequest> {
+  if (request.decision === 'APPROVED') {
+    return approveAutomationApproval(accessToken, approvalId, { comment: request.comment })
+  }
+  return rejectAutomationApproval(accessToken, approvalId, { comment: request.comment })
 }
 
 export async function fetchRunbookExecutions(accessToken: string): Promise<RunbookExecution[]> {
@@ -2453,20 +2688,13 @@ export async function patchRunbookExecution(accessToken: string, executionId: st
   return readJsonResponse<RunbookExecution>(response)
 }
 
-export async function fetchApprovalRequests(accessToken: string): Promise<ApprovalRequest[]> {
-  const response = await fetch(`${API_BASE_URL}/automation/approvals`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
-  return readJsonResponse<ApprovalRequest[]>(response)
-}
-
-export async function decideApprovalRequest(accessToken: string, approvalId: string, request: { decision: 'APPROVED' | 'REJECTED'; comment?: string }): Promise<ApprovalRequest> {
-  const response = await fetch(`${API_BASE_URL}/automation/approvals/${approvalId}`, {
+export async function patchAutomationRule(accessToken: string, ruleId: string, request: Partial<Pick<AutomationRule, 'name' | 'description' | 'trigger_type' | 'is_active' | 'priority'>> & { conditions_json?: Record<string, unknown> | Array<unknown>; actions_json?: Array<Record<string, unknown>> }): Promise<AutomationRule> {
+  const response = await fetch(`${API_BASE_URL}/automation/rules/${ruleId}`, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   })
-  return readJsonResponse<ApprovalRequest>(response)
+  return readJsonResponse<AutomationRule>(response)
 }
 
 export async function fetchTicketAutomationSuggestions(accessToken: string, ticketId: string): Promise<TicketAutomationSuggestion> {
@@ -2474,6 +2702,18 @@ export async function fetchTicketAutomationSuggestions(accessToken: string, tick
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   return readJsonResponse<TicketAutomationSuggestion>(response)
+}
+
+/* legacy alias */
+export const retryAutomationRun = retryAutomationExecution
+
+/* existing block kept for compatibility */
+export async function fetchAutomationRulesLegacy(accessToken: string): Promise<AutomationRule[]> {
+  const response = await fetch(`${API_BASE_URL}/automation/rules`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  const payload = await readJsonResponse<PaginatedResponse<AutomationRule> | AutomationRule[]>(response)
+  return Array.isArray(payload) ? payload : payload.items
 }
 
 export async function fetchSavedReports(accessToken: string): Promise<SavedReport[]> {

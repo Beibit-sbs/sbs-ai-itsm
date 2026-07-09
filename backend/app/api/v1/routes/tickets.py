@@ -25,7 +25,7 @@ from app.models.knowledge_article import KnowledgeArticle
 from app.models.knowledge_usage_log import KnowledgeUsageLog
 from app.services.asset_sla import calculate_ticket_sla_status
 from app.services.audit import log_audit
-from app.services.automation import AutomationEngine, build_ticket_context
+from app.services.automation import build_ticket_context, trigger_automation_event
 from app.services.notifications import create_ticket_event_notification
 from app.services.rbac import require_permissions
 from app.services.service_desk import build_ticket_summary, calculate_response_minutes, next_ticket_number
@@ -696,7 +696,7 @@ def create_ticket(
         metadata={"ticket_number": ticket.ticket_number},
     )
 
-    AutomationEngine.evaluate_rules(
+    trigger_automation_event(
         db,
         tenant_id=ticket.tenant_id,
         trigger_type="ticket_created",
@@ -834,13 +834,31 @@ def patch_ticket(
         if ticket.status in {"RESOLVED", "CLOSED"}:
             create_ticket_event_notification(db, event_code="ticket_resolved", ticket=ticket, actor_name=current_user.full_name)
 
-    AutomationEngine.evaluate_rules(
-        db,
-        tenant_id=ticket.tenant_id,
-        trigger_type="ticket_updated",
-        context=build_ticket_context(ticket),
-        actor_email=current_user.email,
-    )
+    context = build_ticket_context(ticket)
+    if "status" in updates:
+        trigger_automation_event(
+            db,
+            tenant_id=ticket.tenant_id,
+            trigger_type="ticket_status_changed",
+            context=context,
+            actor_email=current_user.email,
+        )
+    if "priority" in updates:
+        trigger_automation_event(
+            db,
+            tenant_id=ticket.tenant_id,
+            trigger_type="ticket_priority_changed",
+            context=context,
+            actor_email=current_user.email,
+        )
+    if "status" not in updates and "priority" not in updates:
+        trigger_automation_event(
+            db,
+            tenant_id=ticket.tenant_id,
+            trigger_type="ticket_assigned" if ("assignee_id" in updates or "assignee_name" in updates) else "ticket_created",
+            context=context,
+            actor_email=current_user.email,
+        )
 
     db.commit()
     db.refresh(ticket)
@@ -1099,10 +1117,10 @@ def add_comment(
         metadata={"comment_length": len(request.body), "is_internal": request.is_internal},
     )
 
-    AutomationEngine.evaluate_rules(
+    trigger_automation_event(
         db,
         tenant_id=ticket.tenant_id,
-        trigger_type="ticket_commented",
+        trigger_type="ticket_comment_added",
         context=build_ticket_context(ticket),
         actor_email=current_user.email,
     )

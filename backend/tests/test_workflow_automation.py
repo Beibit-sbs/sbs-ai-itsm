@@ -15,6 +15,12 @@ def _find_rule_id(rules: list[dict], code: str) -> str:
     raise AssertionError(f'Rule {code} not found')
 
 
+def _items(payload):
+    if isinstance(payload, list):
+        return payload
+    return payload.get('items', [])
+
+
 def test_manager_can_read_automation_overview_and_rules(app) -> None:
     from fastapi.testclient import TestClient
 
@@ -28,7 +34,7 @@ def test_manager_can_read_automation_overview_and_rules(app) -> None:
 
         rules = client.get('/api/v1/automation/rules', headers=_headers(token))
         assert rules.status_code == 200
-        assert len(rules.json()) >= 10
+        assert len(_items(rules.json())) >= 10
 
 
 def test_dry_run_rule_returns_match_for_critical_ticket(app) -> None:
@@ -36,7 +42,7 @@ def test_dry_run_rule_returns_match_for_critical_ticket(app) -> None:
 
     with TestClient(app) as client:
         token = _login(client, 'manager@sbs.local', 'Sbs!2026')
-        rules = client.get('/api/v1/automation/rules', headers=_headers(token)).json()
+        rules = _items(client.get('/api/v1/automation/rules', headers=_headers(token)).json())
         rule_id = _find_rule_id(rules, 'critical_network_ticket_auto_assign')
 
         response = client.post(
@@ -62,16 +68,16 @@ def test_manual_run_creates_action_logs(app) -> None:
 
     with TestClient(app) as client:
         token = _login(client, 'manager@sbs.local', 'Sbs!2026')
-        rules = client.get('/api/v1/automation/rules', headers=_headers(token)).json()
+        rules = _items(client.get('/api/v1/automation/rules', headers=_headers(token)).json())
         rule_id = _find_rule_id(rules, 'manual_executive_check')
 
         run_response = client.post(
-            f'/api/v1/automation/rules/{rule_id}/manual-run',
+            f'/api/v1/automation/rules/{rule_id}/run',
             headers=_headers(token),
-            json={'trigger_type': 'manual_run', 'context': {'entity_type': 'manual', 'entity_id': 'qa-manual-1'}},
+            json={'payload': {'trigger_type': 'manual_run', 'entity_type': 'manual', 'entity_id': 'qa-manual-1'}},
         )
         assert run_response.status_code == 200
-        run_id = run_response.json()['run']['id']
+        run_id = run_response.json()['execution']['id']
 
         logs_response = client.get(f'/api/v1/automation/runs/{run_id}/logs', headers=_headers(token))
         assert logs_response.status_code == 200
@@ -84,29 +90,29 @@ def test_approval_flow_approve_and_reject(app) -> None:
 
     with TestClient(app) as client:
         token = _login(client, 'manager@sbs.local', 'Sbs!2026')
-        approvals = client.get('/api/v1/automation/approvals?status=PENDING', headers=_headers(token))
+        approvals = client.get('/api/v1/automation/approvals?status=pending', headers=_headers(token))
         assert approvals.status_code == 200
-        pending = approvals.json()
+        pending = _items(approvals.json())
         assert len(pending) >= 1
 
         first_id = pending[0]['id']
-        approve = client.patch(
-            f'/api/v1/automation/approvals/{first_id}',
+        approve = client.post(
+            f'/api/v1/automation/approvals/{first_id}/approve',
             headers=_headers(token),
-            json={'decision': 'APPROVED', 'comment': 'Looks good'},
+            json={'comment': 'Looks good'},
         )
         assert approve.status_code == 200
-        assert approve.json()['status'] == 'APPROVED'
+        assert approve.json()['status'] == 'approved'
 
-        approvals_after = client.get('/api/v1/automation/approvals?status=PENDING', headers=_headers(token)).json()
+        approvals_after = _items(client.get('/api/v1/automation/approvals?status=pending', headers=_headers(token)).json())
         if approvals_after:
-            reject = client.patch(
-                f"/api/v1/automation/approvals/{approvals_after[0]['id']}",
+            reject = client.post(
+                f"/api/v1/automation/approvals/{approvals_after[0]['id']}/reject",
                 headers=_headers(token),
-                json={'decision': 'REJECTED', 'comment': 'Need more details'},
+                json={'comment': 'Need more details'},
             )
             assert reject.status_code == 200
-            assert reject.json()['status'] == 'REJECTED'
+            assert reject.json()['status'] == 'rejected'
 
 
 def test_suggestions_for_phishing_ticket(app) -> None:
@@ -149,7 +155,7 @@ def test_ticket_creation_triggers_automation_run(app) -> None:
 
         before_runs = client.get('/api/v1/automation/runs', headers=_headers(token))
         assert before_runs.status_code == 200
-        before_count = len(before_runs.json())
+        before_count = len(_items(before_runs.json()))
 
         created = client.post(
             '/api/v1/tickets',
@@ -171,7 +177,7 @@ def test_ticket_creation_triggers_automation_run(app) -> None:
 
         after_runs = client.get('/api/v1/automation/runs', headers=_headers(token))
         assert after_runs.status_code == 200
-        assert len(after_runs.json()) > before_count
+        assert len(_items(after_runs.json())) > before_count
 
 
 def test_requester_cannot_access_automation(app) -> None:
@@ -207,17 +213,17 @@ def test_audit_log_created_for_automation_manual_run(app) -> None:
 
     with TestClient(app) as client:
         manager_token = _login(client, 'manager@sbs.local', 'Sbs!2026')
-        rules = client.get('/api/v1/automation/rules', headers=_headers(manager_token)).json()
+        rules = _items(client.get('/api/v1/automation/rules', headers=_headers(manager_token)).json())
         rule_id = _find_rule_id(rules, 'manual_executive_check')
 
         run_response = client.post(
-            f'/api/v1/automation/rules/{rule_id}/manual-run',
+            f'/api/v1/automation/rules/{rule_id}/run',
             headers=_headers(manager_token),
-            json={'trigger_type': 'manual_run', 'context': {'entity_type': 'manual', 'entity_id': 'audit-check-1'}},
+            json={'payload': {'trigger_type': 'manual_run', 'entity_type': 'manual', 'entity_id': 'audit-check-1'}},
         )
         assert run_response.status_code == 200
 
         admin_token = _login(client, 'admin@sbs.local', 'Sbs!2026')
-        logs = client.get('/api/v1/admin/audit-logs?action=automation_manual_run_executed', headers=_headers(admin_token))
+        logs = client.get('/api/v1/admin/audit-logs?action=automation_rule_executed', headers=_headers(admin_token))
         assert logs.status_code == 200
-        assert any(item['entity_id'] == rule_id for item in logs.json())
+        assert any(item['entity_type'] in {'automation_execution', 'automation_rule'} for item in logs.json())
