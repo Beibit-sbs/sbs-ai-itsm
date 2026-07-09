@@ -9,8 +9,16 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
 from app.db.session import get_db
+from app.models.ai_suggestion import AiSuggestion
 from app.models.ticket import Ticket
-from app.services.knowledge_ai import analyze_text_with_mock_ai, article_payload, create_article_from_ticket, get_suggestions_for_ticket
+from app.services.knowledge_ai import (
+    accept_suggestion,
+    analyze_text_with_mock_ai,
+    article_payload,
+    create_article_from_ticket,
+    get_suggestions_for_ticket,
+    reject_suggestion,
+)
 from app.services.notifications import create_ticket_event_notification
 from app.services.rbac import require_permissions
 
@@ -44,6 +52,14 @@ class AiSuggestionResponse(BaseModel):
     suggested_solution: str
     recommended_assignee: str
     confidence: str
+    confidence_value: float | None = None
+    suggestion_type: str = "resolution"
+    rationale: str | None = None
+    status: str = "proposed"
+    accepted_by_id: str | None = None
+    accepted_at: datetime | None = None
+    rejected_by_id: str | None = None
+    rejected_at: datetime | None = None
     related_articles: list[AiRelatedArticle] = Field(default_factory=list)
     similar_tickets: list[AiSimilarTicket] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
@@ -62,6 +78,20 @@ class AiCreateArticleResponse(BaseModel):
     summary: str
     status: str
     visibility: str
+
+
+class AiSuggestionDecisionRequest(BaseModel):
+    rationale: str | None = None
+
+
+class AiSuggestionDecisionResponse(BaseModel):
+    id: str
+    status: str
+    accepted_by_id: str | None
+    accepted_at: datetime | None
+    rejected_by_id: str | None
+    rejected_at: datetime | None
+    rationale: str | None
 
 
 @router.post("/analyze-ticket", response_model=AiSuggestionResponse)
@@ -89,6 +119,54 @@ def analyze_ticket(
 def list_suggestions(ticket_id: str, current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> list[AiSuggestionResponse]:
     require_permissions(current_user, "ai.view_suggestions")
     return [AiSuggestionResponse(**item) for item in get_suggestions_for_ticket(db, ticket_id)]
+
+
+@router.post("/suggestions/{suggestion_id}/accept", response_model=AiSuggestionDecisionResponse)
+def accept_ai_suggestion(
+    suggestion_id: str,
+    request: AiSuggestionDecisionRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AiSuggestionDecisionResponse:
+    require_permissions(current_user, "ai.accept_suggestion")
+    suggestion = db.scalar(select(AiSuggestion).where(AiSuggestion.id == suggestion_id))
+    if suggestion is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found")
+    if request.rationale:
+        suggestion.rationale = request.rationale
+    suggestion = accept_suggestion(db, suggestion, current_user.id)
+    return AiSuggestionDecisionResponse(
+        id=suggestion.id,
+        status=suggestion.status,
+        accepted_by_id=suggestion.accepted_by_id,
+        accepted_at=suggestion.accepted_at,
+        rejected_by_id=suggestion.rejected_by_id,
+        rejected_at=suggestion.rejected_at,
+        rationale=suggestion.rationale,
+    )
+
+
+@router.post("/suggestions/{suggestion_id}/reject", response_model=AiSuggestionDecisionResponse)
+def reject_ai_suggestion(
+    suggestion_id: str,
+    request: AiSuggestionDecisionRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AiSuggestionDecisionResponse:
+    require_permissions(current_user, "ai.reject_suggestion")
+    suggestion = db.scalar(select(AiSuggestion).where(AiSuggestion.id == suggestion_id))
+    if suggestion is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found")
+    suggestion = reject_suggestion(db, suggestion, current_user.id, request.rationale)
+    return AiSuggestionDecisionResponse(
+        id=suggestion.id,
+        status=suggestion.status,
+        accepted_by_id=suggestion.accepted_by_id,
+        accepted_at=suggestion.accepted_at,
+        rejected_by_id=suggestion.rejected_by_id,
+        rejected_at=suggestion.rejected_at,
+        rationale=suggestion.rationale,
+    )
 
 
 @router.post("/create-article-from-ticket/{ticket_id}", response_model=AiCreateArticleResponse, status_code=status.HTTP_201_CREATED)

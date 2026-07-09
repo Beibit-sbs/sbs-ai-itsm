@@ -20,6 +20,7 @@ from app.models.integration_mapping import IntegrationMapping
 from app.models.knowledge_article import KnowledgeArticle
 from app.models.knowledge_article_feedback import KnowledgeArticleFeedback
 from app.models.knowledge_category import KnowledgeCategory
+from app.models.knowledge_usage_log import KnowledgeUsageLog
 from app.models.notification import Notification
 from app.models.notification_template import NotificationTemplate
 from app.models.system_setting import SystemSetting
@@ -39,5 +40,6 @@ from app.models.sla import SlaPolicy
 from app.models.sla_event import SlaEvent
 from app.models.tenant import Tenant
 from app.models.ticket import Ticket
+from app.models.ticket_knowledge_link import TicketKnowledgeLink
 from app.models.user import User
 from app.models.webhook_endpoint import WebhookEndpoint

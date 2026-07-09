@@ -200,6 +200,10 @@ def analyze_text_with_mock_ai(db: Session, input_text: str, ticket_id: str | Non
         suggested_solution=str(matched["suggested_solution"]),
         recommended_assignee=str(matched["recommended_assignee"]),
         confidence=_to_confidence_label(float(matched["confidence"])),
+        confidence_value=float(matched["confidence"]),
+        suggestion_type="resolution",
+        rationale="rule_based_local_mock",
+        status="proposed",
     )
     db.add(suggestion)
     db.commit()
@@ -218,6 +222,14 @@ def analyze_text_with_mock_ai(db: Session, input_text: str, ticket_id: str | Non
         "suggested_solution": suggestion.suggested_solution,
         "recommended_assignee": suggestion.recommended_assignee,
         "confidence": suggestion.confidence,
+        "confidence_value": suggestion.confidence_value,
+        "suggestion_type": suggestion.suggestion_type,
+        "rationale": suggestion.rationale,
+        "status": suggestion.status,
+        "accepted_by_id": suggestion.accepted_by_id,
+        "accepted_at": suggestion.accepted_at,
+        "rejected_by_id": suggestion.rejected_by_id,
+        "rejected_at": suggestion.rejected_at,
         "related_articles": [
             {
                 "id": article.id,
@@ -266,6 +278,14 @@ def get_suggestions_for_ticket(db: Session, ticket_id: str) -> list[dict[str, ob
                 "suggested_solution": suggestion.suggested_solution,
                 "recommended_assignee": suggestion.recommended_assignee,
                 "confidence": suggestion.confidence,
+                "confidence_value": suggestion.confidence_value,
+                "suggestion_type": suggestion.suggestion_type,
+                "rationale": suggestion.rationale,
+                "status": suggestion.status,
+                "accepted_by_id": suggestion.accepted_by_id,
+                "accepted_at": suggestion.accepted_at,
+                "rejected_by_id": suggestion.rejected_by_id,
+                "rejected_at": suggestion.rejected_at,
                 "related_articles": [
                     {
                         "id": article.id,
@@ -347,23 +367,58 @@ def search_articles(db: Session, query: str) -> list[KnowledgeArticle]:
 
 
 def article_payload(article: KnowledgeArticle, category_name: str | None = None) -> dict[str, object]:
+    tags = article.tags_json if isinstance(article.tags_json, list) else _split_tags(article.tags)
     return {
         "id": article.id,
         "article_number": article.article_number,
         "title": article.title,
+        "slug": article.slug,
         "summary": article.summary,
         "content": article.content,
         "category_id": article.category_id,
         "category_name": category_name,
         "ticket_category": article.ticket_category,
         "asset_type": article.asset_type,
-        "tags": _split_tags(article.tags),
+        "tags": tags,
         "status": article.status,
         "visibility": article.visibility,
         "author_name": article.author_name,
+        "source_ticket_id": article.source_ticket_id,
+        "source_asset_id": article.source_asset_id,
+        "created_by_id": article.created_by_id,
+        "updated_by_id": article.updated_by_id,
+        "view_count": article.view_count,
         "helpful_count": article.helpful_count,
         "not_helpful_count": article.not_helpful_count,
+        "last_used_at": article.last_used_at,
         "created_at": article.created_at,
         "updated_at": article.updated_at,
         "published_at": article.published_at,
+        "archived_at": article.archived_at,
     }
+
+
+def accept_suggestion(db: Session, suggestion: AiSuggestion, user_id: str) -> AiSuggestion:
+    suggestion.status = "accepted"
+    suggestion.accepted_by_id = user_id
+    suggestion.accepted_at = _now()
+    suggestion.rejected_by_id = None
+    suggestion.rejected_at = None
+    db.add(suggestion)
+    db.commit()
+    db.refresh(suggestion)
+    return suggestion
+
+
+def reject_suggestion(db: Session, suggestion: AiSuggestion, user_id: str, rationale: str | None = None) -> AiSuggestion:
+    suggestion.status = "rejected"
+    suggestion.rejected_by_id = user_id
+    suggestion.rejected_at = _now()
+    suggestion.accepted_by_id = None
+    suggestion.accepted_at = None
+    if rationale:
+        suggestion.rationale = rationale
+    db.add(suggestion)
+    db.commit()
+    db.refresh(suggestion)
+    return suggestion

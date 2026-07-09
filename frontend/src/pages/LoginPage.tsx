@@ -10,15 +10,16 @@ export default function LoginPage() {
   const [email, setEmail] = useState(DEMO_CREDENTIALS.email)
   const [password, setPassword] = useState(DEMO_CREDENTIALS.password)
   const [error, setError] = useState('')
+  const target = (location.state as { from?: string } | null)?.from ?? '/dashboard'
 
   useEffect(() => {
     if (session) {
-      navigate('/dashboard', { replace: true })
+      navigate(target, { replace: true })
     }
-  }, [navigate, session])
+  }, [navigate, session, target])
 
   if (session) {
-    return <Navigate to="/dashboard" replace />
+    return <Navigate to={target} replace />
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -27,7 +28,6 @@ export default function LoginPage() {
 
     void login(email, password)
       .then(() => {
-        const target = (location.state as { from?: string } | null)?.from ?? '/dashboard'
         navigate(target, { replace: true })
       })
       .catch((loginError: unknown) => {

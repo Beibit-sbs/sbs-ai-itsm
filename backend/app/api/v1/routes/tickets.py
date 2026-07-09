@@ -17,9 +17,12 @@ from app.models.ticket import Ticket
 from app.models.ticket_category import TicketCategory
 from app.models.ticket_comment import TicketComment
 from app.models.ticket_history import TicketHistory
+from app.models.ticket_knowledge_link import TicketKnowledgeLink
 from app.models.ticket_priority import TicketPriority
 from app.models.ticket_status import TicketStatus
 from app.models.user import User
+from app.models.knowledge_article import KnowledgeArticle
+from app.models.knowledge_usage_log import KnowledgeUsageLog
 from app.services.asset_sla import calculate_ticket_sla_status
 from app.services.audit import log_audit
 from app.services.automation import AutomationEngine, build_ticket_context
@@ -199,6 +202,27 @@ class TicketTransitionRequest(BaseModel):
 class TicketAssignRequest(BaseModel):
     assignee_id: str | None = None
     comment: str | None = None
+
+
+class TicketKnowledgeLinkCreateRequest(BaseModel):
+    article_id: str
+    link_type: str = "manual"
+    confidence: float | None = None
+    comment: str | None = None
+
+
+class TicketKnowledgeLinkResponse(BaseModel):
+    id: str
+    ticket_id: str
+    article_id: str
+    article_number: str
+    article_title: str
+    linked_by_id: str | None
+    linked_by_name: str | None
+    link_type: str
+    confidence: float | None
+    comment: str | None
+    created_at: datetime
 
 
 def _canonical_status(value: str | None) -> str | None:
@@ -1124,3 +1148,140 @@ def get_ticket_history(ticket_id: str, current_user: AuthUserResponse = Depends(
         )
         for history in histories
     ]
+
+
+@router.get("/{ticket_id}/knowledge-links", response_model=list[TicketKnowledgeLinkResponse])
+def list_ticket_knowledge_links(
+    ticket_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[TicketKnowledgeLinkResponse]:
+    require_permissions(current_user, "knowledge.attach.read")
+    _ensure_access(current_user)
+    ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id))
+    if ticket is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    _ensure_ticket_access(ticket, current_user)
+
+    links = db.scalars(select(TicketKnowledgeLink).where(TicketKnowledgeLink.ticket_id == ticket_id).order_by(TicketKnowledgeLink.created_at.desc())).all()
+    article_ids = [link.article_id for link in links]
+    user_ids = [link.linked_by_id for link in links if link.linked_by_id]
+    articles = {item.id: item for item in db.scalars(select(KnowledgeArticle).where(KnowledgeArticle.id.in_(article_ids))).all()} if article_ids else {}
+    users = {item.id: item for item in db.scalars(select(User).where(User.id.in_(user_ids))).all()} if user_ids else {}
+    return [
+        TicketKnowledgeLinkResponse(
+            id=link.id,
+            ticket_id=link.ticket_id,
+            article_id=link.article_id,
+            article_number=articles[link.article_id].article_number if link.article_id in articles else "",
+            article_title=articles[link.article_id].title if link.article_id in articles else "",
+            linked_by_id=link.linked_by_id,
+            linked_by_name=users[link.linked_by_id].full_name if link.linked_by_id and link.linked_by_id in users else None,
+            link_type=link.link_type,
+            confidence=link.confidence,
+            comment=link.comment,
+            created_at=link.created_at,
+        )
+        for link in links
+    ]
+
+
+@router.post("/{ticket_id}/knowledge-links", response_model=TicketKnowledgeLinkResponse, status_code=status.HTTP_201_CREATED)
+def add_ticket_knowledge_link(
+    ticket_id: str,
+    request: TicketKnowledgeLinkCreateRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketKnowledgeLinkResponse:
+    require_permissions(current_user, "knowledge.attach")
+    _ensure_access(current_user)
+    ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id))
+    if ticket is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    _ensure_ticket_access(ticket, current_user)
+
+    article = db.scalar(select(KnowledgeArticle).where(KnowledgeArticle.id == request.article_id))
+    if article is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown article")
+    if current_user.role == "requester" and article.visibility == "internal":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester cannot attach internal article")
+
+    existing = db.scalar(
+        select(TicketKnowledgeLink).where(
+            TicketKnowledgeLink.ticket_id == ticket_id,
+            TicketKnowledgeLink.article_id == request.article_id,
+        )
+    )
+    if existing is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Article already linked")
+
+    link = TicketKnowledgeLink(
+        id=str(uuid.uuid4()),
+        ticket_id=ticket_id,
+        article_id=request.article_id,
+        linked_by_id=current_user.id,
+        link_type=request.link_type,
+        confidence=request.confidence,
+        comment=request.comment,
+    )
+    db.add(link)
+    db.add(
+        KnowledgeUsageLog(
+            id=str(uuid.uuid4()),
+            article_id=article.id,
+            ticket_id=ticket_id,
+            user_id=current_user.id,
+            action="attached_to_ticket",
+            context={"link_type": request.link_type},
+        )
+    )
+    article.last_used_at = datetime.now(UTC)
+
+    log_audit(
+        db,
+        action="knowledge_attached_to_ticket",
+        entity_type="ticket",
+        entity_id=ticket.id,
+        actor_user=_actor(db, current_user),
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={"article_id": article.id, "link_type": request.link_type},
+    )
+
+    db.commit()
+    db.refresh(link)
+    return TicketKnowledgeLinkResponse(
+        id=link.id,
+        ticket_id=link.ticket_id,
+        article_id=link.article_id,
+        article_number=article.article_number,
+        article_title=article.title,
+        linked_by_id=link.linked_by_id,
+        linked_by_name=current_user.full_name,
+        link_type=link.link_type,
+        confidence=link.confidence,
+        comment=link.comment,
+        created_at=link.created_at,
+    )
+
+
+@router.delete("/{ticket_id}/knowledge-links/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_ticket_knowledge_link(
+    ticket_id: str,
+    link_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    require_permissions(current_user, "knowledge.attach")
+    _ensure_access(current_user)
+    ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id))
+    if ticket is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    _ensure_ticket_access(ticket, current_user)
+
+    link = db.scalar(select(TicketKnowledgeLink).where(TicketKnowledgeLink.id == link_id, TicketKnowledgeLink.ticket_id == ticket_id))
+    if link is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found")
+    db.delete(link)
+    db.commit()

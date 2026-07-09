@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   addTicketComment,
-  analyzeTicketWithAi,
+  analyzeTicket,
+  attachArticleToTicket,
   assignTicket,
   createArticleFromTicket,
   createTicket,
@@ -11,8 +12,10 @@ import {
   fetchAssets,
   fetchTicket,
   fetchTicketHistory,
+  fetchTicketKnowledge,
   fetchTicketsPage,
   transitionTicket,
+  useArticleForTicket,
   type CreateTicketRequest,
   type Ticket,
   type TicketDetail,
@@ -141,6 +144,10 @@ function canTakeTicket(role: string) {
   return role === 'it_agent'
 }
 
+function canCreateArticleFromTicket(role: string) {
+  return ['saas_root', 'organization_admin', 'it_manager', 'it_agent'].includes(role)
+}
+
 export default function TicketsPage() {
   const { session } = useAuth()
   const queryClient = useQueryClient()
@@ -258,6 +265,12 @@ export default function TicketsPage() {
     enabled: Boolean(session?.access_token && selectedTicketId),
   })
 
+  const ticketKnowledgeQuery = useQuery({
+    queryKey: ['ticket-knowledge', session?.access_token, selectedTicketId],
+    queryFn: () => fetchTicketKnowledge(session?.access_token ?? '', selectedTicketId ?? ''),
+    enabled: Boolean(session?.access_token && selectedTicketId),
+  })
+
   const createMutation = useMutation({
     mutationFn: async (payload: TicketFormState) => {
       const request: CreateTicketRequest = {
@@ -328,7 +341,7 @@ export default function TicketsPage() {
 
   const aiMutation = useMutation({
     mutationFn: async (payload: { ticketId: string; text: string }) =>
-      analyzeTicketWithAi(session?.access_token ?? '', { ticket_id: payload.ticketId, input_text: payload.text }),
+      analyzeTicket(session?.access_token ?? '', { ticket_id: payload.ticketId, input_text: payload.text }),
     onSuccess: async (_, variables) => {
       await queryClient.invalidateQueries({ queryKey: ['ticket-ai', session?.access_token, variables.ticketId] })
     },
@@ -336,6 +349,23 @@ export default function TicketsPage() {
 
   const articleMutation = useMutation({
     mutationFn: async (ticketId: string) => createArticleFromTicket(session?.access_token ?? '', ticketId),
+  })
+
+  const attachArticleMutation = useMutation({
+    mutationFn: async (payload: { ticketId: string; articleId: string; confidence: number | null }) =>
+      attachArticleToTicket(session?.access_token ?? '', payload.ticketId, {
+        article_id: payload.articleId,
+        link_type: 'ai_suggestion',
+        confidence: payload.confidence,
+        comment: 'Attached from ticket AI tab',
+      }),
+    onSuccess: async (_, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ['ticket-knowledge', session?.access_token, variables.ticketId] })
+    },
+  })
+
+  const useArticleMutation = useMutation({
+    mutationFn: async (payload: { ticketId: string; articleId: string }) => useArticleForTicket(session?.access_token ?? '', payload.ticketId, payload.articleId),
   })
 
   const tickets = ticketsQuery.data?.items ?? []
@@ -799,10 +829,35 @@ export default function TicketsPage() {
                         type="button"
                         className="ghost-button"
                         onClick={() => articleMutation.mutate(detail.id)}
-                        disabled={articleMutation.isPending}
+                        disabled={articleMutation.isPending || !canCreateArticleFromTicket(role) || !['RESOLVED', 'CLOSED'].includes(detail.status)}
+                        title={!canCreateArticleFromTicket(role) ? 'Доступно только staff/manager/admin' : !['RESOLVED', 'CLOSED'].includes(detail.status) ? 'Доступно только для RESOLVED/CLOSED' : undefined}
                       >
                         {articleMutation.isPending ? 'Создание...' : 'Создать статью из заявки'}
                       </button>
+                      <h4>Прикрепленные статьи</h4>
+                      {ticketKnowledgeQuery.isPending ? <p className="muted">Загрузка связанных статей...</p> : null}
+                      {!ticketKnowledgeQuery.isPending && (ticketKnowledgeQuery.data ?? []).length === 0 ? <p className="muted">Связанных статей пока нет.</p> : null}
+                      {(ticketKnowledgeQuery.data ?? []).map((link) => (
+                        <article className="activity-item" key={link.id}>
+                          <header>
+                            <strong>{link.article_number} · {link.article_title}</strong>
+                            <span>{link.link_type}</span>
+                          </header>
+                          <p>Linked by: {link.linked_by_name ?? '—'}</p>
+                          <div className="analytics-actions" style={{ justifyContent: 'flex-start' }}>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => useArticleMutation.mutate({ ticketId: detail.id, articleId: link.article_id })}
+                              disabled={useArticleMutation.isPending}
+                            >
+                              Использовать для решения
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+
+                      <h4>Suggested articles</h4>
                       {(aiSuggestionsQuery.data ?? []).map((item) => (
                         <article className="activity-item" key={item.id}>
                           <header>
@@ -811,6 +866,35 @@ export default function TicketsPage() {
                           </header>
                           <p>{item.summary}</p>
                           <small>{item.suggested_solution}</small>
+                          {item.recommended_article_id ? (
+                            <div className="analytics-actions" style={{ justifyContent: 'flex-start' }}>
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                disabled={attachArticleMutation.isPending || !isStaff}
+                                title={!isStaff ? 'Недостаточно прав для привязки статьи' : undefined}
+                                onClick={() =>
+                                  attachArticleMutation.mutate({
+                                    ticketId: detail.id,
+                                    articleId: item.recommended_article_id ?? '',
+                                    confidence: item.confidence_value ?? null,
+                                  })
+                                }
+                              >
+                                Прикрепить статью
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                disabled={useArticleMutation.isPending}
+                                onClick={() => useArticleMutation.mutate({ ticketId: detail.id, articleId: item.recommended_article_id ?? '' })}
+                              >
+                                Использовать для решения
+                              </button>
+                            </div>
+                          ) : (
+                            <p className="muted">Нет article_id для привязки.</p>
+                          )}
                         </article>
                       ))}
                     </div>

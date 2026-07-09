@@ -1,6 +1,8 @@
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 
+const API_MAX_PAGE_SIZE = 200
+
 export type HealthResponse = {
   status: 'ok'
   service: string
@@ -440,6 +442,7 @@ export type KnowledgeArticle = {
   id: string
   article_number: string
   title: string
+  slug?: string | null
   summary: string
   content: string
   category_id: string
@@ -450,15 +453,36 @@ export type KnowledgeArticle = {
   status: string
   visibility: string
   author_name: string
+  source_ticket_id?: string | null
+  source_asset_id?: string | null
+  created_by_id?: string | null
+  updated_by_id?: string | null
+  view_count?: number
   helpful_count: number
   not_helpful_count: number
+  last_used_at?: string | null
   created_at: string
   updated_at: string
   published_at: string | null
+  archived_at?: string | null
+}
+
+export type KnowledgeArticlePage = PaginatedResponse<KnowledgeArticle>
+
+export type KnowledgeArticlesQueryParams = {
+  q?: string
+  category_id?: string
+  status?: string
+  visibility?: string
+  sort_by?: 'updated_at' | 'created_at' | 'published_at' | 'title' | 'helpful_count' | 'view_count' | 'last_used_at'
+  sort_dir?: 'asc' | 'desc'
+  page?: number
+  page_size?: number
 }
 
 export type CreateKnowledgeArticleRequest = {
   title: string
+  slug?: string | null
   summary: string
   content: string
   category_id: string
@@ -485,6 +509,50 @@ export type KnowledgeFeedback = {
   is_helpful: boolean
   comment: string | null
   created_at: string
+}
+
+export type KnowledgeArticleStatusResponse = {
+  id: string
+  status: string
+  published_at: string | null
+  archived_at: string | null
+}
+
+export type KnowledgeUsageRequest = {
+  ticket_id?: string | null
+  action?: string
+  context?: Record<string, unknown> | null
+}
+
+export type KnowledgeUsage = {
+  id: string
+  article_id: string
+  ticket_id: string | null
+  user_id: string | null
+  action: string
+  context: Record<string, unknown> | null
+  created_at: string
+}
+
+export type TicketKnowledgeLink = {
+  id: string
+  ticket_id: string
+  article_id: string
+  article_number: string
+  article_title: string
+  linked_by_id: string | null
+  linked_by_name: string | null
+  link_type: string
+  confidence: number | null
+  comment: string | null
+  created_at: string
+}
+
+export type CreateTicketKnowledgeLinkRequest = {
+  article_id: string
+  link_type?: string
+  confidence?: number | null
+  comment?: string | null
 }
 
 export type AiRelatedArticle = {
@@ -514,10 +582,32 @@ export type AiSuggestion = {
   suggested_solution: string
   recommended_assignee: string
   confidence: string
+  confidence_value?: number | null
+  suggestion_type?: string
+  rationale?: string | null
+  status?: string
+  accepted_by_id?: string | null
+  accepted_at?: string | null
+  rejected_by_id?: string | null
+  rejected_at?: string | null
   related_articles: AiRelatedArticle[]
   similar_tickets: AiSimilarTicket[]
   next_actions: string[]
   created_at: string
+}
+
+export type AiSuggestionDecisionRequest = {
+  rationale?: string | null
+}
+
+export type AiSuggestionDecisionResponse = {
+  id: string
+  status: string
+  accepted_by_id: string | null
+  accepted_at: string | null
+  rejected_by_id: string | null
+  rejected_at: string | null
+  rationale: string | null
 }
 
 export type AiAnalyzeRequest = {
@@ -1101,7 +1191,7 @@ export async function fetchTicketsPage(accessToken: string, params?: TicketQuery
 }
 
 export async function fetchTickets(accessToken: string): Promise<Ticket[]> {
-  const page = await fetchTicketsPage(accessToken, { page: 1, page_size: 500 })
+  const page = await fetchTicketsPage(accessToken, { page: 1, page_size: API_MAX_PAGE_SIZE })
   return page.items
 }
 
@@ -1193,7 +1283,7 @@ export async function fetchAssets(
   const page = await fetchAssetsPage(accessToken, {
     ...params,
     page: params?.page ?? 1,
-    page_size: params?.page_size ?? 500,
+    page_size: params?.page_size ?? API_MAX_PAGE_SIZE,
   })
   return page.items
 }
@@ -1455,6 +1545,25 @@ export async function fetchKnowledgeArticles(accessToken: string): Promise<Knowl
   return readJsonResponse<KnowledgeArticle[]>(response)
 }
 
+export async function fetchKnowledgeArticlesPage(accessToken: string, params?: KnowledgeArticlesQueryParams): Promise<KnowledgeArticlePage> {
+  const search = new URLSearchParams()
+  if (params?.q) search.set('q', params.q)
+  if (params?.category_id) search.set('category_id', params.category_id)
+  if (params?.status && params.status !== 'ALL') search.set('status', params.status)
+  if (params?.visibility && params.visibility !== 'ALL') search.set('visibility', params.visibility)
+  if (params?.sort_by) search.set('sort_by', params.sort_by)
+  if (params?.sort_dir) search.set('sort_dir', params.sort_dir)
+  if (typeof params?.page === 'number') search.set('page', String(params.page))
+  if (typeof params?.page_size === 'number') search.set('page_size', String(params.page_size))
+  const query = search.toString()
+
+  const response = await fetch(`${API_BASE_URL}/knowledge/articles/page${query ? `?${query}` : ''}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+
+  return readJsonResponse<KnowledgeArticlePage>(response)
+}
+
 export async function fetchKnowledgeArticle(accessToken: string, articleId: string): Promise<KnowledgeArticle> {
   const response = await fetch(`${API_BASE_URL}/knowledge/articles/${articleId}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -1489,6 +1598,46 @@ export async function patchKnowledgeArticle(accessToken: string, articleId: stri
   return readJsonResponse<KnowledgeArticle>(response)
 }
 
+export async function updateKnowledgeArticle(accessToken: string, articleId: string, request: UpdateKnowledgeArticleRequest): Promise<KnowledgeArticle> {
+  return patchKnowledgeArticle(accessToken, articleId, request)
+}
+
+export async function publishKnowledgeArticle(accessToken: string, articleId: string): Promise<KnowledgeArticleStatusResponse> {
+  const response = await fetch(`${API_BASE_URL}/knowledge/articles/${articleId}/publish`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<KnowledgeArticleStatusResponse>(response)
+}
+
+export async function archiveKnowledgeArticle(accessToken: string, articleId: string): Promise<KnowledgeArticleStatusResponse> {
+  const response = await fetch(`${API_BASE_URL}/knowledge/articles/${articleId}/archive`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<KnowledgeArticleStatusResponse>(response)
+}
+
+export async function logKnowledgeArticleUsage(accessToken: string, articleId: string, request: KnowledgeUsageRequest): Promise<KnowledgeUsage> {
+  const response = await fetch(`${API_BASE_URL}/knowledge/articles/${articleId}/usage`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+  return readJsonResponse<KnowledgeUsage>(response)
+}
+
+export async function createKnowledgeArticleFromTicket(accessToken: string, ticketId: string): Promise<{ id: string; article_number: string; title: string; summary: string; status: string; visibility: string }> {
+  const response = await fetch(`${API_BASE_URL}/knowledge/articles/from-ticket/${ticketId}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<{ id: string; article_number: string; title: string; summary: string; status: string; visibility: string }>(response)
+}
+
 export async function addKnowledgeFeedback(accessToken: string, articleId: string, request: KnowledgeFeedbackRequest): Promise<KnowledgeFeedback> {
   const response = await fetch(`${API_BASE_URL}/knowledge/articles/${articleId}/feedback`, {
     method: 'POST',
@@ -1500,6 +1649,10 @@ export async function addKnowledgeFeedback(accessToken: string, articleId: strin
   })
 
   return readJsonResponse<KnowledgeFeedback>(response)
+}
+
+export async function submitKnowledgeFeedback(accessToken: string, articleId: string, request: KnowledgeFeedbackRequest): Promise<KnowledgeFeedback> {
+  return addKnowledgeFeedback(accessToken, articleId, request)
 }
 
 export async function searchKnowledge(accessToken: string, query: string): Promise<KnowledgeArticle[]> {
@@ -1523,12 +1676,40 @@ export async function analyzeTicketWithAi(accessToken: string, request: AiAnalyz
   return readJsonResponse<AiSuggestion>(response)
 }
 
+export async function analyzeTicket(accessToken: string, request: AiAnalyzeRequest): Promise<AiSuggestion> {
+  return analyzeTicketWithAi(accessToken, request)
+}
+
 export async function fetchAiSuggestions(accessToken: string, ticketId: string): Promise<AiSuggestion[]> {
   const response = await fetch(`${API_BASE_URL}/ai/suggestions/${ticketId}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
 
   return readJsonResponse<AiSuggestion[]>(response)
+}
+
+export async function acceptAiSuggestion(accessToken: string, suggestionId: string, request?: AiSuggestionDecisionRequest): Promise<AiSuggestionDecisionResponse> {
+  const response = await fetch(`${API_BASE_URL}/ai/suggestions/${suggestionId}/accept`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request ?? {}),
+  })
+  return readJsonResponse<AiSuggestionDecisionResponse>(response)
+}
+
+export async function rejectAiSuggestion(accessToken: string, suggestionId: string, request?: AiSuggestionDecisionRequest): Promise<AiSuggestionDecisionResponse> {
+  const response = await fetch(`${API_BASE_URL}/ai/suggestions/${suggestionId}/reject`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request ?? {}),
+  })
+  return readJsonResponse<AiSuggestionDecisionResponse>(response)
 }
 
 export async function createArticleFromTicket(accessToken: string, ticketId: string): Promise<{ id: string; article_number: string; title: string; summary: string; status: string; visibility: string }> {
@@ -1538,6 +1719,52 @@ export async function createArticleFromTicket(accessToken: string, ticketId: str
   })
 
   return readJsonResponse<{ id: string; article_number: string; title: string; summary: string; status: string; visibility: string }>(response)
+}
+
+export async function fetchTicketKnowledgeLinks(accessToken: string, ticketId: string): Promise<TicketKnowledgeLink[]> {
+  const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/knowledge-links`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<TicketKnowledgeLink[]>(response)
+}
+
+export async function fetchTicketKnowledge(accessToken: string, ticketId: string): Promise<TicketKnowledgeLink[]> {
+  return fetchTicketKnowledgeLinks(accessToken, ticketId)
+}
+
+export async function createTicketKnowledgeLink(accessToken: string, ticketId: string, request: CreateTicketKnowledgeLinkRequest): Promise<TicketKnowledgeLink> {
+  const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/knowledge-links`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+  return readJsonResponse<TicketKnowledgeLink>(response)
+}
+
+export async function attachArticleToTicket(accessToken: string, ticketId: string, request: CreateTicketKnowledgeLinkRequest): Promise<TicketKnowledgeLink> {
+  return createTicketKnowledgeLink(accessToken, ticketId, request)
+}
+
+export async function useArticleForTicket(accessToken: string, ticketId: string, articleId: string): Promise<KnowledgeUsage> {
+  return logKnowledgeArticleUsage(accessToken, articleId, {
+    ticket_id: ticketId,
+    action: 'used_for_resolution',
+    context: { source: 'ticket_detail' },
+  })
+}
+
+export async function deleteTicketKnowledgeLink(accessToken: string, ticketId: string, linkId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/knowledge-links/${linkId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null
+    throw new Error(errorPayload?.error?.message ?? `Backend returned ${response.status}`)
+  }
 }
 
 export async function fetchNotifications(accessToken: string, params?: { status?: string; type?: string }): Promise<Notification[]> {
