@@ -4,8 +4,10 @@ import AppShell from '../components/AppShell'
 import {
   createReportSnapshot,
   createSavedReport,
+  fetchAiAnalytics,
   fetchAnalyticsOverview,
   fetchAssetAnalytics,
+  fetchAutomationAnalytics,
   fetchDemoExport,
   fetchExecutiveSummary,
   fetchKnowledgeAnalytics,
@@ -22,8 +24,10 @@ const tabs = [
   { key: 'tickets', label: 'Tickets' },
   { key: 'sla', label: 'SLA' },
   { key: 'assets', label: 'Assets' },
-  { key: 'ai', label: 'AI & Knowledge' },
+  { key: 'knowledge', label: 'Knowledge' },
+  { key: 'ai', label: 'AI' },
   { key: 'security', label: 'Security' },
+  { key: 'automation', label: 'Automation' },
   { key: 'reports', label: 'Reports' },
 ] as const
 
@@ -76,6 +80,16 @@ export default function AnalyticsPage() {
     queryFn: () => fetchKnowledgeAnalytics(session?.access_token ?? ''),
     enabled: Boolean(session?.access_token),
   })
+  const aiQuery = useQuery({
+    queryKey: ['analytics-ai', session?.access_token],
+    queryFn: () => fetchAiAnalytics(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+  })
+  const automationQuery = useQuery({
+    queryKey: ['analytics-automation', session?.access_token],
+    queryFn: () => fetchAutomationAnalytics(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+  })
   const securityQuery = useQuery({
     queryKey: ['analytics-security', session?.access_token],
     queryFn: () => fetchSecurityAnalytics(session?.access_token ?? ''),
@@ -95,7 +109,7 @@ export default function AnalyticsPage() {
   const createSnapshotMutation = useMutation({
     mutationFn: async () => {
       if (!session?.access_token) throw new Error('No session')
-      return createReportSnapshot(session.access_token, { report_type: 'executive-summary' })
+      return createReportSnapshot(session.access_token, { report_type: 'executive' })
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['reports-snapshots'] })
@@ -107,7 +121,7 @@ export default function AnalyticsPage() {
       if (!session?.access_token) throw new Error('No session')
       return createSavedReport(session.access_token, {
         name: 'Executive Pulse Report',
-        report_type: 'executive-summary',
+        report_type: 'executive',
         filters_json: { period: '30d', scope: 'executive' },
       })
     },
@@ -132,6 +146,8 @@ export default function AnalyticsPage() {
   const sla = slaQuery.data
   const assets = assetQuery.data
   const knowledge = knowledgeQuery.data
+  const ai = aiQuery.data
+  const automation = automationQuery.data
   const security = securityQuery.data
   const hasTabError =
     overviewQuery.isError ||
@@ -139,7 +155,9 @@ export default function AnalyticsPage() {
     ticketQuery.isError ||
     slaQuery.isError ||
     assetQuery.isError ||
+    aiQuery.isError ||
     knowledgeQuery.isError ||
+    automationQuery.isError ||
     securityQuery.isError
 
   return (
@@ -373,24 +391,8 @@ export default function AnalyticsPage() {
         </section>
       ) : null}
 
-      {activeTab === 'ai' ? (
+      {activeTab === 'knowledge' ? (
         <section className="foundation-card dashboard-split">
-          <div>
-            <p className="eyebrow">AI USAGE</p>
-            <h2>AI adoption и confidence</h2>
-            <div className="metric-grid analytics-mini-grid">
-              <article className="metric-card"><span>AI analyses</span><strong>{overview?.ai.total_ai_analyses ?? 0}</strong><p>Всего AI-анализов.</p></article>
-              <article className="metric-card"><span>Confidence</span><strong>{`${overview?.ai.average_confidence_percent ?? 0}%`}</strong><p>Средняя AI confidence.</p></article>
-              <article className="metric-card"><span>Applied demo</span><strong>{overview?.ai.ai_suggestions_applied_demo ?? 0}</strong><p>Applied/demo suggestions.</p></article>
-              <article className="metric-card"><span>KB resolved</span><strong>{knowledge?.tickets_resolved_via_knowledge_demo ?? 0}</strong><p>Заявки, решённые через KB/demo.</p></article>
-            </div>
-            <div className="ticket-table-wrap analytics-table-space">
-              <table className="ticket-table">
-                <thead><tr><th>AI category</th><th>Count</th></tr></thead>
-                <tbody>{(overview?.ai.recommendations_by_category ?? []).map((item) => <tr key={item.category}><td>{item.category}</td><td>{item.count}</td></tr>)}</tbody>
-              </table>
-            </div>
-          </div>
           <div>
             <p className="eyebrow">KNOWLEDGE</p>
             <h2>Топ статьи и пробелы</h2>
@@ -403,12 +405,71 @@ export default function AnalyticsPage() {
                 </article>
               ))}
             </div>
-            <p className="eyebrow analytics-subsection">Категории без статей</p>
-            <div className="activity-list">
-              {!knowledgeQuery.isPending && (knowledge?.categories_without_articles ?? []).length === 0 ? <p className="state-panel state-panel-empty">Все категории покрыты статьями.</p> : null}
-              {(knowledge?.categories_without_articles ?? []).map((item) => (
-                <article className="activity-item" key={item.code}><header><strong>{item.code}</strong><span>{item.name}</span></header></article>
-              ))}
+          </div>
+          <div>
+            <p className="eyebrow">COVERAGE</p>
+            <h2>Knowledge KPI</h2>
+            <div className="metric-grid analytics-mini-grid">
+              <article className="metric-card"><span>Всего статей</span><strong>{knowledge?.total_articles ?? 0}</strong></article>
+              <article className="metric-card"><span>Опубликовано</span><strong>{knowledge?.published_articles ?? 0}</strong></article>
+              <article className="metric-card"><span>Negative feedback</span><strong>{knowledge?.articles_with_negative_feedback?.length ?? 0}</strong></article>
+              <article className="metric-card"><span>KB resolved</span><strong>{knowledge?.tickets_resolved_via_knowledge_demo ?? 0}</strong></article>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'ai' ? (
+        <section className="foundation-card dashboard-split">
+          <div>
+            <p className="eyebrow">AI USAGE</p>
+            <h2>AI adoption и confidence</h2>
+            <div className="metric-grid analytics-mini-grid">
+              <article className="metric-card"><span>AI analyses</span><strong>{ai?.total_ai_analyses ?? 0}</strong><p>Всего AI-анализов.</p></article>
+              <article className="metric-card"><span>Confidence</span><strong>{`${ai?.average_confidence_percent ?? 0}%`}</strong><p>Средняя AI confidence.</p></article>
+              <article className="metric-card"><span>Applied demo</span><strong>{ai?.ai_suggestions_applied_demo ?? 0}</strong><p>Applied/demo suggestions.</p></article>
+              <article className="metric-card"><span>KB resolved</span><strong>{knowledge?.tickets_resolved_via_knowledge_demo ?? 0}</strong><p>Заявки, решённые через KB/demo.</p></article>
+            </div>
+            <div className="ticket-table-wrap analytics-table-space">
+              <table className="ticket-table">
+                <thead><tr><th>AI category</th><th>Count</th></tr></thead>
+                <tbody>{(ai?.recommendations_by_category ?? []).map((item) => <tr key={item.category}><td>{item.category}</td><td>{item.count}</td></tr>)}</tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <p className="eyebrow">AI PRIORITIES</p>
+            <h2>Приоритеты рекомендаций</h2>
+            <div className="ticket-table-wrap">
+              <table className="ticket-table">
+                <thead><tr><th>Priority</th><th>Count</th></tr></thead>
+                <tbody>{(ai?.recommendations_by_priority ?? []).map((item) => <tr key={item.priority}><td>{item.priority}</td><td>{item.count}</td></tr>)}</tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'automation' ? (
+        <section className="foundation-card dashboard-split">
+          <div>
+            <p className="eyebrow">AUTOMATION KPIs</p>
+            <h2>Rules, runs and approvals</h2>
+            <div className="metric-grid analytics-mini-grid">
+              <article className="metric-card"><span>Active rules</span><strong>{automation?.active_rules ?? 0}</strong></article>
+              <article className="metric-card"><span>Runs today</span><strong>{automation?.runs_today ?? 0}</strong></article>
+              <article className="metric-card"><span>Failed runs</span><strong>{automation?.failed_runs ?? 0}</strong></article>
+              <article className="metric-card"><span>Pending approvals</span><strong>{automation?.pending_approvals ?? 0}</strong></article>
+            </div>
+          </div>
+          <div>
+            <p className="eyebrow">EFFICIENCY</p>
+            <h2>Automation effectiveness</h2>
+            <div className="metric-grid analytics-mini-grid">
+              <article className="metric-card"><span>Success rate</span><strong>{automation?.automation_success_rate ?? 0}%</strong></article>
+              <article className="metric-card"><span>Runs total</span><strong>{automation?.automation_runs_count ?? 0}</strong></article>
+              <article className="metric-card"><span>Runbooks</span><strong>{automation?.runbooks_available ?? 0}</strong></article>
+              <article className="metric-card"><span>Runbook exec</span><strong>{automation?.runbook_execution_count ?? 0}</strong></article>
             </div>
           </div>
         </section>

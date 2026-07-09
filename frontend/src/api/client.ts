@@ -1062,6 +1062,9 @@ export type SavedReport = {
   name: string
   report_type: string
   filters_json: Record<string, unknown>
+  visibility?: string
+  schedule_enabled?: boolean
+  created_by_id?: string | null
   created_by: string
   created_at: string
   updated_at: string
@@ -1070,10 +1073,14 @@ export type SavedReport = {
 export type ReportSnapshot = {
   id: string
   tenant_id: string | null
+  saved_report_id?: string | null
   report_type: string
   period_from: string | null
   period_to: string | null
+  filters_json?: Record<string, unknown>
   payload_json: Record<string, unknown>
+  generated_by_id?: string | null
+  generated_at?: string
   created_at: string
   created_by: string
 }
@@ -2077,35 +2084,98 @@ export async function fetchTicketAnalytics(accessToken: string): Promise<TicketA
   const response = await fetch(`${API_BASE_URL}/analytics/tickets`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<TicketAnalytics>(response)
+  const payload = (await readJsonResponse<Record<string, unknown>>(response)) ?? {}
+  return {
+    total_tickets: Number(payload.total_tickets ?? 0),
+    open_tickets: Number(payload.total_tickets ?? 0) - Number(payload.closed_count ?? 0),
+    closed_tickets: Number(payload.closed_count ?? 0),
+    tickets_today: 0,
+    by_status: (payload.status_distribution as AnalyticsCountItem[]) ?? [],
+    by_priority: (payload.priority_distribution as AnalyticsCountItem[]) ?? [],
+    by_category: (payload.category_distribution as AnalyticsCountItem[]) ?? [],
+    average_response_minutes: (payload.average_first_response_minutes as number | null) ?? null,
+    average_resolution_minutes: (payload.average_resolution_time_minutes as number | null) ?? null,
+    top_requesters: [],
+    top_assignees: ((payload.assignee_workload as Array<{ assignee: string; count: number }>) ?? []).map((item) => ({ name: item.assignee, count: item.count })),
+    open_critical_tickets: ((payload.priority_distribution as Array<{ priority: string; count: number }>) ?? [])
+      .filter((item) => item.priority === 'CRITICAL')
+      .reduce((acc, item) => acc + Number(item.count ?? 0), 0),
+  }
 }
 
 export async function fetchSlaAnalytics(accessToken: string): Promise<SlaAnalytics> {
   const response = await fetch(`${API_BASE_URL}/analytics/sla`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<SlaAnalytics>(response)
+  const payload = (await readJsonResponse<Record<string, unknown>>(response)) ?? {}
+  return {
+    sla_compliance_percent: Number(payload.compliance_percent ?? 0),
+    response_breaches: Number(payload.breached_tickets ?? 0),
+    resolution_breaches: Number(payload.breached_tickets ?? 0),
+    tickets_at_risk: Number(payload.at_risk_tickets ?? 0),
+    critical_sla_breaches: 0,
+    violations_by_priority: (payload.by_priority as Array<{ priority: string; count: number }>) ?? [],
+  }
 }
 
 export async function fetchAssetAnalytics(accessToken: string): Promise<AssetAnalytics> {
   const response = await fetch(`${API_BASE_URL}/analytics/assets`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<AssetAnalytics>(response)
+  const payload = (await readJsonResponse<Record<string, unknown>>(response)) ?? {}
+  const byStatus = (payload.assets_by_status as Array<{ status: string; count: number }>) ?? []
+  return {
+    total_assets: Number(payload.total_assets ?? 0),
+    assets_by_type: (payload.assets_by_type as Array<{ type: string; count: number }>) ?? [],
+    assets_by_status: byStatus,
+    problem_assets: [],
+    problem_assets_count: 0,
+    top_assets_by_ticket_count: [],
+    warranty_expiring_soon: [],
+    unassigned_assets: [],
+    unassigned_assets_count: 0,
+    imported_assets_count: 0,
+    assets_missing_location_count: Number(payload.missing_location ?? 0),
+    disposed_assets_count: byStatus.filter((item) => item.status === 'disposed').reduce((acc, item) => acc + item.count, 0),
+    assets_by_source: [],
+    assets_by_purchase_year: [],
+    top_responsible_persons: ((payload.assets_by_responsible as Array<{ responsible: string; count: number }>) ?? []).map((item) => ({ name: item.responsible, count: item.count })),
+    duplicate_inventory_numbers: [],
+  }
 }
 
 export async function fetchAiAnalytics(accessToken: string): Promise<AiAnalytics> {
   const response = await fetch(`${API_BASE_URL}/analytics/ai`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<AiAnalytics>(response)
+  const payload = (await readJsonResponse<Record<string, unknown>>(response)) ?? {}
+  return {
+    total_ai_analyses: Number(payload.ai_suggestions_total ?? 0),
+    average_confidence_percent: Number(payload.average_confidence ?? 0) * 100,
+    recommendations_by_category: [],
+    recommendations_by_priority: [],
+    ai_suggestions_applied_demo: Number(payload.attach_article_count ?? 0),
+    frequent_request_topics: [],
+  }
 }
 
 export async function fetchKnowledgeAnalytics(accessToken: string): Promise<KnowledgeAnalytics> {
   const response = await fetch(`${API_BASE_URL}/analytics/knowledge`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<KnowledgeAnalytics>(response)
+  const payload = (await readJsonResponse<Record<string, unknown>>(response)) ?? {}
+  return {
+    total_articles: Number(payload.total_articles ?? 0),
+    published_articles: Number(payload.published_articles ?? 0),
+    top_helpful_articles: ((payload.most_used_articles as Array<{ article_number: string; title: string; count: number }>) ?? []).map((item) => ({
+      article_number: item.article_number,
+      title: item.title,
+      helpful_count: item.count,
+    })),
+    articles_with_negative_feedback: [],
+    categories_without_articles: [],
+    tickets_resolved_via_knowledge_demo: 0,
+  }
 }
 
 export async function fetchNotificationAnalytics(accessToken: string): Promise<NotificationAnalytics> {
@@ -2119,14 +2189,52 @@ export async function fetchSecurityAnalytics(accessToken: string): Promise<Secur
   const response = await fetch(`${API_BASE_URL}/analytics/security`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<SecurityAnalytics>(response)
+  const payload = (await readJsonResponse<Record<string, unknown>>(response)) ?? {}
+  return {
+    login_success: 0,
+    login_failed: Number(payload.failed_logins ?? 0),
+    audit_events_count: Number(payload.audit_events_today ?? 0),
+    admin_changes_today: Number(payload.admin_actions ?? 0),
+    risk_summary: {
+      failed_logins_24h: Number(payload.failed_logins ?? 0),
+      success_logins_24h: 0,
+      active_users: 0,
+      risk_level: Number(payload.high_risk_events ?? 0) > 0 ? 'high' : 'medium',
+      recent_security_events: [],
+    },
+    sensitive_settings_count: Number(payload.sensitive_settings_changes ?? 0),
+  }
 }
 
 export async function fetchExecutiveSummary(accessToken: string): Promise<ExecutiveSummary> {
-  const response = await fetch(`${API_BASE_URL}/analytics/executive-summary`, {
+  const response = await fetch(`${API_BASE_URL}/analytics/executive`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<ExecutiveSummary>(response)
+  const payload = (await readJsonResponse<Record<string, unknown>>(response)) ?? {}
+  return {
+    health_score: Number(payload.itsm_health_score ?? 0),
+    it_workload_score: Math.max(0, 100 - Number(payload.open_tickets ?? 0)),
+    sla_risk_score: Number(payload.sla_compliance_percent ?? 0),
+    asset_risk_score: Math.max(0, 100 - Number(payload.assets_without_room ?? 0) - Number(payload.assets_without_mol ?? 0)),
+    security_risk_score: Math.max(0, 100 - Number(payload.failed_logins ?? 0)),
+    ai_maturity_score: Number(payload.ai_acceptance_rate ?? 0),
+    integrations_health_score: Number(payload.healthy_integrations ?? 0),
+    workflow_automation_score: Number(payload.automation_success_rate ?? 0),
+    top_5_problems: [
+      { title: 'Open tickets', value: Number(payload.open_tickets ?? 0) },
+      { title: 'Critical tickets', value: Number(payload.critical_tickets ?? 0) },
+      { title: 'SLA breaches', value: Number(payload.breached_sla_count ?? 0) },
+      { title: 'Assets without room', value: Number(payload.assets_without_room ?? 0) },
+      { title: 'Failed logins', value: Number(payload.failed_logins ?? 0) },
+    ],
+    top_5_recommendations: [
+      'Reduce open and critical ticket load.',
+      'Improve SLA compliance for overdue queues.',
+      'Close asset location and ownership gaps.',
+      'Increase AI suggestion acceptance and article linkage.',
+      'Investigate high risk security events quickly.',
+    ],
+  }
 }
 
 export async function fetchAutomationAnalytics(accessToken: string): Promise<AutomationOverview> {
@@ -2247,7 +2355,7 @@ export async function fetchTicketAutomationSuggestions(accessToken: string, tick
 }
 
 export async function fetchSavedReports(accessToken: string): Promise<SavedReport[]> {
-  const response = await fetch(`${API_BASE_URL}/reports/saved`, {
+  const response = await fetch(`${API_BASE_URL}/reports`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   return readJsonResponse<SavedReport[]>(response)
@@ -2255,14 +2363,29 @@ export async function fetchSavedReports(accessToken: string): Promise<SavedRepor
 
 export async function createSavedReport(
   accessToken: string,
-  request: { name: string; report_type: string; filters_json?: Record<string, unknown> },
+  request: { name: string; report_type: string; filters_json?: Record<string, unknown>; visibility?: string; schedule_enabled?: boolean },
 ): Promise<SavedReport> {
-  const response = await fetch(`${API_BASE_URL}/reports/saved`, {
+  const response = await fetch(`${API_BASE_URL}/reports`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   })
   return readJsonResponse<SavedReport>(response)
+}
+
+export async function fetchReportById(accessToken: string, reportId: string): Promise<SavedReport> {
+  const response = await fetch(`${API_BASE_URL}/reports/${reportId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<SavedReport>(response)
+}
+
+export async function runSavedReport(accessToken: string, reportId: string): Promise<ReportSnapshot> {
+  const response = await fetch(`${API_BASE_URL}/reports/${reportId}/run`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<ReportSnapshot>(response)
 }
 
 export async function fetchReportSnapshots(accessToken: string): Promise<ReportSnapshot[]> {
@@ -2274,7 +2397,7 @@ export async function fetchReportSnapshots(accessToken: string): Promise<ReportS
 
 export async function createReportSnapshot(
   accessToken: string,
-  request: { report_type: string; period_from?: string | null; period_to?: string | null },
+  request: { report_type?: string | null; saved_report_id?: string | null; filters_json?: Record<string, unknown>; period_from?: string | null; period_to?: string | null },
 ): Promise<ReportSnapshot> {
   const response = await fetch(`${API_BASE_URL}/reports/snapshots`, {
     method: 'POST',
@@ -2284,10 +2407,36 @@ export async function createReportSnapshot(
   return readJsonResponse<ReportSnapshot>(response)
 }
 
+export async function fetchSnapshotById(accessToken: string, snapshotId: string): Promise<ReportSnapshot> {
+  const response = await fetch(`${API_BASE_URL}/reports/snapshots/${snapshotId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<ReportSnapshot>(response)
+}
+
+export async function exportReport(
+  accessToken: string,
+  request: { report_type: string; format: 'json' | 'csv'; filters_json?: Record<string, unknown> },
+): Promise<DemoExport | string> {
+  const response = await fetch(`${API_BASE_URL}/reports/export`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null
+    throw new Error(errorPayload?.error?.message ?? `Backend returned ${response.status}`)
+  }
+  if (request.format === 'csv') {
+    return response.text()
+  }
+  return response.json() as Promise<DemoExport>
+}
+
 export async function fetchDemoExport(accessToken: string, params?: { report_type?: string; format?: string }): Promise<DemoExport> {
   const search = new URLSearchParams()
   if (params?.report_type) search.set('report_type', params.report_type)
-  if (params?.format) search.set('format', params.format)
+  search.set('format', 'json')
   const query = search.toString()
   const response = await fetch(`${API_BASE_URL}/reports/export-demo${query ? `?${query}` : ''}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
