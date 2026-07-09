@@ -22,6 +22,7 @@ from app.models.ticket import Ticket
 from app.models.user import User
 from app.services.audit import log_audit
 from app.services.automation import AutomationEngine, build_ticket_context, collect_automation_overview
+from app.services.notifications import create_domain_event_notification
 from app.services.rbac import is_saas_root, require_permissions
 
 router = APIRouter(prefix="/automation")
@@ -471,6 +472,22 @@ def manual_run_rule(
         user_agent=http_request.headers.get("user-agent"),
         metadata={"run_id": run.id, "status": run.status},
     )
+    if run.status in {"failed", "completed_with_errors"}:
+        create_domain_event_notification(
+            db,
+            tenant_id=current_user.tenant_id,
+            event_type="automation_failed",
+            title=f"Automation run завершился с ошибками ({rule.code})",
+            message=f"Manual run {run.id} завершился со статусом {run.status}.",
+            recipient_name=current_user.full_name,
+            recipient_email=current_user.email,
+            recipient_user_id=current_user.id,
+            severity="warning",
+            entity_type="automation_run",
+            entity_id=run.id,
+            action_url="/automation",
+            metadata={"rule_id": rule.id, "status": run.status},
+        )
     db.commit()
     db.refresh(run)
     return {"run": _run_response(run), "summary": summary}
@@ -723,6 +740,22 @@ def patch_approval(
         user_agent=http_request.headers.get("user-agent"),
         metadata={"decision": decision},
     )
+    if decision == "REJECTED":
+        create_domain_event_notification(
+            db,
+            tenant_id=current_user.tenant_id,
+            event_type="approval_required",
+            title="Approval request отклонен",
+            message=f"Запрос '{item.title}' был отклонен пользователем {current_user.full_name}.",
+            recipient_name=current_user.full_name,
+            recipient_email=current_user.email,
+            recipient_user_id=current_user.id,
+            severity="warning",
+            entity_type="approval_request",
+            entity_id=item.id,
+            action_url="/automation",
+            metadata={"decision": decision},
+        )
     db.commit()
     db.refresh(item)
     return _approval_response(item)

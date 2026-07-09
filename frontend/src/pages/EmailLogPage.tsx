@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchEmailLog, sendTestEmail } from '../api/client'
+import { fetchEmailLogPage, retryEmailLog, sendTestEmail, type EmailMessageLog } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import AppShell from '../components/AppShell'
 
@@ -15,10 +15,18 @@ export default function EmailLogPage() {
   const queryClient = useQueryClient()
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [selectedLog, setSelectedLog] = useState<EmailMessageLog | null>(null)
 
   const emailLogQuery = useQuery({
-    queryKey: ['email-log', session?.access_token],
-    queryFn: () => fetchEmailLog(session?.access_token ?? ''),
+    queryKey: ['email-log', session?.access_token, statusFilter, search, page],
+    queryFn: () =>
+      fetchEmailLogPage(session?.access_token ?? '', {
+        status: statusFilter,
+        q: search,
+        page,
+        page_size: 20,
+      }),
     enabled: Boolean(session?.access_token),
   })
 
@@ -36,10 +44,22 @@ export default function EmailLogPage() {
     },
   })
 
-  const logs = emailLogQuery.data ?? []
+  const retryMutation = useMutation({
+    mutationFn: async (emailLogId: string) => {
+      if (!session?.access_token) throw new Error('No session')
+      return retryEmailLog(session.access_token, emailLogId)
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['email-log'] })
+    },
+  })
+
+  const logs = emailLogQuery.data?.items ?? []
+  const total = emailLogQuery.data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / 20))
   const filteredLogs = useMemo(
-    () => logs.filter((item) => (statusFilter === 'ALL' || item.status === statusFilter) && (!search.trim() || item.to_email.toLowerCase().includes(search.trim().toLowerCase()) || item.subject.toLowerCase().includes(search.trim().toLowerCase()))),
-    [logs, statusFilter, search],
+    () => logs,
+    [logs],
   )
   const queued = logs.filter((item) => item.status === 'PENDING').length
   const sent = logs.filter((item) => item.status === 'SENT').length
@@ -98,17 +118,22 @@ export default function EmailLogPage() {
         <div className="table-filters">
           <label className="inline-field">
             <span>Поиск</span>
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Тема или получатель" />
+            <input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Тема или получатель" />
           </label>
           <label className="inline-field">
             <span>Статус</span>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            <select value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1) }}>
               <option value="ALL">Все</option>
               <option value="PENDING">Ожидает</option>
               <option value="SENT">Отправлено</option>
               <option value="FAILED">Ошибка</option>
             </select>
           </label>
+        </div>
+        <div className="analytics-actions">
+          <button type="button" className="ghost-button" disabled={page <= 1} onClick={() => setPage((prev) => Math.max(1, prev - 1))}>Назад</button>
+          <span>Страница {page} / {totalPages}</span>
+          <button type="button" className="ghost-button" disabled={page >= totalPages} onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}>Вперед</button>
         </div>
       </section>
 
@@ -136,6 +161,7 @@ export default function EmailLogPage() {
                   <th>Создано</th>
                   <th>Отправлено</th>
                   <th>Ошибка</th>
+                  <th>Действия</th>
                 </tr>
               </thead>
               <tbody>
@@ -148,6 +174,21 @@ export default function EmailLogPage() {
                     <td>{formatDateTime(item.created_at)}</td>
                     <td>{formatDateTime(item.sent_at)}</td>
                     <td>{item.error_message ?? '—'}</td>
+                    <td>
+                      <div className="analytics-actions">
+                        <button type="button" className="ghost-button" onClick={() => setSelectedLog(item)}>Детали</button>
+                        {item.status === 'FAILED' || item.status === 'PENDING' ? (
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            disabled={retryMutation.isPending}
+                            onClick={() => retryMutation.mutate(item.id)}
+                          >
+                            Retry
+                          </button>
+                        ) : null}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -155,6 +196,16 @@ export default function EmailLogPage() {
           </div>
         )}
       </section>
+
+      {selectedLog ? (
+        <section className="section-card">
+          <div className="table-toolbar">
+            <h3>Детали Email Log</h3>
+            <button type="button" className="ghost-button" onClick={() => setSelectedLog(null)}>Закрыть</button>
+          </div>
+          <pre className="notification-debug-json">{JSON.stringify(selectedLog, null, 2)}</pre>
+        </section>
+      ) : null}
     </AppShell>
   )
 }

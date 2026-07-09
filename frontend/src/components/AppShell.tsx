@@ -48,7 +48,8 @@ export default function AppShell({ title, subtitle, children }: AppShellProps) {
     queryKey: ['notifications-unread-count', session?.access_token],
     queryFn: () => fetchNotificationUnreadCount(session?.access_token ?? ''),
     enabled: Boolean(session?.access_token),
-    refetchInterval: 15000,
+    refetchInterval: 30000,
+    refetchIntervalInBackground: false,
   })
   const unreadCount = unreadQuery.data?.unread_count ?? 0
   const role = session?.user.role ?? 'guest'

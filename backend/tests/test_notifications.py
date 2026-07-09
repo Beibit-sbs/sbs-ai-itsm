@@ -15,8 +15,10 @@ def test_notifications_list(app) -> None:
         response = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 200
         payload = response.json()
-        assert isinstance(payload, list)
-        assert len(payload) >= 12
+        assert isinstance(payload, dict)
+        assert payload["total"] >= 12
+        assert payload["page"] == 1
+        assert isinstance(payload["items"], list)
 
 
 def test_unread_count(app) -> None:
@@ -34,7 +36,7 @@ def test_mark_notification_as_read(app) -> None:
 
     with TestClient(app) as client:
         token = _login_admin(client)
-        notifications = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()
+        notifications = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()["items"]
         target = next((item for item in notifications if item["status"] != "READ"), notifications[0])
 
         response = client.patch(f"/api/v1/notifications/{target['id']}/read", headers={"Authorization": f"Bearer {token}"})
@@ -76,7 +78,9 @@ def test_email_log_list(app) -> None:
         token = _login_admin(client)
         response = client.get("/api/v1/notifications/email-log", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 200
-        assert isinstance(response.json(), list)
+        payload = response.json()
+        assert isinstance(payload, dict)
+        assert "items" in payload
 
 
 def test_test_email_creates_log(app) -> None:
@@ -104,7 +108,7 @@ def test_ticket_create_creates_notification(app) -> None:
 
     with TestClient(app) as client:
         token = _login_admin(client)
-        before = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()
+        before = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()["items"]
         before_count = len(before)
 
         create_response = client.post(
@@ -124,7 +128,7 @@ def test_ticket_create_creates_notification(app) -> None:
         )
         assert create_response.status_code == 201
 
-        after = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()
+        after = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()["items"]
         assert len(after) >= before_count + 1
         assert any(item["type"] == "ticket_created" for item in after[:4])
 
@@ -143,8 +147,54 @@ def test_ticket_status_change_creates_notification(app) -> None:
         )
         assert patch_response.status_code == 200
 
-        notifications = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()
+        notifications = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()["items"]
         related = [item for item in notifications if item["related_ticket_id"] == ticket_id]
         types = {item["type"] for item in related}
         assert "ticket_status_changed" in types
         assert "ticket_resolved" in types
+
+
+def test_preferences_get_and_patch(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        response = client.get("/api/v1/notifications/preferences", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        items = response.json()
+        assert len(items) >= 1
+
+        first = items[0]
+        patch_response = client.patch(
+            "/api/v1/notifications/preferences",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"items": [{"event_type": first["event_type"], "is_muted": not first["is_muted"]}]},
+        )
+        assert patch_response.status_code == 200
+        patched = patch_response.json()
+        assert any(item["event_type"] == first["event_type"] for item in patched)
+
+
+def test_email_log_retry(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        create_response = client.post(
+            "/api/v1/notifications/test-email",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "to_email": "retry.user@sbs.local",
+                "subject": "Retry candidate",
+                "body": "mock",
+            },
+        )
+        assert create_response.status_code == 201
+        log_id = create_response.json()["id"]
+
+        retry_response = client.post(
+            f"/api/v1/notifications/email-log/{log_id}/retry",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert retry_response.status_code == 200
+        assert retry_response.json()["attempt_count"] >= 1

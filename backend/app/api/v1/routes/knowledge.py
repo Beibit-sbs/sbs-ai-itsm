@@ -18,6 +18,7 @@ from app.models.ticket import Ticket
 from app.models.user import User
 from app.services.audit import log_audit
 from app.services.knowledge_ai import article_payload, create_article_from_ticket, next_article_number, search_articles
+from app.services.notifications import create_domain_event_notification
 from app.services.rbac import require_permissions
 
 router = APIRouter(prefix="/knowledge")
@@ -307,6 +308,22 @@ def create_article(
         user_agent=http_request.headers.get("user-agent"),
         metadata={"article_number": article.article_number},
     )
+    if article.status == "published":
+        create_domain_event_notification(
+            db,
+            tenant_id=current_user.tenant_id,
+            event_type="knowledge_article_published",
+            title=f"Опубликована статья: {article.article_number}",
+            message=f"Статья '{article.title}' опубликована в базе знаний.",
+            recipient_name=current_user.full_name,
+            recipient_email=current_user.email,
+            recipient_user_id=current_user.id,
+            severity="info",
+            entity_type="knowledge_article",
+            entity_id=article.id,
+            action_url="/knowledge",
+            metadata={"article_number": article.article_number, "title": article.title},
+        )
     db.commit()
     db.refresh(article)
     return _article_to_response(article, {category.id: category})
@@ -354,6 +371,21 @@ def patch_article(
             ip_address=http_request.client.host if http_request.client else None,
             user_agent=http_request.headers.get("user-agent"),
             metadata={"article_number": article.article_number},
+        )
+        create_domain_event_notification(
+            db,
+            tenant_id=current_user.tenant_id,
+            event_type="knowledge_article_published",
+            title=f"Опубликована статья: {article.article_number}",
+            message=f"Статья '{article.title}' опубликована или обновлена в статусе published.",
+            recipient_name=current_user.full_name,
+            recipient_email=current_user.email,
+            recipient_user_id=current_user.id,
+            severity="info",
+            entity_type="knowledge_article",
+            entity_id=article.id,
+            action_url="/knowledge",
+            metadata={"article_number": article.article_number, "title": article.title},
         )
     db.commit()
     db.refresh(article)

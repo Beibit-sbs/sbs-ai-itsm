@@ -24,6 +24,7 @@ from app.models.user import User
 from app.services.asset_import import FILE_SIZE_LIMIT_BYTES, AssetImportService
 from app.services.asset_sla import calculate_asset_health
 from app.services.audit import log_audit
+from app.services.notifications import create_domain_event_notification
 from app.services.rbac import ensure_same_tenant_or_root, require_permissions
 
 router = APIRouter(prefix="/assets")
@@ -852,6 +853,21 @@ def move_asset(
         user_agent=http_request.headers.get("user-agent"),
         metadata={"room": asset.room, "building": asset.building},
     )
+    create_domain_event_notification(
+        db,
+        tenant_id=asset.tenant_id,
+        event_type="asset_moved",
+        title=f"Актив перемещен: {asset.asset_tag}",
+        message=f"Актив {asset.name} перемещен в {asset.location}.",
+        recipient_name=current_user.full_name,
+        recipient_email=current_user.email,
+        recipient_user_id=current_user.id,
+        severity="info",
+        entity_type="asset",
+        entity_id=asset.id,
+        action_url="/assets",
+        metadata={"asset_tag": asset.asset_tag, "location": asset.location},
+    )
     db.commit()
     return get_asset(asset.id, current_user, db)
 
@@ -895,6 +911,21 @@ def verify_asset(
         ip_address=http_request.client.host if http_request.client else None,
         user_agent=http_request.headers.get("user-agent"),
         metadata={"verification_status": asset.verification_status},
+    )
+    create_domain_event_notification(
+        db,
+        tenant_id=asset.tenant_id,
+        event_type="asset_verified",
+        title=f"Актив проверен: {asset.asset_tag}",
+        message=f"Статус проверки актива {asset.name}: {asset.verification_status}.",
+        recipient_name=current_user.full_name,
+        recipient_email=current_user.email,
+        recipient_user_id=current_user.id,
+        severity="info",
+        entity_type="asset",
+        entity_id=asset.id,
+        action_url="/assets",
+        metadata={"asset_tag": asset.asset_tag, "verification_status": asset.verification_status},
     )
     db.commit()
     return get_asset(asset.id, current_user, db)
@@ -953,6 +984,21 @@ def dispose_asset(
         ip_address=http_request.client.host if http_request.client else None,
         user_agent=http_request.headers.get("user-agent"),
         metadata={"writeoff_reason": request.writeoff_reason},
+    )
+    create_domain_event_notification(
+        db,
+        tenant_id=asset.tenant_id,
+        event_type="asset_disposed",
+        title=f"Актив списан: {asset.asset_tag}",
+        message=f"Актив {asset.name} списан. Причина: {request.writeoff_reason}",
+        recipient_name=current_user.full_name,
+        recipient_email=current_user.email,
+        recipient_user_id=current_user.id,
+        severity="warning",
+        entity_type="asset",
+        entity_id=asset.id,
+        action_url="/assets",
+        metadata={"asset_tag": asset.asset_tag, "writeoff_reason": request.writeoff_reason},
     )
     db.commit()
     return get_asset(asset.id, current_user, db)

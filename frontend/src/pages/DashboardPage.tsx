@@ -97,7 +97,7 @@ export default function DashboardPage() {
   const tickets = ticketsQuery.data ?? []
   const assets = assetsQuery.data ?? []
   const articles = knowledgeQuery.data ?? []
-  const notifications = notificationsQuery.data ?? []
+  const notifications = notificationsQuery.data?.items ?? []
   const emailLog = emailLogQuery.data ?? []
   const overview = slaOverviewQuery.data
 

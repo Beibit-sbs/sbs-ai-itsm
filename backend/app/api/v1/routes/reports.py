@@ -19,6 +19,7 @@ from app.models.saved_report import SavedReport
 from app.models.user import User
 from app.services.analytics import report_payload_for_type
 from app.services.audit import log_audit
+from app.services.notifications import create_domain_event_notification
 from app.services.rbac import require_permissions
 
 router = APIRouter(prefix="/reports")
@@ -332,6 +333,21 @@ def export_report(
         actor_user=_actor(db, current_user),
         ip_address=http_request.client.host if http_request.client else None,
         user_agent=http_request.headers.get("user-agent"),
+        metadata={"report_type": request.report_type, "format": request.format},
+    )
+    create_domain_event_notification(
+        db,
+        tenant_id=current_user.tenant_id,
+        event_type="report_exported",
+        title="Экспорт отчета выполнен",
+        message=f"Отчет {request.report_type} экспортирован в формате {request.format}.",
+        recipient_name=current_user.full_name,
+        recipient_email=current_user.email,
+        recipient_user_id=current_user.id,
+        severity="info",
+        entity_type="report_export",
+        entity_id=request.report_type,
+        action_url="/analytics",
         metadata={"report_type": request.report_type, "format": request.format},
     )
     db.commit()

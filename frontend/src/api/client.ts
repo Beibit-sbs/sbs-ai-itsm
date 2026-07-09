@@ -618,24 +618,43 @@ export type AiAnalyzeRequest = {
 export type Notification = {
   id: string
   type: string
+  event_type?: string | null
+  severity?: string | null
   title: string
   message: string
   recipient_name: string
   recipient_email: string
   channel: string
   status: string
+  is_read?: boolean
   related_ticket_id: string | null
+  entity_type?: string | null
+  entity_id?: string | null
+  action_url?: string | null
+  metadata?: Record<string, unknown> | null
   created_at: string
   read_at: string | null
 }
 
+export type NotificationListResponse = {
+  items: Notification[]
+  total: number
+  page: number
+  page_size: number
+  unread_count: number
+}
+
 export type NotificationTemplate = {
   id: string
+  tenant_id?: string | null
+  key?: string | null
+  event_type?: string | null
+  locale?: string
   code: string
   name: string
   subject_template: string
   body_template: string
-  channel: string
+  channel: string | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -643,15 +662,41 @@ export type NotificationTemplate = {
 
 export type EmailMessageLog = {
   id: string
+  tenant_id?: string | null
+  notification_id?: string | null
+  event_type?: string | null
   provider: string
+  provider_message_id?: string | null
   to_email: string
+  to_name?: string | null
   subject: string
   body: string
   status: string
+  attempt_count?: number
+  max_attempts?: number
+  next_retry_at?: string | null
+  payload?: Record<string, unknown> | null
+  metadata?: Record<string, unknown> | null
   error_message: string | null
   related_ticket_id: string | null
   created_at: string
   sent_at: string | null
+}
+
+export type EmailLogListResponse = {
+  items: EmailMessageLog[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export type NotificationPreference = {
+  id: string
+  event_type: string
+  channel_in_app: boolean
+  channel_email: boolean
+  is_muted: boolean
+  updated_at: string
 }
 
 export type TestEmailRequest = {
@@ -1774,15 +1819,33 @@ export async function deleteTicketKnowledgeLink(accessToken: string, ticketId: s
   }
 }
 
-export async function fetchNotifications(accessToken: string, params?: { status?: string; type?: string }): Promise<Notification[]> {
+export async function fetchNotifications(
+  accessToken: string,
+  params?: { status?: string; event_type?: string; type?: string; page?: number; page_size?: number; q?: string },
+): Promise<NotificationListResponse> {
   const search = new URLSearchParams()
   if (params?.status && params.status !== 'ALL') search.set('status', params.status)
-  if (params?.type && params.type !== 'ALL') search.set('type', params.type)
+  const eventType = params?.event_type ?? params?.type
+  if (eventType && eventType !== 'ALL') search.set('event_type', eventType)
+  if (params?.q) search.set('q', params.q)
+  if (params?.page) search.set('page', String(params.page))
+  if (params?.page_size) search.set('page_size', String(params.page_size))
   const query = search.toString()
   const response = await fetch(`${API_BASE_URL}/notifications${query ? `?${query}` : ''}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<Notification[]>(response)
+  const payload = await readJsonResponse<NotificationListResponse | Notification[]>(response)
+  if (Array.isArray(payload)) {
+    const unreadCount = payload.filter((item) => item.status !== 'READ').length
+    return {
+      items: payload,
+      total: payload.length,
+      page: 1,
+      page_size: payload.length,
+      unread_count: unreadCount,
+    }
+  }
+  return payload
 }
 
 export async function fetchNotificationUnreadCount(accessToken: string): Promise<{ unread_count: number }> {
@@ -1835,7 +1898,36 @@ export async function fetchEmailLog(accessToken: string): Promise<EmailMessageLo
   const response = await fetch(`${API_BASE_URL}/notifications/email-log`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<EmailMessageLog[]>(response)
+  const payload = await readJsonResponse<EmailLogListResponse | EmailMessageLog[]>(response)
+  if (Array.isArray(payload)) {
+    return payload
+  }
+  return payload.items
+}
+
+export async function fetchEmailLogPage(
+  accessToken: string,
+  params?: { status?: string; q?: string; page?: number; page_size?: number },
+): Promise<EmailLogListResponse> {
+  const search = new URLSearchParams()
+  if (params?.status && params.status !== 'ALL') search.set('status', params.status)
+  if (params?.q) search.set('q', params.q)
+  if (params?.page) search.set('page', String(params.page))
+  if (params?.page_size) search.set('page_size', String(params.page_size))
+  const query = search.toString()
+  const response = await fetch(`${API_BASE_URL}/notifications/email-log${query ? `?${query}` : ''}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  const payload = await readJsonResponse<EmailLogListResponse | EmailMessageLog[]>(response)
+  if (Array.isArray(payload)) {
+    return {
+      items: payload,
+      total: payload.length,
+      page: 1,
+      page_size: payload.length,
+    }
+  }
+  return payload
 }
 
 export async function sendTestEmail(accessToken: string, request: TestEmailRequest): Promise<EmailMessageLog> {
@@ -1848,6 +1940,36 @@ export async function sendTestEmail(accessToken: string, request: TestEmailReque
     body: JSON.stringify(request),
   })
   return readJsonResponse<EmailMessageLog>(response)
+}
+
+export async function retryEmailLog(accessToken: string, emailLogId: string): Promise<EmailMessageLog> {
+  const response = await fetch(`${API_BASE_URL}/notifications/email-log/${emailLogId}/retry`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<EmailMessageLog>(response)
+}
+
+export async function fetchNotificationPreferences(accessToken: string): Promise<NotificationPreference[]> {
+  const response = await fetch(`${API_BASE_URL}/notifications/preferences`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<NotificationPreference[]>(response)
+}
+
+export async function patchNotificationPreferences(
+  accessToken: string,
+  items: Array<Partial<NotificationPreference> & { event_type: string }>,
+): Promise<NotificationPreference[]> {
+  const response = await fetch(`${API_BASE_URL}/notifications/preferences`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ items }),
+  })
+  return readJsonResponse<NotificationPreference[]>(response)
 }
 
 export async function fetchAdminUsers(

@@ -529,6 +529,19 @@ button {
 	color: #86a0b8;
 }
 
+.notification-debug-json {
+	margin: 0;
+	max-height: 320px;
+	overflow: auto;
+	padding: 14px;
+	border-radius: 12px;
+	border: 1px solid #2a445f;
+	background: #0b1a2ac7;
+	font-size: 0.82rem;
+	line-height: 1.5;
+	color: #b8cee2;
+}
+
 .ticket-notification-banner {
 	margin-top: 18px;
 }

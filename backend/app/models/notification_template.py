@@ -12,11 +12,17 @@ class NotificationTemplate(Base):
     __tablename__ = "notification_templates"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    event_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    locale: Mapped[str] = mapped_column(String(20), nullable=False, default="ru")
+    channel: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    # Legacy fields kept for backward compatibility.
     code: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     subject_template: Mapped[str] = mapped_column(String(255), nullable=False)
     body_template: Mapped[str] = mapped_column(Text, nullable=False)
-    channel: Mapped[str] = mapped_column(String(32), nullable=False, default="in_app")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

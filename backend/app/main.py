@@ -9,6 +9,7 @@ from app.db.session import engine, SessionLocal
 from app.services.admin_security import ensure_admin_security_schema
 from app.services.asset_import import ensure_asset_import_schema
 from app.services.asset_sla import ensure_asset_sla_schema
+from app.services.notifications_schema import ensure_notifications_schema
 from app.services.reporting_schema import ensure_reporting_schema
 from app.services.seed import seed_demo_data, seed_system_data
 from app.services.service_desk import ensure_service_desk_schema
@@ -26,6 +27,7 @@ async def lifespan(_: FastAPI):
         ensure_asset_import_schema(engine)
         ensure_admin_security_schema(engine)
         ensure_reporting_schema(engine)
+        ensure_notifications_schema(engine)
     db = SessionLocal()
     try:
         if settings.demo_mode:
