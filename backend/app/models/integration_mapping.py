@@ -14,6 +14,13 @@ class IntegrationMapping(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
     external_system_id: Mapped[str | None] = mapped_column(ForeignKey("external_systems.id", ondelete="SET NULL"), nullable=True)
+    mapping_type: Mapped[str] = mapped_column(String(80), nullable=False, default="webhook_event")
+    source_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    target_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    transform_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Legacy compatibility fields from integration foundation stage.
     source_entity: Mapped[str] = mapped_column(String(120), nullable=False)
     target_entity: Mapped[str] = mapped_column(String(120), nullable=False)
     mapping_json: Mapped[str] = mapped_column(Text, nullable=False)

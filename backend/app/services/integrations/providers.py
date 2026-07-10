@@ -46,6 +46,9 @@ class BaseIntegrationProvider:
     def receive_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         return {"status": "mocked", "payload": payload}
 
+    def export_entity(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"status": "mocked", "payload": payload, "exported": True}
+
     def get_capabilities(self) -> dict[str, Any]:
         return {
             "code": self.descriptor.code,
@@ -169,20 +172,104 @@ class MockWebhookProvider(BaseIntegrationProvider):
         return {"status": "accepted", "message": "Mock webhook event pushed.", "payload": payload, "sent_at": datetime.now(UTC)}
 
 
+class MockOneCProvider(BaseIntegrationProvider):
+    descriptor = ProviderDescriptor(
+        code="one_c",
+        name="1C",
+        status="mock",
+        capabilities=["health_check", "pull_assets", "export_entity", "import_job_preview"],
+    )
+
+    def health_check(self) -> dict[str, Any]:
+        return {"status": "ok", "message": "Mock 1C provider is reachable.", "checked_at": datetime.now(UTC)}
+
+    def pull_assets(self) -> dict[str, Any]:
+        assets = [
+            {"inventory_number": "1C-1001", "name": "Mock Laptop 1", "status": "active"},
+            {"inventory_number": "1C-1002", "name": "Mock Laptop 2", "status": "active"},
+        ]
+        return {"preview": True, "records_total": len(assets), "assets": assets}
+
+
+class MockTelegramProvider(BaseIntegrationProvider):
+    descriptor = ProviderDescriptor(
+        code="telegram",
+        name="Telegram",
+        status="mock",
+        capabilities=["health_check", "send_notification", "push_event"],
+    )
+
+    def health_check(self) -> dict[str, Any]:
+        return {"status": "ok", "message": "Mock Telegram bot is reachable.", "checked_at": datetime.now(UTC)}
+
+    def send_notification(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"status": "accepted", "message": "Mock Telegram message captured.", "payload": payload}
+
+
+class MockEmailProviderAdapter(BaseIntegrationProvider):
+    descriptor = ProviderDescriptor(
+        code="email",
+        name="Email Adapter",
+        status="mock",
+        capabilities=["health_check", "send_notification", "event_logging_only"],
+    )
+
+    def health_check(self) -> dict[str, Any]:
+        return {"status": "ok", "message": "Mock email adapter ready.", "checked_at": datetime.now(UTC)}
+
+    def send_notification(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"status": "logged_only", "message": "Mock email adapter logged payload.", "payload": payload}
+
+
+class MockLDAPProvider(MockLdapProvider):
+    descriptor = ProviderDescriptor(
+        code="ldap",
+        name="LDAP",
+        status="mock",
+        capabilities=["health_check", "pull_users", "preview_sync", "import_job_preview", "bind_mock"],
+    )
+
+
+class MockFileImportProvider(BaseIntegrationProvider):
+    descriptor = ProviderDescriptor(
+        code="file_import",
+        name="File Import",
+        status="mock",
+        capabilities=["health_check", "import_job_preview", "import_job_run"],
+    )
+
+    def health_check(self) -> dict[str, Any]:
+        return {"status": "ok", "message": "Mock file import provider ready.", "checked_at": datetime.now(UTC)}
+
+
+def should_simulate_failure(config: dict[str, Any] | None, event_type: str | None = None) -> bool:
+    if not isinstance(config, dict):
+        return False
+    if bool(config.get("force_failure")):
+        return True
+    failed_events = config.get("fail_events")
+    if event_type and isinstance(failed_events, list):
+        return event_type in {str(item) for item in failed_events}
+    return False
+
+
 class StaticFutureProvider(BaseIntegrationProvider):
     def __init__(self, descriptor: ProviderDescriptor) -> None:
         self.descriptor = descriptor
 
 
 _PROVIDER_INSTANCES: dict[str, BaseIntegrationProvider] = {
-    "ldap": MockLdapProvider(),
+    "one_c": MockOneCProvider(),
+    "ldap": MockLDAPProvider(),
     "zimbra": MockZimbraProvider(),
+    "email": MockEmailProviderAdapter(),
     "smtp": MockSmtpProvider(),
+    "telegram": MockTelegramProvider(),
     "platonus": MockPlatonusProvider(),
     "moodle": MockMoodleProvider(),
     "webhook": MockWebhookProvider(),
+    "file_import": MockFileImportProvider(),
     "active_directory": StaticFutureProvider(ProviderDescriptor("active_directory", "Active Directory", "planned", ["health_check", "pull_users"])),
-    "telegram": StaticFutureProvider(ProviderDescriptor("telegram", "Telegram", "future", ["send_notification", "bot_events"])),
     "whatsapp": StaticFutureProvider(ProviderDescriptor("whatsapp", "WhatsApp", "future", ["send_notification", "message_events"])),
     "custom_api": StaticFutureProvider(ProviderDescriptor("custom_api", "Custom API", "future", ["pull_assets", "push_ticket", "webhooks"])),
 }

@@ -1061,6 +1061,28 @@ export type IntegrationSystem = {
   capabilities: string[]
 }
 
+export type IntegrationSystemV2 = {
+  id: string
+  tenant_id: string | null
+  code: string
+  name: string
+  system_type: string
+  base_url: string | null
+  status: string
+  health_status?: string | null
+  is_mock?: boolean
+  is_enabled: boolean
+  last_health_check_at?: string | null
+  last_success_at?: string | null
+  last_error_at?: string | null
+  last_error_message?: string | null
+  config?: Record<string, unknown>
+  created_by_id?: string | null
+  description?: string | null
+  created_at: string
+  updated_at: string
+}
+
 export type IntegrationProvider = {
   code: string
   name: string
@@ -1082,6 +1104,23 @@ export type IntegrationEvent = {
   created_at: string
 }
 
+type IntegrationEventV2 = {
+  id: string
+  external_system_id: string | null
+  direction: string
+  event_type: string
+  entity_type?: string | null
+  entity_id?: string | null
+  status: string
+  payload?: Record<string, unknown>
+  response_payload?: Record<string, unknown>
+  error_message: string | null
+  attempt_count?: number
+  next_retry_at?: string | null
+  created_at: string
+  processed_at?: string | null
+}
+
 export type IntegrationImportJob = {
   id: string
   tenant_id: string | null
@@ -1097,6 +1136,27 @@ export type IntegrationImportJob = {
   created_at: string
 }
 
+type IntegrationImportJobV2 = {
+  id: string
+  external_system_id: string | null
+  job_type: string
+  status: string
+  source_filename?: string | null
+  total_rows?: number
+  success_rows?: number
+  failed_rows?: number
+  records_total?: number
+  records_success?: number
+  records_failed?: number
+  error_report?: Record<string, unknown>
+  dry_run?: boolean
+  created_by_id?: string | null
+  started_at: string | null
+  finished_at: string | null
+  created_at: string
+  error_message?: string | null
+}
+
 export type IntegrationWebhook = {
   id: string
   tenant_id: string | null
@@ -1109,6 +1169,21 @@ export type IntegrationWebhook = {
   updated_at: string
 }
 
+type IntegrationWebhookV2 = {
+  id: string
+  external_system_id: string | null
+  name: string
+  path: string
+  event_type: string
+  is_active: boolean
+  secret_required?: boolean
+  last_received_at?: string | null
+  success_count?: number
+  failure_count?: number
+  created_at: string
+  updated_at: string
+}
+
 export type IntegrationMapping = {
   id: string
   tenant_id: string | null
@@ -1116,6 +1191,19 @@ export type IntegrationMapping = {
   source_entity: string
   target_entity: string
   mapping_json: Record<string, unknown>
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+type IntegrationMappingV2 = {
+  id: string
+  external_system_id: string | null
+  mapping_type: string
+  source_field?: string | null
+  target_field?: string | null
+  transform_rule?: string | null
+  is_required?: boolean
   is_active: boolean
   created_at: string
   updated_at: string
@@ -2817,7 +2905,27 @@ export async function fetchIntegrationSystems(
   const response = await fetch(`${API_BASE_URL}/integrations/systems${query ? `?${query}` : ''}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<IntegrationSystem[]>(response)
+  const payload = await readJsonResponse<IntegrationSystem[] | IntegrationSystemV2[] | PaginatedResponse<IntegrationSystemV2>>(response)
+  const items = Array.isArray(payload) ? payload : payload.items
+  return items.map((raw) => {
+    const item = raw as Record<string, unknown>
+    return {
+      id: String(item.id ?? ''),
+      tenant_id: (item.tenant_id as string | null) ?? null,
+      code: String(item.code ?? ''),
+      name: String(item.name ?? ''),
+      system_type: String(item.system_type ?? ''),
+      base_url: (item.base_url as string | null) ?? null,
+      status: String(item.status ?? ''),
+      is_enabled: Boolean(item.is_enabled),
+      last_health_status: (item.health_status as string | null) ?? (item.last_health_status as string | null) ?? null,
+      last_health_checked_at: (item.last_health_check_at as string | null) ?? (item.last_health_checked_at as string | null) ?? null,
+      description: (item.description as string | null) ?? null,
+      created_at: String(item.created_at ?? ''),
+      updated_at: String(item.updated_at ?? ''),
+      capabilities: [],
+    }
+  })
 }
 
 export async function runIntegrationHealthCheck(accessToken: string, systemId: string): Promise<{ status: string; message?: string }> {
@@ -2854,14 +2962,49 @@ export async function fetchIntegrationEvents(accessToken: string): Promise<Integ
   const response = await fetch(`${API_BASE_URL}/integrations/events`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<IntegrationEvent[]>(response)
+  const payload = await readJsonResponse<IntegrationEvent[] | IntegrationEventV2[] | PaginatedResponse<IntegrationEventV2>>(response)
+  const items = Array.isArray(payload) ? payload : payload.items
+  return items.map((raw) => {
+    const item = raw as Record<string, unknown>
+    return {
+      id: String(item.id ?? ''),
+      tenant_id: (item.tenant_id as string | null) ?? null,
+      external_system_id: (item.external_system_id as string | null) ?? null,
+      direction: String(item.direction ?? ''),
+      event_type: String(item.event_type ?? ''),
+      status: String(item.status ?? ''),
+      request_summary: (item.payload as Record<string, unknown>) ?? (item.request_summary as Record<string, unknown>) ?? {},
+      response_summary: (item.response_payload as Record<string, unknown>) ?? (item.response_summary as Record<string, unknown>) ?? {},
+      error_message: (item.error_message as string | null) ?? null,
+      correlation_id: (item.correlation_id as string | null) ?? null,
+      created_at: String(item.created_at ?? ''),
+    }
+  })
 }
 
 export async function fetchIntegrationImportJobs(accessToken: string): Promise<IntegrationImportJob[]> {
   const response = await fetch(`${API_BASE_URL}/integrations/import-jobs`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<IntegrationImportJob[]>(response)
+  const payload = await readJsonResponse<IntegrationImportJob[] | IntegrationImportJobV2[] | PaginatedResponse<IntegrationImportJobV2>>(response)
+  const items = Array.isArray(payload) ? payload : payload.items
+  return items.map((raw) => {
+    const item = raw as Record<string, unknown>
+    return {
+      id: String(item.id ?? ''),
+      tenant_id: (item.tenant_id as string | null) ?? null,
+      external_system_id: (item.external_system_id as string | null) ?? null,
+      job_type: String(item.job_type ?? ''),
+      status: String(item.status ?? ''),
+      records_total: Number(item.records_total ?? item.total_rows ?? 0),
+      records_success: Number(item.records_success ?? item.success_rows ?? 0),
+      records_failed: Number(item.records_failed ?? item.failed_rows ?? 0),
+      started_at: (item.started_at as string | null) ?? null,
+      finished_at: (item.finished_at as string | null) ?? null,
+      error_message: (item.error_message as string | null) ?? null,
+      created_at: String(item.created_at ?? ''),
+    }
+  })
 }
 
 export async function createIntegrationImportJob(accessToken: string, request: { external_system_id: string; job_type: string }): Promise<IntegrationImportJob> {
@@ -2877,7 +3020,22 @@ export async function fetchIntegrationWebhooks(accessToken: string): Promise<Int
   const response = await fetch(`${API_BASE_URL}/integrations/webhooks`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<IntegrationWebhook[]>(response)
+  const payload = await readJsonResponse<IntegrationWebhook[] | IntegrationWebhookV2[] | PaginatedResponse<IntegrationWebhookV2>>(response)
+  const items = Array.isArray(payload) ? payload : payload.items
+  return items.map((raw) => {
+    const item = raw as Record<string, unknown>
+    return {
+      id: String(item.id ?? ''),
+      tenant_id: (item.tenant_id as string | null) ?? null,
+      name: String(item.name ?? ''),
+      path: String(item.path ?? ''),
+      target_system: String(item.event_type ?? item.target_system ?? 'webhook'),
+      is_active: Boolean(item.is_active),
+      secret_ref: Boolean(item.secret_required) ? 'required' : ((item.secret_ref as string | null) ?? null),
+      created_at: String(item.created_at ?? ''),
+      updated_at: String(item.updated_at ?? ''),
+    }
+  })
 }
 
 export async function simulateIntegrationWebhook(
@@ -2897,7 +3055,24 @@ export async function fetchIntegrationMappings(accessToken: string): Promise<Int
   const response = await fetch(`${API_BASE_URL}/integrations/mappings`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
-  return readJsonResponse<IntegrationMapping[]>(response)
+  const payload = await readJsonResponse<IntegrationMapping[] | IntegrationMappingV2[] | PaginatedResponse<IntegrationMappingV2>>(response)
+  const items = Array.isArray(payload) ? payload : payload.items
+  return items.map((raw) => {
+    const item = raw as Record<string, unknown>
+    const sourceField = (item.source_field as string | null) ?? (item.source_entity as string | null) ?? 'unknown_source'
+    const targetField = (item.target_field as string | null) ?? (item.target_entity as string | null) ?? 'unknown_target'
+    return {
+      id: String(item.id ?? ''),
+      tenant_id: (item.tenant_id as string | null) ?? null,
+      external_system_id: (item.external_system_id as string | null) ?? null,
+      source_entity: sourceField,
+      target_entity: targetField,
+      mapping_json: (item.mapping_json as Record<string, unknown>) ?? (sourceField && targetField ? { [sourceField]: targetField } : {}),
+      is_active: Boolean(item.is_active),
+      created_at: String(item.created_at ?? ''),
+      updated_at: String(item.updated_at ?? ''),
+    }
+  })
 }
 
 export async function runMockLdapPullUsers(accessToken: string): Promise<Record<string, unknown>> {

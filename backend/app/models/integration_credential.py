@@ -14,6 +14,12 @@ class IntegrationCredential(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
     external_system_id: Mapped[str] = mapped_column(ForeignKey("external_systems.id", ondelete="CASCADE"), nullable=False)
+    credential_type: Mapped[str] = mapped_column(String(80), nullable=False, default="api_token")
+    masked_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Legacy compatibility fields from integration foundation stage.
     auth_type: Mapped[str] = mapped_column(String(80), nullable=False)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     secret_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
