@@ -14,7 +14,7 @@ from app.models.job_run import JobRun
 from app.services.jobs import (
     JobQueueUnavailableError,
     UnknownTaskError,
-    enqueue_job_id,
+    create_outbox_entry,
     enqueue_task,
     execute_job,
     get_job as service_get_job,
@@ -226,7 +226,7 @@ async def replay_dead_letter_job(
 
     if settings.jobs_executor_mode == "redis":
         try:
-            enqueue_job_id(redis_url=settings.redis_url, queue_name=settings.jobs_queue_name, job_id=job.id)
+            create_outbox_entry(db, job_id=job.id, queue_name=settings.jobs_queue_name)
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Unable to replay job") from exc
     else:

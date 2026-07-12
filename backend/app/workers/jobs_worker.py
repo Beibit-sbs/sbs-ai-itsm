@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 
 from redis import Redis
 from redis.exceptions import TimeoutError as RedisTimeoutError
+from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
+from app.models.job_queue_outbox import JobQueueOutbox
 from app.services.jobs import execute_job, get_job
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 
@@ -49,6 +52,36 @@ def _drain_scheduled_jobs(redis_client: Redis, queue_name: str, *, batch_size: i
         if len(due_job_ids) < batch_size:
             break
     return moved
+
+
+def _publish_outbox_batch(redis_client: Redis, *, batch_size: int = 100) -> int:
+    db = SessionLocal()
+    published = 0
+    try:
+        stmt = (
+            select(JobQueueOutbox)
+            .where(JobQueueOutbox.published_at.is_(None))
+            .order_by(JobQueueOutbox.created_at.asc())
+            .limit(batch_size)
+        )
+        rows = list(db.scalars(stmt).all())
+        for row in rows:
+            try:
+                redis_client.lpush(row.queue_name, row.job_id)
+                row.published_at = datetime.now(UTC)
+                row.last_error = None
+                published += 1
+            except Exception as exc:  # pragma: no cover - external redis/network path
+                row.failed_attempts += 1
+                row.last_error = f"{exc.__class__.__name__}: {exc}"[:2000]
+        db.commit()
+        return published
+    except Exception:
+        db.rollback()
+        logger.exception("job_outbox_publish_failed")
+        return published
+    finally:
+        db.close()
 
 
 def _requeue_missing_job(redis_client: Redis, queue_name: str, job_id: str) -> None:
@@ -133,6 +166,7 @@ def run_worker_forever() -> None:
     )
     try:
         while True:
+            _publish_outbox_batch(redis_client)
             _drain_scheduled_jobs(redis_client, settings.jobs_queue_name)
             try:
                 item = redis_client.brpop(settings.jobs_queue_name, timeout=5)

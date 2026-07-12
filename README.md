@@ -158,6 +158,7 @@ Background jobs execution mode:
 - Retry backoff is configured by `JOBS_RETRY_BASE_SECONDS` and `JOBS_RETRY_MAX_SECONDS`.
 - Retries are scheduled via Redis sorted-set (`<queue>:scheduled`) and do not block worker loop with `sleep`.
 - Dead-letter jobs can be replayed by SaaS root via `POST /api/v1/jobs/{job_id}/replay`.
+- Redis enqueue path is transactional: API writes to `job_queue_outbox` in the same DB transaction; worker publishes pending outbox entries to Redis.
 
 Operational runbooks:
 

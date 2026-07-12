@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import time
 
-from app.workers.jobs_worker import _drain_scheduled_jobs, _retry_delay_seconds, _schedule_retry, _scheduled_queue_name
+from app.workers.jobs_worker import (
+    _drain_scheduled_jobs,
+    _retry_delay_seconds,
+    _schedule_retry,
+    _scheduled_queue_name,
+)
 
 
 class FakeRedis:
@@ -69,3 +74,4 @@ def test_drain_scheduled_jobs_moves_due_jobs_to_main_queue() -> None:
     assert (queue_name, "due-1") in redis.right
     assert (queue_name, "due-2") in redis.right
     assert redis.zset[scheduled_key].get("future") is not None
+

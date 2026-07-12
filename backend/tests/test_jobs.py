@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.job_run import JobRun
 
 
@@ -106,17 +107,11 @@ def test_enqueue_failure_records_error_message(app) -> None:
 
 def test_enqueue_redis_mode_creates_queued_job_without_inline_execution(app, monkeypatch) -> None:
     from app.core.config import get_settings
-
-    queued_ids: list[str] = []
-
-    def fake_enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
-        queued_ids.append(job_id)
+    from app.db.session import SessionLocal
 
     settings = get_settings()
     settings.jobs_executor_mode = "redis"
     settings.jobs_queue_name = "jobs:test"
-    monkeypatch.setattr("app.services.jobs.enqueue_job_id", fake_enqueue_job_id)
-    monkeypatch.setattr("app.api.v1.routes.jobs.enqueue_job_id", fake_enqueue_job_id)
 
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -132,21 +127,20 @@ def test_enqueue_redis_mode_creates_queued_job_without_inline_execution(app, mon
     assert body["attempts"] == 0
     assert body["max_attempts"] == 1
     assert body["result"] is None
-    assert queued_ids == [body["id"]]
+    with SessionLocal() as db:
+        outbox_rows = db.query(JobQueueOutbox).filter(JobQueueOutbox.job_id == body["id"]).all()
+    assert len(outbox_rows) == 1
+    assert outbox_rows[0].queue_name == "jobs:test"
+    assert outbox_rows[0].published_at is None
 
 
 def test_enqueue_allows_custom_max_attempts(app, monkeypatch) -> None:
     from app.core.config import get_settings
-
-    queued_ids: list[str] = []
-
-    def fake_enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
-        queued_ids.append(job_id)
+    from app.db.session import SessionLocal
 
     settings = get_settings()
     settings.jobs_executor_mode = "redis"
     settings.jobs_queue_name = "jobs:test"
-    monkeypatch.setattr("app.services.jobs.enqueue_job_id", fake_enqueue_job_id)
 
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -160,7 +154,9 @@ def test_enqueue_allows_custom_max_attempts(app, monkeypatch) -> None:
     body = response.json()
     assert body["status"] == "queued"
     assert body["max_attempts"] == 3
-    assert queued_ids == [body["id"]]
+    with SessionLocal() as db:
+        outbox_rows = db.query(JobQueueOutbox).filter(JobQueueOutbox.job_id == body["id"]).all()
+    assert len(outbox_rows) == 1
 
 
 def test_enqueue_unknown_task_returns_400(app) -> None:
@@ -244,15 +240,9 @@ def test_replay_dead_letter_job_requeues_in_redis_mode(app, monkeypatch) -> None
     from app.core.config import get_settings
     from app.db.session import SessionLocal
 
-    queued_ids: list[str] = []
-
-    def fake_enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
-        queued_ids.append(job_id)
-
     settings = get_settings()
     settings.jobs_executor_mode = "redis"
     settings.jobs_queue_name = "jobs:test"
-    monkeypatch.setattr("app.services.jobs.enqueue_job_id", fake_enqueue_job_id)
 
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -270,8 +260,6 @@ def test_replay_dead_letter_job_requeues_in_redis_mode(app, monkeypatch) -> None
             job.error_message = "failed twice"
             db.commit()
 
-        settings.jobs_executor_mode = "redis"
-
         replay = client.post(f"/api/v1/jobs/{created['id']}/replay", headers=_auth_headers(token))
 
     assert replay.status_code == 200, replay.text
@@ -279,7 +267,9 @@ def test_replay_dead_letter_job_requeues_in_redis_mode(app, monkeypatch) -> None
     assert body["status"] == "queued"
     assert body["attempts"] == 0
     assert body["error_message"] is None
-    assert queued_ids.count(created["id"]) == 1
+    with SessionLocal() as db:
+        outbox_rows = db.query(JobQueueOutbox).filter(JobQueueOutbox.job_id == created["id"]).all()
+    assert len(outbox_rows) == 2
 
 
 def test_replay_rejects_non_dead_letter_job(app) -> None:

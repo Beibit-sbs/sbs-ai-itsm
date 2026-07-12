@@ -22,6 +22,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from app.core.context import get_correlation_id
+from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.job_run import JobRun
 
 logger = logging.getLogger("app.jobs")
@@ -222,6 +223,22 @@ def _enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
     enqueue_job_id(redis_url=redis_url, queue_name=queue_name, job_id=job_id)
 
 
+def create_outbox_entry(db: Session, *, job_id: str, queue_name: str) -> JobQueueOutbox:
+    entry = JobQueueOutbox(
+        id=_uuid(),
+        job_id=job_id,
+        queue_name=queue_name,
+        published_at=None,
+        failed_attempts=0,
+        last_error=None,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    db.add(entry)
+    db.flush()
+    return entry
+
+
 def enqueue_task(
     db: Session,
     task_name: str,
@@ -234,7 +251,7 @@ def enqueue_task(
     correlation_id: str | None = None,
     max_attempts: int = 1,
 ) -> JobRun:
-    """Create a queued job and push its id to Redis for worker pickup."""
+    """Create a queued job and transactional outbox entry for worker publish."""
 
     job = create_job_run(
         db,
@@ -246,7 +263,7 @@ def enqueue_task(
         max_attempts=max_attempts,
     )
     try:
-        enqueue_job_id(redis_url=redis_url, queue_name=queue_name, job_id=job.id)
+        create_outbox_entry(db, job_id=job.id, queue_name=queue_name)
     except Exception as exc:
         logger.exception(
             "job_enqueue_failed",
@@ -313,6 +330,7 @@ __all__ = [
     "JobQueueUnavailableError",
     "UnknownTaskError",
     "create_job_run",
+    "create_outbox_entry",
     "enqueue_job_id",
     "enqueue_task",
     "execute_job",
