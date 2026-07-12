@@ -214,6 +214,40 @@ def test_job_summary_shape(app) -> None:
     assert data["success"] >= 1
 
 
+def test_jobs_outbox_summary_shape(app) -> None:
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_executor_mode = "redis"
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        client.post(
+            "/api/v1/jobs/enqueue",
+            headers=_auth_headers(token),
+            json={"task_name": "system.echo", "payload": {"x": 1}},
+        )
+        response = client.get("/api/v1/jobs/outbox-summary", headers=_auth_headers(token))
+
+    assert response.status_code == 200
+    data = response.json()
+    for key in ("total", "pending", "published", "with_failures"):
+        assert key in data
+
+
+def test_create_outbox_entry_is_idempotent_by_job_and_queue(app) -> None:
+    from app.db.session import SessionLocal
+    from app.services.jobs import create_outbox_entry
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            first = create_outbox_entry(db, job_id="job-x", queue_name="jobs:queue")
+            second = create_outbox_entry(db, job_id="job-x", queue_name="jobs:queue")
+            db.commit()
+
+    assert first.id == second.id
+
+
 def test_get_job_by_id_returns_detail(app) -> None:
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -269,7 +303,7 @@ def test_replay_dead_letter_job_requeues_in_redis_mode(app, monkeypatch) -> None
     assert body["error_message"] is None
     with SessionLocal() as db:
         outbox_rows = db.query(JobQueueOutbox).filter(JobQueueOutbox.job_id == created["id"]).all()
-    assert len(outbox_rows) == 2
+    assert len(outbox_rows) == 1
 
 
 def test_replay_rejects_non_dead_letter_job(app) -> None:

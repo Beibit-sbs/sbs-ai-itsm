@@ -1335,6 +1335,13 @@ export type JobRuntime = {
   worker_required: boolean
 }
 
+export type JobOutboxSummary = {
+  total: number
+  pending: number
+  published: number
+  with_failures: number
+}
+
 export type JobRun = {
   id: string
   task_name: string
@@ -1374,6 +1381,13 @@ export async function fetchJobRuntime(accessToken: string): Promise<JobRuntime> 
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   return readJsonResponse<JobRuntime>(response)
+}
+
+export async function fetchJobOutboxSummary(accessToken: string): Promise<JobOutboxSummary> {
+  const response = await fetch(`${API_BASE_URL}/jobs/outbox-summary`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<JobOutboxSummary>(response)
 }
 
 export type AiProviderStatus = {

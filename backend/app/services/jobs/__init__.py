@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from redis import Redis
-from sqlalchemy import Select, select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.context import get_correlation_id
@@ -224,11 +224,20 @@ def _enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
 
 
 def create_outbox_entry(db: Session, *, job_id: str, queue_name: str) -> JobQueueOutbox:
+    dedup_key = f"{queue_name}:{job_id}"
+    existing = db.scalar(select(JobQueueOutbox).where(JobQueueOutbox.dedup_key == dedup_key))
+    if existing is not None:
+        return existing
+
     entry = JobQueueOutbox(
         id=_uuid(),
         job_id=job_id,
         queue_name=queue_name,
+        dedup_key=dedup_key,
         published_at=None,
+        publish_attempted_at=None,
+        lock_owner=None,
+        lock_expires_at=None,
         failed_attempts=0,
         last_error=None,
         created_at=_now(),
@@ -237,6 +246,24 @@ def create_outbox_entry(db: Session, *, job_id: str, queue_name: str) -> JobQueu
     db.add(entry)
     db.flush()
     return entry
+
+
+def outbox_summary(db: Session, queue_name: str | None = None) -> dict[str, int]:
+    stmt = select(
+        func.count(JobQueueOutbox.id),
+        func.sum(case((JobQueueOutbox.published_at.is_(None), 1), else_=0)),
+        func.sum(case((JobQueueOutbox.published_at.is_not(None), 1), else_=0)),
+        func.sum(case((JobQueueOutbox.failed_attempts > 0, 1), else_=0)),
+    )
+    if queue_name:
+        stmt = stmt.where(JobQueueOutbox.queue_name == queue_name)
+    total, pending, published, failed = db.execute(stmt).one()
+    return {
+        "total": int(total or 0),
+        "pending": int(pending or 0),
+        "published": int(published or 0),
+        "with_failures": int(failed or 0),
+    }
 
 
 def enqueue_task(
@@ -337,6 +364,7 @@ __all__ = [
     "get_job",
     "job_summary",
     "list_jobs",
+    "outbox_summary",
     "register_task",
     "registered_task",
     "registered_task_names",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from datetime import UTC, datetime
 
 from redis import Redis
@@ -55,25 +56,42 @@ def _drain_scheduled_jobs(redis_client: Redis, queue_name: str, *, batch_size: i
 
 
 def _publish_outbox_batch(redis_client: Redis, *, batch_size: int = 100) -> int:
+    worker_id = f"worker-{uuid.uuid4()}"
+    now = datetime.now(UTC)
+    lock_ttl_seconds = 30
     db = SessionLocal()
     published = 0
     try:
         stmt = (
             select(JobQueueOutbox)
             .where(JobQueueOutbox.published_at.is_(None))
+            .where((JobQueueOutbox.lock_expires_at.is_(None)) | (JobQueueOutbox.lock_expires_at < now))
             .order_by(JobQueueOutbox.created_at.asc())
             .limit(batch_size)
         )
         rows = list(db.scalars(stmt).all())
         for row in rows:
+            row.lock_owner = worker_id
+            row.lock_expires_at = datetime.fromtimestamp(time.time() + lock_ttl_seconds, tz=UTC)
+            row.publish_attempted_at = now
+        db.flush()
+
+        for row in rows:
             try:
-                redis_client.lpush(row.queue_name, row.job_id)
+                publish_key = f"jobs:publish-dedup:{row.dedup_key}"
+                is_first_publish = redis_client.set(publish_key, row.id, nx=True, ex=7 * 24 * 3600)
+                if is_first_publish:
+                    redis_client.lpush(row.queue_name, row.job_id)
                 row.published_at = datetime.now(UTC)
-                row.last_error = None
+                row.last_error = None if is_first_publish else "dedup_skip_already_published"
+                row.lock_owner = None
+                row.lock_expires_at = None
                 published += 1
             except Exception as exc:  # pragma: no cover - external redis/network path
                 row.failed_attempts += 1
                 row.last_error = f"{exc.__class__.__name__}: {exc}"[:2000]
+                row.lock_owner = None
+                row.lock_expires_at = None
         db.commit()
         return published
     except Exception:

@@ -20,6 +20,7 @@ from app.services.jobs import (
     get_job as service_get_job,
     job_summary,
     list_jobs,
+    outbox_summary,
     registered_task_names,
     run_task,
 )
@@ -98,6 +99,13 @@ class JobRuntimeResponse(BaseModel):
     retry_base_seconds: float
     retry_max_seconds: float
     worker_required: bool
+
+
+class JobOutboxSummaryResponse(BaseModel):
+    total: int
+    pending: int
+    published: int
+    with_failures: int
 
 
 class EnqueueJobRequest(BaseModel):
@@ -183,6 +191,17 @@ def get_jobs_runtime(
         retry_max_seconds=settings.jobs_retry_max_seconds,
         worker_required=settings.jobs_executor_mode == "redis",
     )
+
+
+@router.get("/outbox-summary", response_model=JobOutboxSummaryResponse)
+def get_jobs_outbox_summary(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobOutboxSummaryResponse:
+    _require_read(current_user)
+    settings = get_settings()
+    data = outbox_summary(db, queue_name=settings.jobs_queue_name)
+    return JobOutboxSummaryResponse(**data)
 
 
 @router.get("/{job_id}", response_model=JobRunResponse)

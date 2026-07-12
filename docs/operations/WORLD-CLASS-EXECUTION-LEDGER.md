@@ -41,10 +41,17 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-OUTBOX-005`
-- Latest commit: `d37f582`
+- Last completed stage: `PLATFORM-CORE-ASYNC-IDEMPOTENCY-006`
+- Latest commit: `to_be_recorded_on_commit`
 
 ## Stage Log (Newest First)
+
+- `to_be_recorded_on_commit` PLATFORM-CORE-ASYNC-IDEMPOTENCY-006
+  - Outbox idempotency metadata and unique dedup key enforcement.
+  - Migration hardening: duplicate cleanup before unique index creation.
+  - Redis publish dedup guard (`SET NX EX`) for multi-worker safety.
+  - Added jobs outbox diagnostics endpoint and admin diagnostics UI metrics.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-IDEMPOTENCY-006-REPORT.md`
 
 - `d37f582` PLATFORM-CORE-ASYNC-OUTBOX-005
   - Transactional enqueue via `job_queue_outbox`.
@@ -82,17 +89,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-IDEMPOTENCY-006`
+- `PLATFORM-CORE-ASYNC-OBSERVABILITY-007`
 
 Scope proposal:
-- Add idempotency/uniqueness guarantees for outbox publish in multi-worker mode.
-- Add safe dedup rules for queue publish and replay operations.
-- Add admin diagnostics endpoint/page for outbox backlog and failed publish attempts.
+- Add end-to-end metrics for outbox lock contention and dedup skips.
+- Add alerting thresholds for pending outbox growth and publish failure spikes.
+- Add runbook-level diagnostics endpoint to accelerate incident triage.
 
 Exit criteria:
-- No duplicate publish on worker restart/re-run scenarios.
-- Outbox failed publish metrics visible via API and admin diagnostics.
-- Tests cover dedup and publish-failure retry paths.
+- API exposes lock/dedup contention counters and failure rates.
+- Admin diagnostics page shows actionable outbox SLO indicators.
+- Tests cover metrics and alert-threshold computation paths.
 
 ## Stage Execution Template
 

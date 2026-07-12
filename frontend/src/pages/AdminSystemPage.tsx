@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import AppShell from '../components/AppShell'
-import { fetchAiProviderStatus, fetchJobRuns, fetchJobRuntime, fetchJobSummary, getDeepHealth, getHealth, getLiveness, getReadiness } from '../api/client'
+import { fetchAiProviderStatus, fetchJobOutboxSummary, fetchJobRuns, fetchJobRuntime, fetchJobSummary, getDeepHealth, getHealth, getLiveness, getReadiness } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 function statusClass(value: string | undefined) {
@@ -76,6 +76,14 @@ export default function AdminSystemPage() {
   const jobRunsQuery = useQuery({
     queryKey: ['system-jobs-recent', session?.access_token],
     queryFn: () => fetchJobRuns(session?.access_token ?? '', 15),
+    enabled: Boolean(session?.access_token),
+    refetchInterval: 15000,
+    retry: false,
+  })
+
+  const jobsOutboxQuery = useQuery({
+    queryKey: ['system-jobs-outbox', session?.access_token],
+    queryFn: () => fetchJobOutboxSummary(session?.access_token ?? ''),
     enabled: Boolean(session?.access_token),
     refetchInterval: 15000,
     retry: false,
@@ -198,6 +206,20 @@ export default function AdminSystemPage() {
                 Dead-letter:{' '}
                 <span className={statusClass((jobsSummaryQuery.data?.dead_letter ?? 0) > 0 ? 'failed' : 'ok')}>
                   {jobsSummaryQuery.data?.dead_letter ?? 0}
+                </span>
+              </p>
+              <p>Outbox total: {jobsOutboxQuery.data?.total ?? '—'}</p>
+              <p>
+                Outbox pending:{' '}
+                <span className={statusClass((jobsOutboxQuery.data?.pending ?? 0) > 0 ? 'running' : 'ok')}>
+                  {jobsOutboxQuery.data?.pending ?? 0}
+                </span>
+              </p>
+              <p>Outbox published: {jobsOutboxQuery.data?.published ?? '—'}</p>
+              <p>
+                Outbox failures:{' '}
+                <span className={statusClass((jobsOutboxQuery.data?.with_failures ?? 0) > 0 ? 'failed' : 'ok')}>
+                  {jobsOutboxQuery.data?.with_failures ?? 0}
                 </span>
               </p>
             </>
