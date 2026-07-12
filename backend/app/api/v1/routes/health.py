@@ -4,7 +4,7 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
@@ -12,7 +12,13 @@ from app.api.v1.routes.auth import AuthUserResponse, get_current_user
 from app.core.config import get_settings
 from app.db.session import engine
 from app.schemas.health import HealthResponse
-from app.services.rbac import require_permissions
+from app.services.rbac import has_permission, is_saas_root
+
+_DEEP_HEALTH_ALLOWED_PERMISSIONS = (
+    "admin.settings.read",
+    "admin.users.read",
+    "security.audit.read",
+)
 
 try:
     from redis import Redis
@@ -128,7 +134,13 @@ def readiness() -> JSONResponse:
 
 @router.get("/health/deep")
 def deep_health(current_user: AuthUserResponse = Depends(get_current_user)) -> dict[str, object]:
-    require_permissions(current_user, "admin.read")
+    if not is_saas_root(current_user) and not any(
+        has_permission(current_user, perm) for perm in _DEEP_HEALTH_ALLOWED_PERMISSIONS
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing admin or security permission for deep diagnostics",
+        )
     settings = get_settings()
     checks = _collect_system_checks()
     return {
