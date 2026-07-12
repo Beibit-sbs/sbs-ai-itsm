@@ -209,12 +209,17 @@ async def run_task(
     return await execute_job(db, job)
 
 
-def _enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
+def enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
     client = Redis.from_url(redis_url, decode_responses=True)
     try:
         client.lpush(queue_name, job_id)
     finally:
         client.close()
+
+
+# Backward-compatible alias used by existing tests/stubs.
+def _enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
+    enqueue_job_id(redis_url=redis_url, queue_name=queue_name, job_id=job_id)
 
 
 def enqueue_task(
@@ -241,7 +246,7 @@ def enqueue_task(
         max_attempts=max_attempts,
     )
     try:
-        _enqueue_job_id(redis_url=redis_url, queue_name=queue_name, job_id=job.id)
+        enqueue_job_id(redis_url=redis_url, queue_name=queue_name, job_id=job.id)
     except Exception as exc:
         logger.exception(
             "job_enqueue_failed",
@@ -308,6 +313,7 @@ __all__ = [
     "JobQueueUnavailableError",
     "UnknownTaskError",
     "create_job_run",
+    "enqueue_job_id",
     "enqueue_task",
     "execute_job",
     "get_job",

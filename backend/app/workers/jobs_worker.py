@@ -23,6 +23,34 @@ def _retry_delay_seconds(attempts: int, *, base_seconds: float, max_seconds: flo
     return min(max_seconds, delay)
 
 
+def _scheduled_queue_name(queue_name: str) -> str:
+    return f"{queue_name}:scheduled"
+
+
+def _schedule_retry(redis_client: Redis, queue_name: str, job_id: str, delay_seconds: float) -> None:
+    scheduled_key = _scheduled_queue_name(queue_name)
+    due_at = time.time() + max(0.0, delay_seconds)
+    redis_client.zadd(scheduled_key, {job_id: due_at})
+
+
+def _drain_scheduled_jobs(redis_client: Redis, queue_name: str, *, batch_size: int = 100) -> int:
+    scheduled_key = _scheduled_queue_name(queue_name)
+    now = time.time()
+    moved = 0
+    while True:
+        due_job_ids = redis_client.zrangebyscore(scheduled_key, "-inf", now, start=0, num=batch_size)
+        if not due_job_ids:
+            break
+        for due_job_id in due_job_ids:
+            removed = redis_client.zrem(scheduled_key, due_job_id)
+            if removed:
+                redis_client.rpush(queue_name, due_job_id)
+                moved += 1
+        if len(due_job_ids) < batch_size:
+            break
+    return moved
+
+
 def _requeue_missing_job(redis_client: Redis, queue_name: str, job_id: str) -> None:
     attempts_key = f"jobs:missing-retry:{job_id}"
     attempts = int(redis_client.incr(attempts_key))
@@ -57,12 +85,15 @@ def _run_single_job(job_id: str, *, redis_client: Redis, queue_name: str) -> Non
             job.finished_at = None
             job.duration_ms = None
             db.commit()
-            if delay > 0:
-                time.sleep(delay)
-            redis_client.rpush(queue_name, job.id)
+            _schedule_retry(redis_client, queue_name, job.id, delay)
             logger.warning(
                 "job_requeued_after_failure",
-                extra={"job_id": job.id, "attempts": job.attempts, "max_attempts": job.max_attempts},
+                extra={
+                    "job_id": job.id,
+                    "attempts": job.attempts,
+                    "max_attempts": job.max_attempts,
+                    "delay_seconds": delay,
+                },
             )
             return
         if job.status == "failed" and job.attempts >= job.max_attempts:
@@ -102,6 +133,7 @@ def run_worker_forever() -> None:
     )
     try:
         while True:
+            _drain_scheduled_jobs(redis_client, settings.jobs_queue_name)
             try:
                 item = redis_client.brpop(settings.jobs_queue_name, timeout=5)
             except RedisTimeoutError:

@@ -14,7 +14,9 @@ from app.models.job_run import JobRun
 from app.services.jobs import (
     JobQueueUnavailableError,
     UnknownTaskError,
+    enqueue_job_id,
     enqueue_task,
+    execute_job,
     get_job as service_get_job,
     job_summary,
     list_jobs,
@@ -196,6 +198,42 @@ def get_job_run(
     if not is_saas_root(current_user):
         if job.tenant_id is not None and job.tenant_id != current_user.tenant_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return _to_response(job)
+
+
+@router.post("/{job_id}/replay", response_model=JobRunResponse)
+async def replay_dead_letter_job(
+    job_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobRunResponse:
+    _require_enqueue(current_user)
+    settings = get_settings()
+    job = service_get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if job.status != "dead_letter":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only dead-letter jobs can be replayed")
+
+    job.status = "queued"
+    job.attempts = 0
+    job.error_message = None
+    job.result_json = None
+    job.started_at = None
+    job.finished_at = None
+    job.duration_ms = None
+    db.flush()
+
+    if settings.jobs_executor_mode == "redis":
+        try:
+            enqueue_job_id(redis_url=settings.redis_url, queue_name=settings.jobs_queue_name, job_id=job.id)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Unable to replay job") from exc
+    else:
+        await execute_job(db, job)
+
+    db.commit()
+    db.refresh(job)
     return _to_response(job)
 
 

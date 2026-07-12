@@ -156,6 +156,8 @@ Background jobs execution mode:
 - Queue name is controlled by `JOBS_QUEUE_NAME` (default `jobs:queue`).
 - Dead-letter queue is controlled by `JOBS_DEAD_LETTER_QUEUE_NAME` (default `jobs:dead-letter`).
 - Retry backoff is configured by `JOBS_RETRY_BASE_SECONDS` and `JOBS_RETRY_MAX_SECONDS`.
+- Retries are scheduled via Redis sorted-set (`<queue>:scheduled`) and do not block worker loop with `sleep`.
+- Dead-letter jobs can be replayed by SaaS root via `POST /api/v1/jobs/{job_id}/replay`.
 
 Operational runbooks:
 

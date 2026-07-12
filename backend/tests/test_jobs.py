@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from app.models.job_run import JobRun
+
 
 def _login(client: TestClient, email: str, password: str) -> str:
     response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
@@ -113,7 +115,8 @@ def test_enqueue_redis_mode_creates_queued_job_without_inline_execution(app, mon
     settings = get_settings()
     settings.jobs_executor_mode = "redis"
     settings.jobs_queue_name = "jobs:test"
-    monkeypatch.setattr("app.services.jobs._enqueue_job_id", fake_enqueue_job_id)
+    monkeypatch.setattr("app.services.jobs.enqueue_job_id", fake_enqueue_job_id)
+    monkeypatch.setattr("app.api.v1.routes.jobs.enqueue_job_id", fake_enqueue_job_id)
 
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -143,7 +146,7 @@ def test_enqueue_allows_custom_max_attempts(app, monkeypatch) -> None:
     settings = get_settings()
     settings.jobs_executor_mode = "redis"
     settings.jobs_queue_name = "jobs:test"
-    monkeypatch.setattr("app.services.jobs._enqueue_job_id", fake_enqueue_job_id)
+    monkeypatch.setattr("app.services.jobs.enqueue_job_id", fake_enqueue_job_id)
 
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -235,3 +238,58 @@ def test_get_job_unknown_id_returns_404(app) -> None:
         token = _login(client, "root@sbs.local", "Root!2026")
         response = client.get("/api/v1/jobs/00000000-0000-0000-0000-000000000000", headers=_auth_headers(token))
     assert response.status_code == 404
+
+
+def test_replay_dead_letter_job_requeues_in_redis_mode(app, monkeypatch) -> None:
+    from app.core.config import get_settings
+    from app.db.session import SessionLocal
+
+    queued_ids: list[str] = []
+
+    def fake_enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
+        queued_ids.append(job_id)
+
+    settings = get_settings()
+    settings.jobs_executor_mode = "redis"
+    settings.jobs_queue_name = "jobs:test"
+    monkeypatch.setattr("app.services.jobs.enqueue_job_id", fake_enqueue_job_id)
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        created = client.post(
+            "/api/v1/jobs/enqueue",
+            headers=_auth_headers(token),
+            json={"task_name": "system.echo", "payload": {"k": "v"}, "max_attempts": 2},
+        ).json()
+
+        with SessionLocal() as db:
+            job = db.get(JobRun, created["id"])
+            assert job is not None
+            job.status = "dead_letter"
+            job.attempts = 2
+            job.error_message = "failed twice"
+            db.commit()
+
+        settings.jobs_executor_mode = "redis"
+
+        replay = client.post(f"/api/v1/jobs/{created['id']}/replay", headers=_auth_headers(token))
+
+    assert replay.status_code == 200, replay.text
+    body = replay.json()
+    assert body["status"] == "queued"
+    assert body["attempts"] == 0
+    assert body["error_message"] is None
+    assert queued_ids.count(created["id"]) == 1
+
+
+def test_replay_rejects_non_dead_letter_job(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        created = client.post(
+            "/api/v1/jobs/enqueue",
+            headers=_auth_headers(token),
+            json={"task_name": "system.echo", "payload": {"k": "v"}},
+        ).json()
+        replay = client.post(f"/api/v1/jobs/{created['id']}/replay", headers=_auth_headers(token))
+
+    assert replay.status_code == 409
