@@ -1317,6 +1317,48 @@ export async function getDeepHealth(accessToken: string): Promise<DeepHealthResp
   return readJsonResponse<DeepHealthResponse>(response)
 }
 
+export type JobRunSummary = {
+  total: number
+  queued: number
+  running: number
+  success: number
+  failed: number
+}
+
+export type JobRun = {
+  id: string
+  task_name: string
+  status: string
+  tenant_id: string | null
+  actor_user_id: string | null
+  correlation_id: string | null
+  payload: unknown
+  result: unknown
+  error_message: string | null
+  attempts: number
+  max_attempts: number
+  queued_at: string
+  started_at: string | null
+  finished_at: string | null
+  duration_ms: number | null
+  created_at: string
+  updated_at: string
+}
+
+export async function fetchJobRuns(accessToken: string, limit = 20): Promise<JobRun[]> {
+  const response = await fetch(`${API_BASE_URL}/jobs?limit=${limit}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<JobRun[]>(response)
+}
+
+export async function fetchJobSummary(accessToken: string): Promise<JobRunSummary> {
+  const response = await fetch(`${API_BASE_URL}/jobs/summary`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<JobRunSummary>(response)
+}
+
 async function readJsonResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const errorPayload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null

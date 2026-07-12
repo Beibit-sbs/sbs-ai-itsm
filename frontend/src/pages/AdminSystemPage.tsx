@@ -1,13 +1,13 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import AppShell from '../components/AppShell'
-import { getDeepHealth, getHealth, getLiveness, getReadiness } from '../api/client'
+import { fetchJobRuns, fetchJobSummary, getDeepHealth, getHealth, getLiveness, getReadiness } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 function statusClass(value: string | undefined) {
   const normalized = String(value ?? '').toLowerCase()
-  if (normalized === 'ok' || normalized === 'ready' || normalized === 'alive') return 'badge badge-positive'
-  if (normalized === 'unknown') return 'badge badge-warning'
+  if (normalized === 'ok' || normalized === 'ready' || normalized === 'alive' || normalized === 'success') return 'badge badge-positive'
+  if (normalized === 'unknown' || normalized === 'queued' || normalized === 'running') return 'badge badge-warning'
   return 'badge badge-danger'
 }
 
@@ -16,6 +16,15 @@ function toPrettyJson(value: unknown): string {
     return JSON.stringify(value, null, 2)
   } catch {
     return 'Unable to render diagnostics payload'
+  }
+}
+
+function formatDateTime(value: string | null): string {
+  if (!value) return '—'
+  try {
+    return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value))
+  } catch {
+    return value
   }
 }
 
@@ -45,6 +54,22 @@ export default function AdminSystemPage() {
     queryFn: () => getDeepHealth(session?.access_token ?? ''),
     enabled: Boolean(session?.access_token),
     refetchInterval: 20000,
+    retry: false,
+  })
+
+  const jobsSummaryQuery = useQuery({
+    queryKey: ['system-jobs-summary', session?.access_token],
+    queryFn: () => fetchJobSummary(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+    refetchInterval: 15000,
+    retry: false,
+  })
+
+  const jobRunsQuery = useQuery({
+    queryKey: ['system-jobs-recent', session?.access_token],
+    queryFn: () => fetchJobRuns(session?.access_token ?? '', 15),
+    enabled: Boolean(session?.access_token),
+    refetchInterval: 15000,
     retry: false,
   })
 
@@ -117,6 +142,67 @@ export default function AdminSystemPage() {
               <p>Redis: {String(deepHealthQuery.data?.checks?.redis?.status ?? '—')}</p>
               <p>Alembic: {String(deepHealthQuery.data?.checks?.alembic?.status ?? '—')}</p>
             </>
+          )}
+        </article>
+      </section>
+
+      <section className="module-grid module-grid--single">
+        <article className="card">
+          <h2>Background Jobs</h2>
+          {jobsSummaryQuery.isError ? (
+            <p className="state-panel-text">Jobs telemetry requires admin/security permissions.</p>
+          ) : (
+            <>
+              <p>Total: {jobsSummaryQuery.data?.total ?? '—'}</p>
+              <p>Queued: {jobsSummaryQuery.data?.queued ?? '—'}</p>
+              <p>Running: {jobsSummaryQuery.data?.running ?? '—'}</p>
+              <p>
+                Success:{' '}
+                <span className={statusClass('success')}>{jobsSummaryQuery.data?.success ?? 0}</span>
+              </p>
+              <p>
+                Failed:{' '}
+                <span className={statusClass((jobsSummaryQuery.data?.failed ?? 0) > 0 ? 'failed' : 'ok')}>
+                  {jobsSummaryQuery.data?.failed ?? 0}
+                </span>
+              </p>
+            </>
+          )}
+        </article>
+
+        <article className="card">
+          <h2>Recent Job Runs</h2>
+          {jobRunsQuery.isError ? (
+            <p className="state-panel-text">Job history requires admin/security permissions.</p>
+          ) : (jobRunsQuery.data ?? []).length === 0 ? (
+            <p className="state-panel-text">No job runs recorded yet.</p>
+          ) : (
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>Task</th>
+                  <th>Status</th>
+                  <th>Attempts</th>
+                  <th>Duration ms</th>
+                  <th>Queued</th>
+                  <th>Correlation</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(jobRunsQuery.data ?? []).map((job) => (
+                  <tr key={job.id}>
+                    <td>{job.task_name}</td>
+                    <td>
+                      <span className={statusClass(job.status)}>{job.status}</span>
+                    </td>
+                    <td>{job.attempts}/{job.max_attempts}</td>
+                    <td>{job.duration_ms ?? '—'}</td>
+                    <td>{formatDateTime(job.queued_at)}</td>
+                    <td>{job.correlation_id ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </article>
       </section>

@@ -6,6 +6,7 @@ from app.api.v1.routes.assets import router as assets_router
 from app.api.v1.routes.auth import router as auth_router
 from app.api.v1.routes.health import router as health_router
 from app.api.v1.routes.integrations import router as integrations_router
+from app.api.v1.routes.jobs import router as jobs_router
 from app.api.v1.routes.knowledge import router as knowledge_router
 from app.api.v1.routes.notifications import router as notifications_router
 from app.api.v1.routes.analytics import router as analytics_router
@@ -31,3 +32,4 @@ api_router.include_router(reports_router, tags=["reports"])
 api_router.include_router(admin_router, tags=["admin"])
 api_router.include_router(security_router, tags=["security"])
 api_router.include_router(tenants_router, tags=["tenants"])
+api_router.include_router(jobs_router, tags=["system"])
