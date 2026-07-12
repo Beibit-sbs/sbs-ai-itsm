@@ -54,6 +54,17 @@ def test_jobs_task_registry_exposes_builtins(app) -> None:
     assert "system.fail" in names
 
 
+def test_jobs_runtime_reports_inline_mode_by_default(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        response = client.get("/api/v1/jobs/runtime", headers=_auth_headers(token))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["executor_mode"] == "inline"
+    assert body["worker_required"] is False
+    assert body["queue_name"]
+
+
 def test_enqueue_success_records_result_and_correlation(app) -> None:
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -85,6 +96,35 @@ def test_enqueue_failure_records_error_message(app) -> None:
     assert body["status"] == "failed"
     assert body["error_message"] is not None
     assert "boom" in body["error_message"]
+
+
+def test_enqueue_redis_mode_creates_queued_job_without_inline_execution(app, monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    queued_ids: list[str] = []
+
+    def fake_enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
+        queued_ids.append(job_id)
+
+    settings = get_settings()
+    settings.jobs_executor_mode = "redis"
+    settings.jobs_queue_name = "jobs:test"
+    monkeypatch.setattr("app.services.jobs._enqueue_job_id", fake_enqueue_job_id)
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        response = client.post(
+            "/api/v1/jobs/enqueue",
+            headers=_auth_headers(token),
+            json={"task_name": "system.echo", "payload": {"hello": "queue"}},
+        )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["attempts"] == 0
+    assert body["result"] is None
+    assert queued_ids == [body["id"]]
 
 
 def test_enqueue_unknown_task_returns_400(app) -> None:

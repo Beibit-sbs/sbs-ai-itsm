@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import AppShell from '../components/AppShell'
-import { fetchAiProviderStatus, fetchJobRuns, fetchJobSummary, getDeepHealth, getHealth, getLiveness, getReadiness } from '../api/client'
+import { fetchAiProviderStatus, fetchJobRuns, fetchJobRuntime, fetchJobSummary, getDeepHealth, getHealth, getLiveness, getReadiness } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 function statusClass(value: string | undefined) {
@@ -62,6 +62,14 @@ export default function AdminSystemPage() {
     queryFn: () => fetchJobSummary(session?.access_token ?? ''),
     enabled: Boolean(session?.access_token),
     refetchInterval: 15000,
+    retry: false,
+  })
+
+  const jobsRuntimeQuery = useQuery({
+    queryKey: ['system-jobs-runtime', session?.access_token],
+    queryFn: () => fetchJobRuntime(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+    refetchInterval: 30000,
     retry: false,
   })
 
@@ -161,6 +169,14 @@ export default function AdminSystemPage() {
             <p className="state-panel-text">Jobs telemetry requires admin/security permissions.</p>
           ) : (
             <>
+              <p>
+                Executor:{' '}
+                <span className={statusClass(jobsRuntimeQuery.data?.executor_mode === 'redis' ? 'running' : 'ok')}>
+                  {jobsRuntimeQuery.data?.executor_mode ?? 'unknown'}
+                </span>
+              </p>
+              <p>Queue: {jobsRuntimeQuery.data?.queue_name ?? '—'}</p>
+              <p>Worker required: {String(jobsRuntimeQuery.data?.worker_required ?? '—')}</p>
               <p>Total: {jobsSummaryQuery.data?.total ?? '—'}</p>
               <p>Queued: {jobsSummaryQuery.data?.queued ?? '—'}</p>
               <p>Running: {jobsSummaryQuery.data?.running ?? '—'}</p>

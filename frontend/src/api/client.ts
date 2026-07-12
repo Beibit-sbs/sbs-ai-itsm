@@ -1325,6 +1325,12 @@ export type JobRunSummary = {
   failed: number
 }
 
+export type JobRuntime = {
+  executor_mode: 'inline' | 'redis' | string
+  queue_name: string
+  worker_required: boolean
+}
+
 export type JobRun = {
   id: string
   task_name: string
@@ -1357,6 +1363,13 @@ export async function fetchJobSummary(accessToken: string): Promise<JobRunSummar
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   return readJsonResponse<JobRunSummary>(response)
+}
+
+export async function fetchJobRuntime(accessToken: string): Promise<JobRuntime> {
+  const response = await fetch(`${API_BASE_URL}/jobs/runtime`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<JobRuntime>(response)
 }
 
 export type AiProviderStatus = {

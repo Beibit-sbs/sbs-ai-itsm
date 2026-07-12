@@ -146,7 +146,14 @@ make health
 make smoke
 make logs-backend
 make logs-frontend
+make logs-worker
 ```
+
+Background jobs execution mode:
+
+- `JOBS_EXECUTOR_MODE=redis` uses Redis queue + separate `worker` service (default in compose files).
+- `JOBS_EXECUTOR_MODE=inline` executes jobs in backend process (useful for local test runs without worker).
+- Queue name is controlled by `JOBS_QUEUE_NAME` (default `jobs:queue`).
 
 Operational runbooks:
 

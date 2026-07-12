@@ -1,4 +1,4 @@
-.PHONY: dev up down logs logs-backend logs-frontend ps health smoke test build clean prod-up prod-down prod-logs migrate backup restore env-check data-backup db-head db-upgrade db-current db-history
+.PHONY: dev up down logs logs-backend logs-frontend logs-worker ps health smoke test build clean prod-up prod-down prod-logs migrate backup restore env-check data-backup db-head db-upgrade db-current db-history
 
 dev:
 	docker compose up --build
@@ -17,6 +17,9 @@ logs-backend:
 
 logs-frontend:
 	docker compose logs -f frontend
+
+logs-worker:
+	docker compose logs -f worker
 
 ps:
 	docker compose ps

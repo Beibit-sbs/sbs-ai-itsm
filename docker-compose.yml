@@ -36,6 +36,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://sbs_itsm:change_me_before_production@postgres:5432/sbs_itsm}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JOBS_EXECUTOR_MODE: ${JOBS_EXECUTOR_MODE:-redis}
+      JOBS_QUEUE_NAME: ${JOBS_QUEUE_NAME:-jobs:queue}
     ports:
       - "8000:8000"
     depends_on:
@@ -48,6 +50,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.workers.jobs_worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://sbs_itsm:change_me_before_production@postgres:5432/sbs_itsm}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JOBS_EXECUTOR_MODE: ${JOBS_EXECUTOR_MODE:-redis}
+      JOBS_QUEUE_NAME: ${JOBS_QUEUE_NAME:-jobs:queue}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   frontend:
     build:

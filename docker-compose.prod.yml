@@ -35,6 +35,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
+      JOBS_EXECUTOR_MODE: ${JOBS_EXECUTOR_MODE:-redis}
+      JOBS_QUEUE_NAME: ${JOBS_QUEUE_NAME:-jobs:queue}
       APP_ENV: ${APP_ENV:-production}
       DEMO_MODE: ${DEMO_MODE:-false}
       RUN_STARTUP_DDL: ${RUN_STARTUP_DDL:-false}
@@ -53,6 +55,34 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.workers.jobs_worker"]
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      JOBS_EXECUTOR_MODE: ${JOBS_EXECUTOR_MODE:-redis}
+      JOBS_QUEUE_NAME: ${JOBS_QUEUE_NAME:-jobs:queue}
+      APP_ENV: ${APP_ENV:-production}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      RUN_STARTUP_DDL: ${RUN_STARTUP_DDL:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
     logging:
       options:
         max-size: "10m"

@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     demo_admin_password: str = "Sbs!2026"
     database_url: str = "postgresql+psycopg://sbs_itsm:sbs_itsm@localhost:5432/sbs_itsm"
     redis_url: str = "redis://localhost:6379/0"
+    jobs_executor_mode: str = "inline"
+    jobs_queue_name: str = "jobs:queue"
 
     # AI provider configuration. Defaults keep the system in mock mode so no
     # external calls are performed unless an API key is explicitly provided.
@@ -51,6 +53,14 @@ class Settings(BaseSettings):
         if value <= 0:
             raise ValueError("Token TTL must be positive")
         return value
+
+    @field_validator("jobs_executor_mode")
+    @classmethod
+    def jobs_executor_mode_must_be_supported(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"inline", "redis"}:
+            raise ValueError("JOBS_EXECUTOR_MODE must be either 'inline' or 'redis'")
+        return normalized
 
 
 @lru_cache

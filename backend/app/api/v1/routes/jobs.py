@@ -8,10 +8,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.job_run import JobRun
 from app.services.jobs import (
+    JobQueueUnavailableError,
     UnknownTaskError,
+    enqueue_task,
     get_job as service_get_job,
     job_summary,
     list_jobs,
@@ -85,6 +88,12 @@ class JobSummaryResponse(BaseModel):
     failed: int
 
 
+class JobRuntimeResponse(BaseModel):
+    executor_mode: str
+    queue_name: str
+    worker_required: bool
+
+
 class EnqueueJobRequest(BaseModel):
     task_name: str = Field(..., min_length=1, max_length=120)
     payload: dict[str, object] | None = None
@@ -153,6 +162,19 @@ def list_task_registry(
     return registered_task_names()
 
 
+@router.get("/runtime", response_model=JobRuntimeResponse)
+def get_jobs_runtime(
+    current_user: AuthUserResponse = Depends(get_current_user),
+) -> JobRuntimeResponse:
+    _require_read(current_user)
+    settings = get_settings()
+    return JobRuntimeResponse(
+        executor_mode=settings.jobs_executor_mode,
+        queue_name=settings.jobs_queue_name,
+        worker_required=settings.jobs_executor_mode == "redis",
+    )
+
+
 @router.get("/{job_id}", response_model=JobRunResponse)
 def get_job_run(
     job_id: str,
@@ -176,16 +198,30 @@ async def enqueue_job_run(
     db: Session = Depends(get_db),
 ) -> JobRunResponse:
     _require_enqueue(current_user)
+    settings = get_settings()
     try:
-        job = await run_task(
-            db,
-            request.task_name,
-            request.payload or {},
-            tenant_id=request.tenant_id,
-            actor_user_id=current_user.id,
-        )
+        if settings.jobs_executor_mode == "redis":
+            job = enqueue_task(
+                db,
+                request.task_name,
+                request.payload or {},
+                redis_url=settings.redis_url,
+                queue_name=settings.jobs_queue_name,
+                tenant_id=request.tenant_id,
+                actor_user_id=current_user.id,
+            )
+        else:
+            job = await run_task(
+                db,
+                request.task_name,
+                request.payload or {},
+                tenant_id=request.tenant_id,
+                actor_user_id=current_user.id,
+            )
     except UnknownTaskError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except JobQueueUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     db.commit()
     db.refresh(job)
     return _to_response(job)

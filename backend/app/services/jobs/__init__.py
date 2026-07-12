@@ -1,10 +1,10 @@
 """Job orchestration foundation.
 
 This module provides the observable primitive used by asynchronous work in the
-system. In this stage jobs still execute inline (in the request process), but
-every run is persisted to `job_runs` with correlation, timing and status, so
-the eventual move to an out-of-process worker becomes a swap of the executor
-rather than a rewrite of every call site.
+system. Jobs are always persisted to `job_runs` and can be executed in two
+modes:
+- inline execution in the request process;
+- queued execution through Redis for an out-of-process worker.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from redis import Redis
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
@@ -39,6 +40,10 @@ class UnknownTaskError(ValueError):
 
 class JobExecutionError(RuntimeError):
     """Raised when a task raises during execution."""
+
+
+class JobQueueUnavailableError(RuntimeError):
+    """Raised when queue-backed enqueue fails."""
 
 
 def register_task(name: str, func: TaskCallable) -> None:
@@ -204,6 +209,48 @@ async def run_task(
     return await execute_job(db, job)
 
 
+def _enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
+    client = Redis.from_url(redis_url, decode_responses=True)
+    try:
+        client.lpush(queue_name, job_id)
+    finally:
+        client.close()
+
+
+def enqueue_task(
+    db: Session,
+    task_name: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    redis_url: str,
+    queue_name: str,
+    tenant_id: str | None = None,
+    actor_user_id: str | None = None,
+    correlation_id: str | None = None,
+    max_attempts: int = 1,
+) -> JobRun:
+    """Create a queued job and push its id to Redis for worker pickup."""
+
+    job = create_job_run(
+        db,
+        task_name=task_name,
+        payload=payload,
+        tenant_id=tenant_id,
+        actor_user_id=actor_user_id,
+        correlation_id=correlation_id,
+        max_attempts=max_attempts,
+    )
+    try:
+        _enqueue_job_id(redis_url=redis_url, queue_name=queue_name, job_id=job.id)
+    except Exception as exc:
+        logger.exception(
+            "job_enqueue_failed",
+            extra={"job_id": job.id, "task_name": task_name, "correlation_id": job.correlation_id},
+        )
+        raise JobQueueUnavailableError("Unable to enqueue job to redis queue") from exc
+    return job
+
+
 def _apply_filters(
     stmt: Select[tuple[JobRun]],
     *,
@@ -258,8 +305,10 @@ def job_summary(db: Session, tenant_id: str | None = None) -> dict[str, int]:
 __all__ = [
     "JobContext",
     "JobExecutionError",
+    "JobQueueUnavailableError",
     "UnknownTaskError",
     "create_job_run",
+    "enqueue_task",
     "execute_job",
     "get_job",
     "job_summary",
