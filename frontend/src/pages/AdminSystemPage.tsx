@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import AppShell from '../components/AppShell'
-import { fetchJobRuns, fetchJobSummary, getDeepHealth, getHealth, getLiveness, getReadiness } from '../api/client'
+import { fetchAiProviderStatus, fetchJobRuns, fetchJobSummary, getDeepHealth, getHealth, getLiveness, getReadiness } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 function statusClass(value: string | undefined) {
@@ -70,6 +70,14 @@ export default function AdminSystemPage() {
     queryFn: () => fetchJobRuns(session?.access_token ?? '', 15),
     enabled: Boolean(session?.access_token),
     refetchInterval: 15000,
+    retry: false,
+  })
+
+  const aiProviderQuery = useQuery({
+    queryKey: ['system-ai-provider', session?.access_token],
+    queryFn: () => fetchAiProviderStatus(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+    refetchInterval: 30000,
     retry: false,
   })
 
@@ -203,6 +211,38 @@ export default function AdminSystemPage() {
                 ))}
               </tbody>
             </table>
+          )}
+        </article>
+      </section>
+
+      <section className="module-grid module-grid--single">
+        <article className="card">
+          <h2>AI Provider</h2>
+          {aiProviderQuery.isError ? (
+            <p className="state-panel-text">AI provider status requires admin/security permissions.</p>
+          ) : (
+            <>
+              <p>
+                Active:{' '}
+                <span className={statusClass(aiProviderQuery.data?.ready ? 'ok' : 'unknown')}>
+                  {aiProviderQuery.data?.active_provider ?? (aiProviderQuery.isLoading ? 'loading' : 'unknown')}
+                </span>
+              </p>
+              <p>Model: {aiProviderQuery.data?.model ?? '—'}</p>
+              <p>
+                Ready:{' '}
+                <span className={statusClass(aiProviderQuery.data?.ready ? 'ok' : 'failed')}>
+                  {String(aiProviderQuery.data?.ready ?? '—')}
+                </span>
+              </p>
+              <p>API key configured: {String(aiProviderQuery.data?.api_key_configured ?? '—')}</p>
+              <p>PII redaction: {String(aiProviderQuery.data?.pii_redaction_enabled ?? '—')}</p>
+              <p>Timeout: {aiProviderQuery.data?.request_timeout_seconds ?? '—'} s</p>
+              {aiProviderQuery.data?.reason ? (
+                <p>Note: {aiProviderQuery.data.reason}{aiProviderQuery.data.fallback_provider ? ` (fallback: ${aiProviderQuery.data.fallback_provider})` : ''}</p>
+              ) : null}
+              <p>Supported: {(aiProviderQuery.data?.supported_providers ?? []).join(', ') || '—'}</p>
+            </>
           )}
         </article>
       </section>

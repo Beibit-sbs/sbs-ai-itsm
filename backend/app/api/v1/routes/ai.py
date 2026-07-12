@@ -11,6 +11,7 @@ from app.api.v1.routes.auth import AuthUserResponse, get_current_user
 from app.db.session import get_db
 from app.models.ai_suggestion import AiSuggestion
 from app.models.ticket import Ticket
+from app.services.ai import analyze_text_with_provider, describe_provider_status
 from app.services.knowledge_ai import (
     accept_suggestion,
     analyze_text_with_mock_ai,
@@ -20,7 +21,7 @@ from app.services.knowledge_ai import (
     reject_suggestion,
 )
 from app.services.notifications import create_ticket_event_notification
-from app.services.rbac import require_permissions
+from app.services.rbac import has_permission, is_saas_root, require_permissions
 
 router = APIRouter(prefix="/ai")
 
@@ -112,6 +113,78 @@ def analyze_ticket(
                 actor_name=current_user.full_name,
             )
             db.commit()
+    return AiSuggestionResponse(**payload)
+
+
+class AiProviderInfoResponse(BaseModel):
+    active_provider: str
+    model: str
+    ready: bool
+    api_key_configured: bool
+    pii_redaction_enabled: bool
+    request_timeout_seconds: float
+    reason: str | None = None
+    fallback_provider: str | None = None
+    supported_providers: list[str] = Field(default_factory=list)
+
+
+_PROVIDER_STATUS_PERMS = (
+    "admin.settings.read",
+    "admin.users.read",
+    "security.audit.read",
+)
+
+
+def _require_provider_status_access(current_user: AuthUserResponse) -> None:
+    if is_saas_root(current_user):
+        return
+    if not any(has_permission(current_user, perm) for perm in _PROVIDER_STATUS_PERMS):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing permission to read AI provider status",
+        )
+
+
+@router.get("/provider-status", response_model=AiProviderInfoResponse)
+def get_ai_provider_status(
+    current_user: AuthUserResponse = Depends(get_current_user),
+) -> AiProviderInfoResponse:
+    _require_provider_status_access(current_user)
+    info = describe_provider_status()
+    return AiProviderInfoResponse(
+        active_provider=info.active_provider,
+        model=info.model,
+        ready=info.ready,
+        api_key_configured=info.api_key_configured,
+        pii_redaction_enabled=info.pii_redaction_enabled,
+        request_timeout_seconds=info.request_timeout_seconds,
+        reason=info.reason,
+        fallback_provider=info.fallback_provider,
+        supported_providers=info.supported_providers,
+    )
+
+
+@router.post("/classify", response_model=AiSuggestionResponse)
+async def classify_ticket(
+    request: AiAnalyzeTicketRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AiSuggestionResponse:
+    require_permissions(current_user, "ai.use")
+    payload = await analyze_text_with_provider(db, request.input_text, ticket_id=request.ticket_id)
+    if request.ticket_id:
+        ticket = db.scalar(select(Ticket).where(Ticket.id == request.ticket_id))
+        if ticket is not None:
+            create_ticket_event_notification(
+                db,
+                event_code="ai_recommendation_ready",
+                ticket=ticket,
+                actor_name=current_user.full_name,
+            )
+            db.commit()
+    # Strip fields that are not in AiSuggestionResponse schema so extra data does not leak.
+    for extra_key in ("provider", "model", "provider_mock"):
+        payload.pop(extra_key, None)
     return AiSuggestionResponse(**payload)
 
 

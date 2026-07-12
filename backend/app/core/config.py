@@ -27,6 +27,17 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://sbs_itsm:sbs_itsm@localhost:5432/sbs_itsm"
     redis_url: str = "redis://localhost:6379/0"
 
+    # AI provider configuration. Defaults keep the system in mock mode so no
+    # external calls are performed unless an API key is explicitly provided.
+    ai_provider: str = "mock"
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.0-flash-exp"
+    ai_pii_redaction: bool = True
+    ai_request_timeout_seconds: float = 15.0
+
     @field_validator("backend_cors_origins", mode="before")
     @classmethod
     def parse_cors(cls, value: object) -> object:

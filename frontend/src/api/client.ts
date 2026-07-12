@@ -1359,6 +1359,25 @@ export async function fetchJobSummary(accessToken: string): Promise<JobRunSummar
   return readJsonResponse<JobRunSummary>(response)
 }
 
+export type AiProviderStatus = {
+  active_provider: string
+  model: string
+  ready: boolean
+  api_key_configured: boolean
+  pii_redaction_enabled: boolean
+  request_timeout_seconds: number
+  reason: string | null
+  fallback_provider: string | null
+  supported_providers: string[]
+}
+
+export async function fetchAiProviderStatus(accessToken: string): Promise<AiProviderStatus> {
+  const response = await fetch(`${API_BASE_URL}/ai/provider-status`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AiProviderStatus>(response)
+}
+
 async function readJsonResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const errorPayload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null
