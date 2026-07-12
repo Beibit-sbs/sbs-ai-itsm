@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from redis import Redis
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -12,6 +13,14 @@ from app.services.jobs import execute_job, get_job
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 
 logger = logging.getLogger("app.jobs.worker")
+
+
+def _retry_delay_seconds(attempts: int, *, base_seconds: float, max_seconds: float) -> float:
+    """Exponential backoff based on already-used attempts."""
+
+    exponent = max(0, attempts - 1)
+    delay = base_seconds * (2**exponent)
+    return min(max_seconds, delay)
 
 
 def _requeue_missing_job(redis_client: Redis, queue_name: str, job_id: str) -> None:
@@ -26,6 +35,7 @@ def _requeue_missing_job(redis_client: Redis, queue_name: str, job_id: str) -> N
 
 
 def _run_single_job(job_id: str, *, redis_client: Redis, queue_name: str) -> None:
+    settings = get_settings()
     db = SessionLocal()
     try:
         job = get_job(db, job_id)
@@ -36,6 +46,34 @@ def _run_single_job(job_id: str, *, redis_client: Redis, queue_name: str) -> Non
             logger.info("job_skip_non_queued", extra={"job_id": job_id, "status": job.status})
             return
         asyncio.run(execute_job(db, job))
+        if job.status == "failed" and job.attempts < job.max_attempts:
+            delay = _retry_delay_seconds(
+                job.attempts,
+                base_seconds=settings.jobs_retry_base_seconds,
+                max_seconds=settings.jobs_retry_max_seconds,
+            )
+            job.status = "queued"
+            job.started_at = None
+            job.finished_at = None
+            job.duration_ms = None
+            db.commit()
+            if delay > 0:
+                time.sleep(delay)
+            redis_client.rpush(queue_name, job.id)
+            logger.warning(
+                "job_requeued_after_failure",
+                extra={"job_id": job.id, "attempts": job.attempts, "max_attempts": job.max_attempts},
+            )
+            return
+        if job.status == "failed" and job.attempts >= job.max_attempts:
+            job.status = "dead_letter"
+            db.commit()
+            redis_client.lpush(settings.jobs_dead_letter_queue_name, job.id)
+            logger.error(
+                "job_moved_to_dead_letter",
+                extra={"job_id": job.id, "attempts": job.attempts, "max_attempts": job.max_attempts},
+            )
+            return
         db.commit()
     except Exception:
         db.rollback()
@@ -55,7 +93,12 @@ def run_worker_forever() -> None:
     )
     logger.info(
         "jobs_worker_started",
-        extra={"queue": settings.jobs_queue_name, "redis_url": settings.redis_url, "executor": settings.jobs_executor_mode},
+        extra={
+            "queue": settings.jobs_queue_name,
+            "dead_letter_queue": settings.jobs_dead_letter_queue_name,
+            "redis_url": settings.redis_url,
+            "executor": settings.jobs_executor_mode,
+        },
     )
     try:
         while True:

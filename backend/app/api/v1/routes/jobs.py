@@ -86,11 +86,15 @@ class JobSummaryResponse(BaseModel):
     running: int
     success: int
     failed: int
+    dead_letter: int
 
 
 class JobRuntimeResponse(BaseModel):
     executor_mode: str
     queue_name: str
+    dead_letter_queue_name: str
+    retry_base_seconds: float
+    retry_max_seconds: float
     worker_required: bool
 
 
@@ -98,6 +102,7 @@ class EnqueueJobRequest(BaseModel):
     task_name: str = Field(..., min_length=1, max_length=120)
     payload: dict[str, object] | None = None
     tenant_id: str | None = None
+    max_attempts: int = Field(default=1, ge=1, le=10)
 
 
 def _to_response(job: JobRun) -> JobRunResponse:
@@ -171,6 +176,9 @@ def get_jobs_runtime(
     return JobRuntimeResponse(
         executor_mode=settings.jobs_executor_mode,
         queue_name=settings.jobs_queue_name,
+        dead_letter_queue_name=settings.jobs_dead_letter_queue_name,
+        retry_base_seconds=settings.jobs_retry_base_seconds,
+        retry_max_seconds=settings.jobs_retry_max_seconds,
         worker_required=settings.jobs_executor_mode == "redis",
     )
 
@@ -209,6 +217,7 @@ async def enqueue_job_run(
                 queue_name=settings.jobs_queue_name,
                 tenant_id=request.tenant_id,
                 actor_user_id=current_user.id,
+                max_attempts=request.max_attempts,
             )
         else:
             job = await run_task(
@@ -217,6 +226,7 @@ async def enqueue_job_run(
                 request.payload or {},
                 tenant_id=request.tenant_id,
                 actor_user_id=current_user.id,
+                max_attempts=request.max_attempts,
             )
     except UnknownTaskError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

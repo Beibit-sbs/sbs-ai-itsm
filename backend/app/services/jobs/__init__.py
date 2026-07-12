@@ -293,7 +293,7 @@ def job_summary(db: Session, tenant_id: str | None = None) -> dict[str, int]:
     stmt = select(JobRun.status, func.count(JobRun.id)).group_by(JobRun.status)
     if tenant_id:
         stmt = stmt.where(JobRun.tenant_id == tenant_id)
-    result = {"total": 0, "queued": 0, "running": 0, "success": 0, "failed": 0}
+    result = {"total": 0, "queued": 0, "running": 0, "success": 0, "failed": 0, "dead_letter": 0}
     for status_value, count in db.execute(stmt).all():
         key = str(status_value)
         result["total"] += int(count)

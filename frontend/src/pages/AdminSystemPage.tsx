@@ -176,7 +176,11 @@ export default function AdminSystemPage() {
                 </span>
               </p>
               <p>Queue: {jobsRuntimeQuery.data?.queue_name ?? '—'}</p>
+              <p>Dead-letter queue: {jobsRuntimeQuery.data?.dead_letter_queue_name ?? '—'}</p>
               <p>Worker required: {String(jobsRuntimeQuery.data?.worker_required ?? '—')}</p>
+              <p>
+                Retry policy: base {jobsRuntimeQuery.data?.retry_base_seconds ?? '—'}s / max {jobsRuntimeQuery.data?.retry_max_seconds ?? '—'}s
+              </p>
               <p>Total: {jobsSummaryQuery.data?.total ?? '—'}</p>
               <p>Queued: {jobsSummaryQuery.data?.queued ?? '—'}</p>
               <p>Running: {jobsSummaryQuery.data?.running ?? '—'}</p>
@@ -188,6 +192,12 @@ export default function AdminSystemPage() {
                 Failed:{' '}
                 <span className={statusClass((jobsSummaryQuery.data?.failed ?? 0) > 0 ? 'failed' : 'ok')}>
                   {jobsSummaryQuery.data?.failed ?? 0}
+                </span>
+              </p>
+              <p>
+                Dead-letter:{' '}
+                <span className={statusClass((jobsSummaryQuery.data?.dead_letter ?? 0) > 0 ? 'failed' : 'ok')}>
+                  {jobsSummaryQuery.data?.dead_letter ?? 0}
                 </span>
               </p>
             </>

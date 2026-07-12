@@ -38,6 +38,9 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOBS_EXECUTOR_MODE: ${JOBS_EXECUTOR_MODE:-redis}
       JOBS_QUEUE_NAME: ${JOBS_QUEUE_NAME:-jobs:queue}
+      JOBS_DEAD_LETTER_QUEUE_NAME: ${JOBS_DEAD_LETTER_QUEUE_NAME:-jobs:dead-letter}
+      JOBS_RETRY_BASE_SECONDS: ${JOBS_RETRY_BASE_SECONDS:-0.5}
+      JOBS_RETRY_MAX_SECONDS: ${JOBS_RETRY_MAX_SECONDS:-15}
     ports:
       - "8000:8000"
     depends_on:
@@ -62,6 +65,9 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JOBS_EXECUTOR_MODE: ${JOBS_EXECUTOR_MODE:-redis}
       JOBS_QUEUE_NAME: ${JOBS_QUEUE_NAME:-jobs:queue}
+      JOBS_DEAD_LETTER_QUEUE_NAME: ${JOBS_DEAD_LETTER_QUEUE_NAME:-jobs:dead-letter}
+      JOBS_RETRY_BASE_SECONDS: ${JOBS_RETRY_BASE_SECONDS:-0.5}
+      JOBS_RETRY_MAX_SECONDS: ${JOBS_RETRY_MAX_SECONDS:-15}
     depends_on:
       postgres:
         condition: service_healthy

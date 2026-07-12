@@ -1323,11 +1323,15 @@ export type JobRunSummary = {
   running: number
   success: number
   failed: number
+  dead_letter: number
 }
 
 export type JobRuntime = {
   executor_mode: 'inline' | 'redis' | string
   queue_name: string
+  dead_letter_queue_name: string
+  retry_base_seconds: number
+  retry_max_seconds: number
   worker_required: boolean
 }
 

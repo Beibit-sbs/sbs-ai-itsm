@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     jobs_executor_mode: str = "inline"
     jobs_queue_name: str = "jobs:queue"
+    jobs_dead_letter_queue_name: str = "jobs:dead-letter"
+    jobs_retry_base_seconds: float = 0.5
+    jobs_retry_max_seconds: float = 15.0
 
     # AI provider configuration. Defaults keep the system in mock mode so no
     # external calls are performed unless an API key is explicitly provided.
@@ -61,6 +64,13 @@ class Settings(BaseSettings):
         if normalized not in {"inline", "redis"}:
             raise ValueError("JOBS_EXECUTOR_MODE must be either 'inline' or 'redis'")
         return normalized
+
+    @field_validator("jobs_retry_base_seconds", "jobs_retry_max_seconds")
+    @classmethod
+    def jobs_retry_values_must_be_positive(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("JOBS retry values must be positive")
+        return value
 
 
 @lru_cache

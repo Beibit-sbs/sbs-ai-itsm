@@ -154,6 +154,8 @@ Background jobs execution mode:
 - `JOBS_EXECUTOR_MODE=redis` uses Redis queue + separate `worker` service (default in compose files).
 - `JOBS_EXECUTOR_MODE=inline` executes jobs in backend process (useful for local test runs without worker).
 - Queue name is controlled by `JOBS_QUEUE_NAME` (default `jobs:queue`).
+- Dead-letter queue is controlled by `JOBS_DEAD_LETTER_QUEUE_NAME` (default `jobs:dead-letter`).
+- Retry backoff is configured by `JOBS_RETRY_BASE_SECONDS` and `JOBS_RETRY_MAX_SECONDS`.
 
 Operational runbooks:
 

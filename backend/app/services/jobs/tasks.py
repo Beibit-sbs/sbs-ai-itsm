@@ -39,9 +39,20 @@ async def fail_task(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     raise RuntimeError(reason)
 
 
+async def flaky_task(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Fail until Nth attempt, then return success payload."""
+
+    fail_until_attempt = int(payload.get("fail_until_attempt") or 1)
+    current_attempt = int(ctx.get("attempt") or 1)
+    if current_attempt <= fail_until_attempt:
+        raise RuntimeError(f"flaky failure on attempt {current_attempt}")
+    return {"attempt": current_attempt, "fail_until_attempt": fail_until_attempt, "status": "recovered"}
+
+
 register_task("system.echo", echo_task)
 register_task("system.sleep", sleep_task)
 register_task("system.fail", fail_task)
+register_task("system.flaky", flaky_task)
 
 
-__all__ = ["echo_task", "sleep_task", "fail_task"]
+__all__ = ["echo_task", "sleep_task", "fail_task", "flaky_task"]

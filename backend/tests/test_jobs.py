@@ -52,6 +52,7 @@ def test_jobs_task_registry_exposes_builtins(app) -> None:
     assert "system.echo" in names
     assert "system.sleep" in names
     assert "system.fail" in names
+    assert "system.flaky" in names
 
 
 def test_jobs_runtime_reports_inline_mode_by_default(app) -> None:
@@ -63,6 +64,9 @@ def test_jobs_runtime_reports_inline_mode_by_default(app) -> None:
     assert body["executor_mode"] == "inline"
     assert body["worker_required"] is False
     assert body["queue_name"]
+    assert body["dead_letter_queue_name"]
+    assert body["retry_base_seconds"] > 0
+    assert body["retry_max_seconds"] > 0
 
 
 def test_enqueue_success_records_result_and_correlation(app) -> None:
@@ -123,7 +127,36 @@ def test_enqueue_redis_mode_creates_queued_job_without_inline_execution(app, mon
     body = response.json()
     assert body["status"] == "queued"
     assert body["attempts"] == 0
+    assert body["max_attempts"] == 1
     assert body["result"] is None
+    assert queued_ids == [body["id"]]
+
+
+def test_enqueue_allows_custom_max_attempts(app, monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    queued_ids: list[str] = []
+
+    def fake_enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
+        queued_ids.append(job_id)
+
+    settings = get_settings()
+    settings.jobs_executor_mode = "redis"
+    settings.jobs_queue_name = "jobs:test"
+    monkeypatch.setattr("app.services.jobs._enqueue_job_id", fake_enqueue_job_id)
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        response = client.post(
+            "/api/v1/jobs/enqueue",
+            headers=_auth_headers(token),
+            json={"task_name": "system.flaky", "payload": {"fail_until_attempt": 1}, "max_attempts": 3},
+        )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["max_attempts"] == 3
     assert queued_ids == [body["id"]]
 
 
@@ -176,7 +209,7 @@ def test_job_summary_shape(app) -> None:
         response = client.get("/api/v1/jobs/summary", headers=_auth_headers(root_token))
     assert response.status_code == 200
     data = response.json()
-    for key in ("total", "queued", "running", "success", "failed"):
+    for key in ("total", "queued", "running", "success", "failed", "dead_letter"):
         assert key in data
     assert data["total"] >= 1
     assert data["success"] >= 1
