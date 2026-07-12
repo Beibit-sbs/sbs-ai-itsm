@@ -3,6 +3,7 @@ import RequireAuth from './auth/RequireAuth'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import AdminPage from './pages/AdminPage'
+import AdminSystemPage from './pages/AdminSystemPage'
 import IntegrationsPage from './pages/IntegrationsPage'
 import AssetsPage from './pages/AssetsPage'
 import TicketsPage from './pages/TicketsPage'
@@ -111,6 +112,14 @@ export default function App() {
         element={
           <RequireAuth>
             <AdminPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/admin/system"
+        element={
+          <RequireAuth>
+            <AdminSystemPage />
           </RequireAuth>
         }
       />

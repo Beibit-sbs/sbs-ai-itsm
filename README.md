@@ -108,3 +108,49 @@ docker compose -f docker-compose.prod.yml --env-file .env.production up -d --bui
 1. Поднять Postgres/Redis.
 2. Выполнить `alembic upgrade head`.
 3. Запустить backend/frontend через `docker-compose.prod.yml`.
+
+## Operations (Production-Ready)
+
+Проверка production env (без вывода секретов):
+
+```bash
+bash scripts/check-production-env.sh
+```
+
+Бэкапы:
+
+```bash
+bash scripts/backup-db.sh
+bash scripts/backup-data.sh
+```
+
+Restore (только с явным подтверждением):
+
+```bash
+CONFIRM_RESTORE=yes bash scripts/restore-db.sh backups/db/<file>.sql.gz
+```
+
+Alembic команды:
+
+```bash
+make db-head
+make db-current
+make db-upgrade
+make db-history
+```
+
+Health/diagnostics:
+
+```bash
+make health
+make smoke
+make logs-backend
+make logs-frontend
+```
+
+Operational runbooks:
+
+- `docs/operations/DEPLOYMENT-RUNBOOK.md`
+- `docs/operations/BACKUP-RESTORE-RUNBOOK.md`
+- `docs/operations/INCIDENT-DIAGNOSTICS-RUNBOOK.md`
+- `docs/operations/SECURITY-OPERATIONS-CHECKLIST.md`

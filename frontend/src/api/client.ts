@@ -11,6 +11,36 @@ export type HealthResponse = {
   timestamp: string
 }
 
+export type LivenessResponse = {
+  status: 'alive'
+  timestamp: string
+}
+
+export type ReadinessResponse = {
+  status: 'ready' | 'not_ready'
+  ready: boolean
+  checks: {
+    postgres: string
+    redis: string
+  }
+  timestamp: string
+}
+
+export type DeepHealthResponse = {
+  status: string
+  service: string
+  version: string
+  environment: string
+  demo_mode: boolean
+  run_startup_ddl: boolean
+  checks: {
+    postgres: Record<string, unknown>
+    redis: Record<string, unknown>
+    alembic: Record<string, unknown>
+  }
+  timestamp: string
+}
+
 export type AuthUser = {
   id: string
   email: string
@@ -1264,6 +1294,27 @@ export async function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
   const response = await fetch(`${API_BASE_URL}/health`, { signal })
   if (!response.ok) throw new Error(`Backend returned ${response.status}`)
   return response.json() as Promise<HealthResponse>
+}
+
+export async function getLiveness(signal?: AbortSignal): Promise<LivenessResponse> {
+  const response = await fetch(`${API_BASE_URL}/health/liveness`, { signal })
+  if (!response.ok) throw new Error(`Backend returned ${response.status}`)
+  return response.json() as Promise<LivenessResponse>
+}
+
+export async function getReadiness(signal?: AbortSignal): Promise<ReadinessResponse> {
+  const response = await fetch(`${API_BASE_URL}/health/readiness`, { signal })
+  if (![200, 503].includes(response.status)) {
+    throw new Error(`Backend returned ${response.status}`)
+  }
+  return response.json() as Promise<ReadinessResponse>
+}
+
+export async function getDeepHealth(accessToken: string): Promise<DeepHealthResponse> {
+  const response = await fetch(`${API_BASE_URL}/health/deep`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<DeepHealthResponse>(response)
 }
 
 async function readJsonResponse<T>(response: Response): Promise<T> {

@@ -38,7 +38,10 @@ const navigationGroups = [
   },
   {
     section: 'Admin & Security',
-    items: [{ to: '/admin', label: 'Администрирование' }],
+    items: [
+      { to: '/admin', label: 'Администрирование' },
+      { to: '/admin/system', label: 'System' },
+    ],
   },
 ] as const
 
@@ -66,6 +69,9 @@ export default function AppShell({ title, subtitle, children }: AppShellProps) {
           {navigationGroups.map((group) => {
             const items = group.items.filter((item) => {
               if (item.to === '/admin') {
+                return ['saas_root', 'organization_admin', 'security_officer'].includes(role)
+              }
+              if (item.to === '/admin/system') {
                 return ['saas_root', 'organization_admin', 'security_officer'].includes(role)
               }
               if (item.to === '/analytics') {
