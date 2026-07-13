@@ -3390,6 +3390,12 @@ export type CorrelationMatrix = {
   timestamp: string
 }
 
+export type SocketTokenResponse = {
+  socket_token: string
+  expires_in: number
+  connection_url: string
+}
+
 export async function fetchDashboardSummary(accessToken: string): Promise<DashboardSummary> {
   const response = await fetch(`${API_BASE_URL}/jobs/dashboard/summary`, {
     method: 'GET',

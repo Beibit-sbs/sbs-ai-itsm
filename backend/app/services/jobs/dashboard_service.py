@@ -9,7 +9,7 @@ Functions:
 - get_anomaly_timeline() - Anomaly events over time
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, and_
 
@@ -75,7 +75,7 @@ def get_dashboard_summary(db: Session, tenant_id: str) -> dict:
         ).count()
 
         return {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat() + "Z",
             "active_rollouts": active_rollouts,
             "avg_health_score": avg_health,
             "health_status": "healthy" if avg_health >= 0.8 else "degraded" if avg_health >= 0.5 else "critical",
@@ -87,7 +87,7 @@ def get_dashboard_summary(db: Session, tenant_id: str) -> dict:
     except Exception as e:
         return {
             "error": str(e),
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat() + "Z",
         }
 
 
@@ -100,7 +100,7 @@ def get_metrics_timeline(
 ) -> dict:
     """Get time-series metrics for dashboard charting."""
     try:
-        cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back)
+        cutoff_time = datetime.now(UTC) - timedelta(minutes=minutes_back)
 
         # Get history data
         history = db.query(PolicyRolloutMetricsHistory).filter(
@@ -184,7 +184,7 @@ def get_active_alerts(
             if alert.resolved_at:
                 duration = int((alert.resolved_at - alert.triggered_at).total_seconds())
             elif alert.triggered_at:
-                duration = int((datetime.utcnow() - alert.triggered_at).total_seconds())
+                duration = int((datetime.now(UTC) - alert.triggered_at).total_seconds())
 
             alert_list.append({
                 "id": alert.id,
@@ -207,7 +207,7 @@ def get_active_alerts(
         return {
             "alerts": alert_list,
             "count": len(alert_list),
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat() + "Z",
         }
     except Exception as e:
         return {
@@ -265,7 +265,7 @@ def get_rollout_comparison(
         return {
             "comparison": rollouts,
             "count": len(rollouts),
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat() + "Z",
         }
     except Exception as e:
         return {
@@ -283,7 +283,7 @@ def get_anomaly_timeline(
 ) -> dict:
     """Get anomaly detection events over time."""
     try:
-        cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back)
+        cutoff_time = datetime.now(UTC) - timedelta(minutes=minutes_back)
 
         query = db.query(PolicyMetricsAnomalyDetection).filter(
             and_(
@@ -320,7 +320,7 @@ def get_anomaly_timeline(
             "anomalies": timeline,
             "count": len(timeline),
             "time_window_minutes": minutes_back,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat() + "Z",
         }
     except Exception as e:
         return {
@@ -338,7 +338,7 @@ def get_metric_correlation_matrix(
 ) -> dict:
     """Get correlation matrix between metrics."""
     try:
-        cutoff_time = datetime.utcnow() - timedelta(minutes=time_window_minutes)
+        cutoff_time = datetime.now(UTC) - timedelta(minutes=time_window_minutes)
 
         # Get all metrics for time window
         history = db.query(PolicyRolloutMetricsHistory).filter(
@@ -400,7 +400,7 @@ def get_metric_correlation_matrix(
             "correlation_matrix": correlation_matrix,
             "metric_count": len(metric_names),
             "time_window_minutes": time_window_minutes,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat() + "Z",
         }
     except Exception as e:
         return {

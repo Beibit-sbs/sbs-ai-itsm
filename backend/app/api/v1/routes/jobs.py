@@ -4797,6 +4797,71 @@ def get_correlation_dashboard(
 
 # Stage 037: WebSocket Real-Time Dashboard Updates
 
+class SocketTokenResponse(BaseModel):
+    """Response with temporary WebSocket token for real-time updates."""
+    socket_token: str = Field(..., description="Temporary token for WebSocket connection (1-hour TTL)")
+    expires_in: int = Field(..., description="Token expiration time in seconds")
+    connection_url: str = Field(..., description="WebSocket connection URL with token parameter")
+
+
+@router.post(
+    "/dashboard/socket-token",
+    response_model=SocketTokenResponse,
+    tags=["stage_037_websocket"],
+)
+def create_socket_token(
+    current_user: AuthUserResponse = Depends(get_current_user),
+) -> SocketTokenResponse:
+    """Create a temporary token for WebSocket real-time dashboard connection.
+    
+    This endpoint issues a short-lived token (1 hour TTL) specifically for
+    WebSocket connections. This improves security compared to passing JWT
+    directly in the query parameter.
+    
+    The client should:
+    1. Call this endpoint with Bearer authentication (normal JWT)
+    2. Get socket_token from response
+    3. Connect to WebSocket with: wss://host/api/v1/jobs/dashboard/ws?token=<socket_token>
+    
+    Returns:
+    - socket_token: Temporary token for WebSocket (valid for 1 hour)
+    - expires_in: Token TTL in seconds
+    - connection_url: Pre-formatted WebSocket URL for convenience
+    """
+    _require_read(current_user)
+    
+    from jose import jwt
+    
+    settings = get_settings()
+    
+    # Create temporary socket token with 1-hour TTL
+    expires = timedelta(hours=1)
+    expire = datetime.now(UTC) + expires
+    
+    socket_token_payload = {
+        "sub": current_user.user_id,
+        "tenant_id": current_user.tenant_id,
+        "type": "socket",  # Mark as socket token, not regular JWT
+        "exp": expire,
+    }
+    
+    socket_token = jwt.encode(
+        socket_token_payload,
+        settings.SECRET_KEY,
+        algorithm="HS256"
+    )
+    
+    expires_in_seconds = int(expires.total_seconds())
+    
+    # Construct connection URL (client can use or not - it's just for convenience)
+    connection_url = f"wss://api/v1/jobs/dashboard/ws?token={socket_token}"
+    
+    return SocketTokenResponse(
+        socket_token=socket_token,
+        expires_in=expires_in_seconds,
+        connection_url=connection_url,
+    )
+
 
 @router.websocket("/dashboard/ws")
 async def websocket_dashboard(
@@ -4815,27 +4880,42 @@ async def websocket_dashboard(
     - correlation: Correlation matrix (120s updates)
     
     Client can subscribe/unsubscribe dynamically.
+    
+    Authentication:
+    - Must provide socket_token obtained from POST /dashboard/socket-token
+    - Token is temporary (1-hour TTL) and specific to WebSocket connections
+    - Token must not be expired
     """
-    # Authenticate the WebSocket connection using JWT token
+    # Authenticate the WebSocket connection using socket token
     try:
-        from app.core.config import get_settings
-        from jose import jwt, JWTError
+        from jose import jwt, JWTError, ExpiredSignatureError
         
         settings = get_settings()
         try:
+            # Decode and validate socket token
             payload = jwt.decode(
                 token,
                 settings.SECRET_KEY,
                 algorithms=["HS256"]
             )
+            
+            # Verify this is a socket token (not a regular JWT)
+            token_type = payload.get("type")
+            if token_type != "socket":
+                await websocket.close(code=4001, reason="Invalid token type - use POST /dashboard/socket-token to get a socket token")
+                return
+            
             user_id: str = payload.get("sub")
             tenant_id: str = payload.get("tenant_id")
             
             if not user_id or not tenant_id:
                 await websocket.close(code=4001, reason="Invalid token claims")
                 return
-        except JWTError:
-            await websocket.close(code=4001, reason="Invalid token")
+        except ExpiredSignatureError:
+            await websocket.close(code=4001, reason="Token expired - refresh with POST /dashboard/socket-token")
+            return
+        except JWTError as e:
+            await websocket.close(code=4001, reason=f"Invalid token: {str(e)}")
             return
     except Exception as e:
         await websocket.close(code=4000, reason=f"Authentication error: {str(e)}")

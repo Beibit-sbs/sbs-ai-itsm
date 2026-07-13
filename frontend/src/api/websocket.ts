@@ -36,8 +36,9 @@ export interface DashboardStreamListener {
  */
 export class DashboardWebSocketClient {
   private ws: WebSocket | null = null
-  private url: string
+  private baseUrl: string
   private accessToken: string
+  private socketToken: string | null = null
   private listeners: DashboardStreamListener[] = []
   private reconnectAttempts = 0
   private maxReconnectAttempts = 5
@@ -46,26 +47,58 @@ export class DashboardWebSocketClient {
   private subscribedStreams: Set<DashboardStreamType> = new Set()
 
   constructor(baseUrl: string, accessToken: string) {
-    this.url = this.buildWebSocketUrl(baseUrl)
+    this.baseUrl = baseUrl
     this.accessToken = accessToken
   }
 
   /**
-   * Build WebSocket URL from HTTP base URL
+   * Fetch a temporary socket token for WebSocket connection.
+   * This is more secure than passing JWT directly in query parameter.
    */
-  private buildWebSocketUrl(baseUrl: string): string {
-    const httpUrl = new URL(baseUrl, window.location.href)
+  private async fetchSocketToken(): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/api/v1/jobs/dashboard/socket-token`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    })
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch socket token: ${response.statusText}`)
+    }
+    
+    const data = await response.json()
+    return data.socket_token
+  }
+
+  /**
+   * Build WebSocket URL from HTTP base URL and socket token
+   */
+  private buildWebSocketUrl(socketToken: string): string {
+    const httpUrl = new URL(this.baseUrl, window.location.href)
     const protocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${protocol}//${httpUrl.host}/api/v1/jobs/dashboard/ws?token=${encodeURIComponent(this.accessToken)}`
+    return `${protocol}//${httpUrl.host}/api/v1/jobs/dashboard/ws?token=${encodeURIComponent(socketToken)}`
   }
 
   /**
    * Connect to WebSocket server
    */
   async connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       try {
-        this.ws = new WebSocket(this.url)
+        // First, get a temporary socket token (more secure than using JWT directly)
+        if (!this.socketToken) {
+          try {
+            this.socketToken = await this.fetchSocketToken()
+          } catch (error) {
+            reject(new Error(`Failed to authenticate WebSocket connection: ${error}`))
+            return
+          }
+        }
+
+        const wsUrl = this.buildWebSocketUrl(this.socketToken)
+        this.ws = new WebSocket(wsUrl)
 
         this.ws.onopen = () => {
           this.reconnectAttempts = 0
@@ -266,6 +299,9 @@ export class DashboardWebSocketClient {
     console.log(`Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`)
 
     setTimeout(() => {
+      // Clear old socket token to get a fresh one on reconnect
+      this.socketToken = null
+      
       this.connect().catch((error) => {
         console.error('Reconnection failed:', error)
       })

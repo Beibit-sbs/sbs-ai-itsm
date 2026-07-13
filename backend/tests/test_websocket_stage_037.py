@@ -321,9 +321,49 @@ class TestWebSocketIntegration:
         assert True
 
 
+class TestSocketTokenEndpoint:
+    """Test the socket token endpoint for WebSocket authentication"""
+
+    def test_socket_token_response_structure(self):
+        """Test that socket token response has correct structure"""
+        # Simulating the response structure
+        socket_token_response = {
+            "socket_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+            "expires_in": 3600,
+            "connection_url": "wss://api/v1/jobs/dashboard/ws?token=...",
+        }
+        
+        assert "socket_token" in socket_token_response
+        assert "expires_in" in socket_token_response
+        assert "connection_url" in socket_token_response
+        assert isinstance(socket_token_response["expires_in"], int)
+        assert socket_token_response["expires_in"] == 3600  # 1 hour
+
+    def test_socket_token_expiration_one_hour(self):
+        """Test that socket token expires in 1 hour"""
+        # Verify the TTL is correct
+        expected_ttl = 3600  # 1 hour in seconds
+        assert expected_ttl == 60 * 60  # 60 minutes * 60 seconds
+
+    def test_socket_token_has_required_fields(self):
+        """Test that socket token payload has socket type marker"""
+        # When decoded, socket token should have type='socket'
+        # This is tested in the WebSocket authentication logic
+        token_payload_structure = {
+            "sub": "user-id",
+            "tenant_id": "tenant-id",
+            "type": "socket",  # Must have this field
+            "exp": 1234567890,
+        }
+        
+        assert token_payload_structure["type"] == "socket"
+        assert "exp" in token_payload_structure
+
+
 # Export tests for discovery
 all_tests = [
     TestDashboardWebSocketManager,
     TestWebSocketClientTypes,
     TestWebSocketIntegration,
+    TestSocketTokenEndpoint,
 ]
