@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import RequireAuth from './auth/RequireAuth'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
+import MonitoringPage from './pages/MonitoringPage'
 import AdminPage from './pages/AdminPage'
 import AdminSystemPage from './pages/AdminSystemPage'
 import IntegrationsPage from './pages/IntegrationsPage'
@@ -24,6 +25,14 @@ export default function App() {
         element={
           <RequireAuth>
             <DashboardPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/monitoring"
+        element={
+          <RequireAuth>
+            <MonitoringPage />
           </RequireAuth>
         }
       />

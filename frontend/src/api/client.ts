@@ -3281,3 +3281,192 @@ export async function runMockWebhookReceive(accessToken: string, createDemoTicke
   })
   return readJsonResponse<Record<string, unknown>>(response)
 }
+
+// Stage 035: Dashboard and Real-Time Monitoring API Functions
+
+export type DashboardSummary = {
+  timestamp: string
+  active_rollouts: number
+  avg_health_score: number
+  health_status: 'healthy' | 'degraded' | 'critical'
+  active_alerts: number
+  critical_alerts: number
+  unresolved_anomalies: number
+  system_status: 'operational' | 'degraded' | 'critical'
+}
+
+export type MetricsTimeline = {
+  rollout_id: string
+  metric_type: string
+  time_window_minutes: number
+  timestamps: string[]
+  values: number[]
+  statistics: {
+    average: number
+    minimum: number
+    maximum: number
+  }
+  data_points: number
+}
+
+export type AlertSummaryItem = {
+  id: string
+  alert_rule_id: string
+  rule_name: string
+  rollout_id: string
+  metric: string
+  current_value: number
+  threshold: number
+  operator: string
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  status: 'active' | 'acknowledged' | 'resolved'
+  triggered_at: string
+  acknowledged_at: string | null
+  resolved_at: string | null
+  duration_seconds: number
+  breach_count: number
+  breach_percentage: number
+}
+
+export type ActiveAlerts = {
+  alerts: AlertSummaryItem[]
+  count: number
+  severity_filter?: string
+  timestamp: string
+}
+
+export type RolloutComparisonItem = {
+  rollout_id: string
+  name: string
+  status: string
+  canary_percentage: number
+  error_rate: number
+  latency_p99_ms: number
+  throughput_eps: number
+  health_score: number
+  active_alerts: number
+  unresolved_anomalies: number
+  duration_hours: number
+  started_at: string
+}
+
+export type RolloutComparison = {
+  comparison: RolloutComparisonItem[]
+  count: number
+  max_rollouts: number
+  timestamp: string
+}
+
+export type AnomalyTimelineItem = {
+  id: string
+  rollout_id: string
+  metric: string
+  detection_method: string
+  anomaly_score: number
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  value: number
+  baseline: number
+  deviation_percent: number
+  created_at: string
+  acknowledged: boolean
+  resolved_at: string | null
+  resolution_notes: string | null
+}
+
+export type AnomalyTimeline = {
+  anomalies: AnomalyTimelineItem[]
+  count: number
+  rollout_filter?: string
+  time_window_minutes: number
+  timestamp: string
+}
+
+export type CorrelationMatrix = {
+  rollout_id: string
+  correlation_matrix: Record<string, Record<string, number>>
+  metric_count: number
+  data_points: number
+  time_window_minutes: number
+  timestamp: string
+}
+
+export async function fetchDashboardSummary(accessToken: string): Promise<DashboardSummary> {
+  const response = await fetch(`${API_BASE_URL}/jobs/dashboard/summary`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<DashboardSummary>(response)
+}
+
+export async function fetchMetricsTimeline(
+  accessToken: string,
+  rolloutId: string,
+  metricType: string = 'error_rate',
+  minutesBack: number = 60
+): Promise<MetricsTimeline> {
+  const url = new URL(`${API_BASE_URL}/jobs/dashboard/metrics/${rolloutId}`)
+  url.searchParams.set('metric_type', metricType)
+  url.searchParams.set('minutes_back', String(minutesBack))
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<MetricsTimeline>(response)
+}
+
+export async function fetchActiveAlerts(
+  accessToken: string,
+  severity?: string,
+  limit: number = 50
+): Promise<ActiveAlerts> {
+  const url = new URL(`${API_BASE_URL}/jobs/dashboard/alerts`)
+  if (severity) url.searchParams.set('severity', severity)
+  url.searchParams.set('limit', String(limit))
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<ActiveAlerts>(response)
+}
+
+export async function fetchRolloutComparison(
+  accessToken: string,
+  rolloutIds: string[]
+): Promise<RolloutComparison> {
+  const url = new URL(`${API_BASE_URL}/jobs/dashboard/compare`)
+  url.searchParams.set('rollouts', rolloutIds.slice(0, 10).join(','))
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<RolloutComparison>(response)
+}
+
+export async function fetchAnomalyTimeline(
+  accessToken: string,
+  rolloutId?: string,
+  minutesBack: number = 1440
+): Promise<AnomalyTimeline> {
+  const url = new URL(`${API_BASE_URL}/jobs/dashboard/anomalies`)
+  if (rolloutId) url.searchParams.set('rollout_id', rolloutId)
+  url.searchParams.set('minutes_back', String(minutesBack))
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<AnomalyTimeline>(response)
+}
+
+export async function fetchCorrelationMatrix(
+  accessToken: string,
+  rolloutId: string,
+  timeWindowMinutes: number = 60
+): Promise<CorrelationMatrix> {
+  const url = new URL(`${API_BASE_URL}/jobs/dashboard/correlation/${rolloutId}`)
+  url.searchParams.set('time_window_minutes', String(timeWindowMinutes))
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<CorrelationMatrix>(response)
+}
