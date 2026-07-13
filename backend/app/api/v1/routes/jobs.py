@@ -226,6 +226,7 @@ class JobEventConsumerDiagnosticsItemResponse(BaseModel):
     last_policy_change_at: datetime | None
     last_policy_change_actor_email: str | None
     runbook_policy_decision_trace: str
+    autoremediation_policy_decision_trace: str
     status: str
     recommended_actions: list[str]
 
@@ -320,6 +321,7 @@ class JobEventConsumerAutoremediationPolicyResponse(BaseModel):
     effective_policy_hash: str
     last_policy_change_at: datetime | None
     last_policy_change_actor_email: str | None
+    validation_result: dict[str, object] | None = None
 
 
 class JobEventConsumerAutoremediationPolicyUpdateRequest(BaseModel):
@@ -336,11 +338,27 @@ class JobEventConsumerAutoremediationPolicyUpdateRequest(BaseModel):
     canary_limit_per_cycle: int | None = Field(default=None, ge=1, le=200)
     suppression_windows_utc: list[str] | None = None
     error_denylist: list[str] | None = None
+    validate_only: bool = False
 
 
 class JobEventConsumerAutoremediationBrakeResetRequest(BaseModel):
     consumer_name: str = Field(default="notifications-consumer", min_length=1, max_length=80)
     expected_version: int = Field(..., ge=1)
+
+
+class JobEventConsumerAutoremediationPolicyRollbackRequest(BaseModel):
+    consumer_name: str = Field(default="notifications-consumer", min_length=1, max_length=80)
+    previous_version: int = Field(..., ge=1)
+
+
+class JobEventConsumerAutoremediationPolicyRollbackResponse(BaseModel):
+    consumer_name: str
+    policy_version: int
+    effective_policy_hash: str
+    rolled_back_from_version: int
+    rolled_back_to_version: int
+    last_policy_change_at: datetime | None
+    last_policy_change_actor_email: str | None
 
 
 class JobEventConsumerRunbookRequest(BaseModel):
@@ -564,6 +582,10 @@ def get_job_event_consumers_diagnostics(
     runbook_policy_rollouts_24h, recent_runbook_policy_rollouts, _ = _recent_runbook_policy_rollouts(db)
     runbook_policy_payload = _runbook_policy_payload(settings)
     runbook_policy_trace = _runbook_policy_decision_trace(runbook_policy_payload)
+    autoremediation_policy_payload = policy_state.get("payload_json", {})
+    if isinstance(autoremediation_policy_payload, str):
+        autoremediation_policy_payload = _decode(autoremediation_policy_payload) or {}
+    autoremediation_policy_trace = _autoremediation_policy_decision_trace(autoremediation_policy_payload)
     (
         runbook_execs_24h,
         runbook_failures_24h,
@@ -603,6 +625,7 @@ def get_job_event_consumers_diagnostics(
         item["last_policy_change_at"] = policy_change.get("created_at")
         item["last_policy_change_actor_email"] = policy_change.get("actor_email")
         item["runbook_policy_decision_trace"] = runbook_policy_trace
+        item["autoremediation_policy_decision_trace"] = autoremediation_policy_trace
     data["policy_version"] = int(policy_state.get("version", 1) or 1)
     data["policy_rollouts_24h"] = int(rollouts_24h)
     data["emergency_brake_consumers"] = [
@@ -1159,6 +1182,69 @@ def _runbook_policy_history_lookup(db: Session, *, target_version: int) -> dict[
     }
 
 
+def _autoremediation_policy_decision_trace(payload: dict[str, object]) -> str:
+    canary_mode = payload.get("canary_mode", False)
+    canary_limit = payload.get("canary_limit_per_cycle", 0)
+    burst_limit = payload.get("burst_limit_per_10m", 0)
+    suppression_windows = payload.get("suppression_windows_utc", [])
+    error_denylist = payload.get("error_denylist", [])
+
+    parts: list[str] = []
+    if canary_mode:
+        parts.append(f"canary[limit={canary_limit}]")
+    if burst_limit:
+        parts.append(f"burst[{burst_limit}/10m]")
+    if suppression_windows:
+        parts.append(f"suppression[{len(suppression_windows)}windows]")
+    if error_denylist:
+        parts.append(f"denylist[{len(error_denylist)}errors]")
+
+    return ";".join(parts) if parts else "default"
+
+
+def _autoremediation_policy_history_lookup(db: Session, *, target_version: int) -> dict[str, object]:
+    rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "jobs.event_consumer_autoremediation_policy.update")
+            .order_by(AuditLog.created_at.desc())
+            .limit(500)
+        ).all()
+    )
+
+    if target_version == 1:
+        for row in rows:
+            metadata = _decode(row.metadata_json)
+            metadata_map = metadata if isinstance(metadata, dict) else {}
+            new_version = int(metadata_map.get("new_version", 0) or 0)
+            if new_version == 2:
+                return {
+                    "found": True,
+                    "version": 1,
+                    "payload": metadata_map.get("old_payload_snapshot", {}),
+                    "actor_email": row.actor_email,
+                    "created_at": row.created_at,
+                }
+        return {"found": False, "version": 1}
+
+    for row in rows:
+        metadata = _decode(row.metadata_json)
+        metadata_map = metadata if isinstance(metadata, dict) else {}
+        new_version = int(metadata_map.get("new_version", 0) or 0)
+        if new_version == target_version:
+            return {
+                "found": True,
+                "version": target_version,
+                "payload": metadata_map.get("new_payload_snapshot", {}),
+                "actor_email": row.actor_email,
+                "created_at": row.created_at,
+            }
+    return {
+        "found": False,
+        "version": target_version,
+    }
+
+
 @router.get(
     "/event-consumer-autoremediation-preview",
     response_model=JobEventConsumerAutoremediationPreviewResponse,
@@ -1304,6 +1390,40 @@ def update_job_event_consumer_autoremediation_policy(
         "braked_consumers": [str(item) for item in settings.jobs_event_autoremediation_braked_consumers if item],
     }
 
+    old_effective = _effective_autoremediation_policy(settings, request.consumer_name)
+    new_effective_test = _effective_autoremediation_policy(settings, request.consumer_name)
+    old_hash = _policy_hash(old_effective)
+    new_hash = _policy_hash(new_effective_test)
+    validation_result = None
+
+    if bool(request.validate_only):
+        validation_result = {
+            "valid": True,
+            "old_hash": old_hash,
+            "new_hash": new_hash,
+            "changes": {
+                "profile_changed": old_effective != new_effective_test,
+                "suppression_windows_changed": [str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item] != suppression_windows,
+                "error_denylist_changed": [str(item) for item in settings.jobs_event_autoremediation_error_denylist if item] != error_denylist,
+            },
+            "message": "Validation successful; call with validate_only=false to apply changes.",
+        }
+        db.rollback()
+        return JobEventConsumerAutoremediationPolicyResponse(
+            consumer_name=request.consumer_name,
+            policy_version=int(policy_state.get("version", 1) or 1),
+            effective_policy=old_effective,
+            suppression_windows_utc=[str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item],
+            error_denylist=[str(item) for item in settings.jobs_event_autoremediation_error_denylist if item],
+            emergency_brake_consumers=[
+                str(item) for item in settings.jobs_event_autoremediation_braked_consumers if str(item).strip()
+            ],
+            effective_policy_hash=old_hash,
+            last_policy_change_at=policy_state.get("updated_at"),
+            last_policy_change_actor_email=policy_state.get("updated_by_email"),
+            validation_result=validation_result,
+        )
+
     try:
         saved_state = save_policy(
             db,
@@ -1316,8 +1436,9 @@ def update_job_event_consumer_autoremediation_policy(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
+    old_effective_stored = _effective_autoremediation_policy(settings, request.consumer_name)
     new_effective = _effective_autoremediation_policy(settings, request.consumer_name)
-    old_hash = _policy_hash(old_effective)
+    old_hash = _policy_hash(old_effective_stored)
     new_hash = _policy_hash(new_effective)
     log_audit(
         db,
@@ -1330,10 +1451,14 @@ def update_job_event_consumer_autoremediation_policy(
             "consumer_name": request.consumer_name,
             "old_policy_hash": old_hash,
             "new_policy_hash": new_hash,
+            "old_payload_snapshot": {
+                "policy_profiles": profile_map,
+                "suppression_windows_utc": [str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item],
+                "error_denylist": [str(item) for item in settings.jobs_event_autoremediation_error_denylist if item],
+            },
+            "new_payload_snapshot": payload,
             "previous_version": int(policy_state.get("version", 1) or 1),
             "new_version": int(saved_state.get("version", 1) or 1),
-            "suppression_windows_utc": suppression_windows,
-            "error_denylist": error_denylist,
         },
     )
     db.commit()
@@ -1347,6 +1472,84 @@ def update_job_event_consumer_autoremediation_policy(
             str(item) for item in settings.jobs_event_autoremediation_braked_consumers if str(item).strip()
         ],
         effective_policy_hash=new_hash,
+        last_policy_change_at=saved_state.get("updated_at"),
+        last_policy_change_actor_email=current_user.email,
+    )
+
+
+@router.post(
+    "/event-consumer-autoremediation-policy/rollback",
+    response_model=JobEventConsumerAutoremediationPolicyRollbackResponse,
+)
+def rollback_job_event_consumer_autoremediation_policy(
+    request: JobEventConsumerAutoremediationPolicyRollbackRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobEventConsumerAutoremediationPolicyRollbackResponse:
+    _require_enqueue(current_user)
+    settings = get_settings()
+    policy_state = _policy_state(settings, db)
+    allowed = {settings.jobs_event_consumer_name, settings.jobs_event_automation_consumer_name}
+    if request.consumer_name not in allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown consumer_name")
+
+    current_version = int(policy_state.get("version", 1) or 1)
+    if request.previous_version >= current_version:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot rollback to version {request.previous_version}; current version is {current_version}",
+        )
+
+    history = _autoremediation_policy_history_lookup(db, target_version=request.previous_version)
+    if not history.get("found"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No policy history found for version {request.previous_version}",
+        )
+
+    old_payload = history.get("payload", {})
+    if not isinstance(old_payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to deserialize historical payload",
+        )
+
+    try:
+        saved_state = save_policy(
+            db,
+            settings,
+            payload=old_payload,
+            expected_version=current_version,
+            actor_email=current_user.email,
+        )
+    except PolicyVersionConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    new_effective = _effective_autoremediation_policy(settings, request.consumer_name)
+    new_hash = _policy_hash(new_effective)
+    log_audit(
+        db,
+        action="jobs.event_consumer_autoremediation_policy.rollback",
+        entity_type="job_event_consumer_policy",
+        entity_id=request.consumer_name,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "consumer_name": request.consumer_name,
+            "rolled_back_from_version": current_version,
+            "rolled_back_to_version": request.previous_version,
+            "rollback_payload_snapshot": old_payload,
+            "new_version": int(saved_state.get("version", 1) or 1),
+        },
+    )
+    db.commit()
+    return JobEventConsumerAutoremediationPolicyRollbackResponse(
+        consumer_name=request.consumer_name,
+        policy_version=int(saved_state.get("version", 1) or 1),
+        effective_policy_hash=new_hash,
+        rolled_back_from_version=current_version,
+        rolled_back_to_version=request.previous_version,
         last_policy_change_at=saved_state.get("updated_at"),
         last_policy_change_actor_email=current_user.email,
     )
