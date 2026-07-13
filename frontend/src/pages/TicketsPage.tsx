@@ -78,6 +78,11 @@ type OperatorReplyTemplate = {
   statuses: string[]
 }
 
+type RequesterReopenReasonOption = {
+  value: string
+  label: string
+}
+
 type TicketFormState = {
   title: string
   description: string
@@ -235,6 +240,14 @@ const operatorReplyTemplates: OperatorReplyTemplate[] = [
   },
 ]
 
+const requesterReopenReasonOptions: RequesterReopenReasonOption[] = [
+  { value: 'still-broken', label: 'Проблема не устранена' },
+  { value: 'intermittent', label: 'Проблема повторяется периодически' },
+  { value: 'partial-fix', label: 'Решение частичное, часть функций не работает' },
+  { value: 'wrong-scope', label: 'Решение не покрывает исходный запрос' },
+  { value: 'other', label: 'Другая причина' },
+]
+
 function formatDateTime(value: string | null | undefined) {
   if (!value) return '—'
   return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
@@ -333,6 +346,11 @@ function formatDurationSince(value: string | null) {
   return remHours > 0 ? `${diffDays} д ${remHours} ч` : `${diffDays} д`
 }
 
+function requesterReopenReasonLabel(value: string) {
+  const option = requesterReopenReasonOptions.find((item) => item.value === value)
+  return option?.label ?? value
+}
+
 export default function TicketsPage() {
   const { session } = useAuth()
   const queryClient = useQueryClient()
@@ -372,6 +390,7 @@ export default function TicketsPage() {
   const [transitionComment, setTransitionComment] = useState('')
   const [requesterDecisionComment, setRequesterDecisionComment] = useState('')
   const [requesterSatisfaction, setRequesterSatisfaction] = useState<number | null>(null)
+  const [requesterReopenReason, setRequesterReopenReason] = useState('')
   const [assignComment, setAssignComment] = useState('')
   const [assignUserId, setAssignUserId] = useState('')
   const [commentBody, setCommentBody] = useState('')
@@ -570,6 +589,7 @@ export default function TicketsPage() {
       setTransitionComment('')
       setRequesterDecisionComment('')
       setRequesterSatisfaction(null)
+      setRequesterReopenReason('')
       setActionFeedback({ kind: 'success', message: `Статус заявки ${ticket.ticket_number ?? ''} обновлен.`.trim() })
       await queryClient.invalidateQueries({ queryKey: ['tickets'] })
       await queryClient.invalidateQueries({ queryKey: ['ticket', session?.access_token, ticket.id] })
@@ -884,6 +904,7 @@ export default function TicketsPage() {
     setAssignUserId(detail.assignee_id ?? '')
     setRequesterDecisionComment('')
     setRequesterSatisfaction(null)
+    setRequesterReopenReason('')
   }, [detail?.id, detail?.status, detail?.assignee_id])
 
   const assigneeOptions = useMemo(() => {
@@ -2083,6 +2104,17 @@ export default function TicketsPage() {
                         placeholder="Например: проблема воспроизводится при подключении из кабинета 401"
                       />
                     </label>
+                    {canRequesterReopen(detail.status) ? (
+                      <label>
+                        <span>Причина переоткрытия (обязательно для переоткрытия)</span>
+                        <select value={requesterReopenReason} onChange={(event) => setRequesterReopenReason(event.target.value)}>
+                          <option value="">Выберите причину</option>
+                          {requesterReopenReasonOptions.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
                     <div className="analytics-actions" style={{ justifyContent: 'flex-start' }}>
                       {canRequesterAccept(detail.status) ? (
                         <button
@@ -2109,11 +2141,11 @@ export default function TicketsPage() {
                             transitionMutation.mutate({
                               ticketId: detail.id,
                               status: 'REOPENED',
-                              comment: requesterDecisionComment.trim(),
+                              comment: `Причина переоткрытия: ${requesterReopenReasonLabel(requesterReopenReason)}${requesterDecisionComment.trim() ? `. Комментарий: ${requesterDecisionComment.trim()}` : ''}`,
                               is_internal: false,
                             })
                           }
-                          disabled={transitionMutation.isPending || !requesterDecisionComment.trim()}
+                          disabled={transitionMutation.isPending || !requesterReopenReason}
                         >
                           Переоткрыть
                         </button>
