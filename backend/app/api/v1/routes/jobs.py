@@ -53,6 +53,12 @@ from app.services.jobs.policy_enforcement_integration import (
     get_policy_enforcement_status,
     evaluate_policy_before_apply,
 )
+from app.services.jobs.metrics_polling import (
+    poll_active_rollouts,
+    get_rollout_polling_status,
+    should_poll_now,
+    estimate_next_poll_time,
+)
 from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
@@ -494,6 +500,33 @@ class EvaluatePolicyBeforeApplyResponse(BaseModel):
     effective_policy: dict[str, object]
     enforcement_status: PolicyEnforcementStatusResponse
     warnings: list[str]
+
+
+# Stage 030: Scheduled Metrics Polling Models
+class RolloutPollingStatusItem(BaseModel):
+    """Status of a single rollout being polled."""
+    rollout_id: str
+    policy_type: str
+    current_canary_percentage: int
+    error_rate_baseline: float | None
+    error_rate_current: float | None
+    minutes_since_start: int
+    next_poll_in_seconds: int
+
+
+class RolloutPollingStatusResponse(BaseModel):
+    """Status of all active rollouts being polled."""
+    active_rollouts: list[RolloutPollingStatusItem]
+    last_poll_at: datetime | None
+    total_active: int
+
+
+class PollMetricsNowResponse(BaseModel):
+    """Result of manual metrics polling."""
+    polled_count: int
+    auto_rollback_count: int
+    errors: list[str]
+    timestamp: datetime
 
 
 class JobEventConsumerRunbookRequest(BaseModel):
@@ -3322,4 +3355,90 @@ def evaluate_policy_before_apply_endpoint(
         ),
         warnings=evaluation["warnings"],
     )
+
+
+# Stage 030: Scheduled Metrics Polling Endpoints
+
+@router.get(
+    "/policy/rollouts/polling-status",
+    response_model=RolloutPollingStatusResponse,
+)
+def get_rollout_polling_status_endpoint(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RolloutPollingStatusResponse:
+    """Get status of all active rollouts being polled for metrics.
+    
+    Shows:
+    - Which rollouts are actively being monitored
+    - When metrics were last collected
+    - Next poll time for each rollout
+    - Current error rate baseline vs current
+    """
+    _require_read(current_user)
+    
+    status = get_rollout_polling_status(db)
+    
+    return RolloutPollingStatusResponse(
+        active_rollouts=[
+            RolloutPollingStatusItem(
+                rollout_id=r["rollout_id"],
+                policy_type=r["policy_type"],
+                current_canary_percentage=r["current_canary_percentage"],
+                error_rate_baseline=r["error_rate_baseline"],
+                error_rate_current=r["error_rate_current"],
+                minutes_since_start=r["minutes_since_start"],
+                next_poll_in_seconds=r["next_poll_in_seconds"],
+            )
+            for r in status["active_rollouts"]
+        ],
+        last_poll_at=status["last_poll_at"],
+        total_active=status["total_active"],
+    )
+
+
+@router.post(
+    "/policy/rollouts/poll-metrics-now",
+    response_model=PollMetricsNowResponse,
+)
+def poll_metrics_now_endpoint(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PollMetricsNowResponse:
+    """Trigger immediate metrics polling for all active rollouts.
+    
+    Normally polling happens on a schedule (30-second intervals).
+    This endpoint allows manual triggering for testing/debugging.
+    
+    Returns:
+    - polled_count: Number of rollouts polled
+    - auto_rollback_count: Auto-rollbacks triggered
+    - errors: Any errors during polling
+    """
+    _require_enqueue(current_user)
+    
+    stats = poll_active_rollouts(db)
+    
+    log_audit(
+        db,
+        action="policy.metrics_polling.triggered",
+        entity_type="system",
+        entity_id="metrics_polling",
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "polled_count": stats["polled_count"],
+            "auto_rollback_count": stats["auto_rollback_count"],
+            "error_count": len(stats["errors"]),
+        },
+    )
+    db.commit()
+    
+    return PollMetricsNowResponse(
+        polled_count=stats["polled_count"],
+        auto_rollback_count=stats["auto_rollback_count"],
+        errors=stats["errors"],
+        timestamp=datetime.now(UTC),
+    )
+
 
