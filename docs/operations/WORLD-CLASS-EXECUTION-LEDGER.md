@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-GOVERNANCE-022`
-- Latest stage implementation commit: `TBD`
+- Latest stage implementation commit: `495e8bf`
 
 ## Stage Log (Newest First)
 
-- `TBD` PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-GOVERNANCE-022
+- `495e8bf` PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-GOVERNANCE-022
   - Added governance policy for high-impact runbook execute paths: reason code, change reference, and optional dual-control approver.
   - Added settings-driven per-runbook allow/deny controls and cooldown enforcement with explicit denied audit actions.
   - Extended diagnostics with runbook governance compliant/denied counters and recent denied execution feed.
