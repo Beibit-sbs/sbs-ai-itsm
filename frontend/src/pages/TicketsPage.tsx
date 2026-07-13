@@ -371,6 +371,7 @@ export default function TicketsPage() {
   const [transitionStatus, setTransitionStatus] = useState('IN_PROGRESS')
   const [transitionComment, setTransitionComment] = useState('')
   const [requesterDecisionComment, setRequesterDecisionComment] = useState('')
+  const [requesterSatisfaction, setRequesterSatisfaction] = useState<number | null>(null)
   const [assignComment, setAssignComment] = useState('')
   const [assignUserId, setAssignUserId] = useState('')
   const [commentBody, setCommentBody] = useState('')
@@ -567,6 +568,8 @@ export default function TicketsPage() {
       }),
     onSuccess: async (ticket) => {
       setTransitionComment('')
+      setRequesterDecisionComment('')
+      setRequesterSatisfaction(null)
       setActionFeedback({ kind: 'success', message: `Статус заявки ${ticket.ticket_number ?? ''} обновлен.`.trim() })
       await queryClient.invalidateQueries({ queryKey: ['tickets'] })
       await queryClient.invalidateQueries({ queryKey: ['ticket', session?.access_token, ticket.id] })
@@ -880,6 +883,7 @@ export default function TicketsPage() {
     setTransitionStatus(detail.status)
     setAssignUserId(detail.assignee_id ?? '')
     setRequesterDecisionComment('')
+    setRequesterSatisfaction(null)
   }, [detail?.id, detail?.status, detail?.assignee_id])
 
   const assigneeOptions = useMemo(() => {
@@ -2052,6 +2056,24 @@ export default function TicketsPage() {
                     <p className="muted" style={{ marginTop: 0 }}>
                       Если проблема решена, подтвердите закрытие. Если осталась, опишите причину и переоткройте заявку.
                     </p>
+                    {canRequesterAccept(detail.status) ? (
+                      <label>
+                        <span>Оценка решения (обязательно)</span>
+                        <div className="analytics-actions" style={{ justifyContent: 'flex-start', flexWrap: 'wrap' }}>
+                          {[1, 2, 3, 4, 5].map((score) => (
+                            <button
+                              key={score}
+                              type="button"
+                              className="ghost-button"
+                              style={{ borderColor: requesterSatisfaction === score ? '#40a8ff' : undefined }}
+                              onClick={() => setRequesterSatisfaction(score)}
+                            >
+                              {score}
+                            </button>
+                          ))}
+                        </div>
+                      </label>
+                    ) : null}
                     <label>
                       <span>Комментарий пользователя</span>
                       <textarea
@@ -2070,11 +2092,11 @@ export default function TicketsPage() {
                             transitionMutation.mutate({
                               ticketId: detail.id,
                               status: 'CLOSED',
-                              comment: requesterDecisionComment.trim() || 'Пользователь подтвердил решение',
+                              comment: `Оценка решения: ${requesterSatisfaction}/5${requesterDecisionComment.trim() ? `. Комментарий: ${requesterDecisionComment.trim()}` : ''}`,
                               is_internal: false,
                             })
                           }
-                          disabled={transitionMutation.isPending}
+                          disabled={transitionMutation.isPending || requesterSatisfaction == null}
                         >
                           Подтвердить и закрыть
                         </button>
