@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-POLICY-TUNING-017`
-- Latest stage implementation commit: `pending`
+- Latest stage implementation commit: `9fb54e5`
 
 ## Stage Log (Newest First)
 
-- `pending` PLATFORM-CORE-ASYNC-CONSUMER-POLICY-TUNING-017
+- `9fb54e5` PLATFORM-CORE-ASYNC-CONSUMER-POLICY-TUNING-017
   - Added per-consumer auto-remediation policy profiles with overrideable limits and allowed event scopes.
   - Added UTC suppression windows and denylist filters to reduce noisy or unsafe automatic retries.
   - Added `GET /jobs/event-consumer-autoremediation-preview` dry-run preview with effective policy visibility.
