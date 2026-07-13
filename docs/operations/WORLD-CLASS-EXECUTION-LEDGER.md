@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RATE-SHAPING-020`
-- Latest stage implementation commit: `f844c6c`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-DETERMINISTIC-RUNBOOKS-021`
+- Latest stage implementation commit: `pending`
 
 ## Stage Log (Newest First)
+
+- `pending` PLATFORM-CORE-ASYNC-CONSUMER-DETERMINISTIC-RUNBOOKS-021
+  - Added deterministic jobs consumer runbook execution endpoint with dry-run/execute confirmation flow.
+  - Reused `Runbook`/`RunbookExecution` persistence for durable runbook history and outcome metrics.
+  - Extended diagnostics with runbook execution counts, failures, and recent execution feed.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-DETERMINISTIC-RUNBOOKS-021-REPORT.md`
 
 - `f844c6c` PLATFORM-CORE-ASYNC-CONSUMER-RATE-SHAPING-020
   - Added burst/steady rate-shaping guardrails for per-consumer auto-remediation execution.
@@ -176,17 +182,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-DETERMINISTIC-RUNBOOKS-021`
+- `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-GOVERNANCE-022`
 
 Scope proposal:
-- Add deterministic runbook actions for common consumer incident patterns (lag spike, repeated failures, stale offsets).
-- Add runbook execution endpoint with dry-run + execute and explicit confirmation controls.
-- Persist runbook execution records and expose outcome metrics in diagnostics.
+- Add governance policy for high-impact runbooks: reason code, change reference, and optional dual-control approval.
+- Add per-runbook allow/deny policy and execution cooldowns.
+- Extend diagnostics with runbook governance compliance counters and denied execution feed.
 
 Exit criteria:
-- Operators can execute deterministic runbooks through audited endpoint with dry-run safety.
-- Runbook outcomes are persisted and visible in diagnostics/action history.
-- Tests cover runbook success, dry-run, guardrails, and failure handling.
+- High-impact runbooks require governance metadata and respect policy cooldowns.
+- Diagnostics show compliant vs denied runbook execution activity.
+- Tests cover governance validation, denial paths, and audit metadata.
 
 ## Stage Execution Template
 

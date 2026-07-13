@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
@@ -13,6 +14,8 @@ from app.api.v1.routes.auth import AuthUserResponse, get_current_user
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.audit_log import AuditLog
+from app.models.runbook import Runbook
+from app.models.runbook_execution import RunbookExecution
 from app.models.job_run import JobRun
 from app.services.jobs import (
     JobQueueUnavailableError,
@@ -211,6 +214,8 @@ class JobEventConsumerDiagnosticsItemResponse(BaseModel):
     rate_budget_1h_limit: int
     emergency_brake_active: bool
     emergency_brake_reason: str
+    runbook_executions_24h: int
+    last_runbook_execution_at: datetime | None
     last_policy_change_at: datetime | None
     last_policy_change_actor_email: str | None
     status: str
@@ -230,6 +235,9 @@ class JobEventConsumersDiagnosticsResponse(BaseModel):
     policy_version: int
     policy_rollouts_24h: int
     emergency_brake_consumers: list[str]
+    runbook_executions_24h: int
+    runbook_failures_24h: int
+    recent_runbook_executions: list[dict[str, object]]
     recent_policy_rollouts: list[dict[str, object]]
     recent_recovery_actions: list[dict[str, object]]
     recent_autoremediation_actions: list[dict[str, object]]
@@ -318,6 +326,23 @@ class JobEventConsumerAutoremediationPolicyUpdateRequest(BaseModel):
 class JobEventConsumerAutoremediationBrakeResetRequest(BaseModel):
     consumer_name: str = Field(default="notifications-consumer", min_length=1, max_length=80)
     expected_version: int = Field(..., ge=1)
+
+
+class JobEventConsumerRunbookRequest(BaseModel):
+    consumer_name: str = Field(default="notifications-consumer", min_length=1, max_length=80)
+    runbook_code: str = Field(..., min_length=3, max_length=120)
+    dry_run: bool = True
+    limit: int = Field(default=25, ge=1, le=200)
+
+
+class JobEventConsumerRunbookResponse(BaseModel):
+    execution_id: str
+    consumer_name: str
+    runbook_code: str
+    dry_run: bool
+    status: str
+    guardrail_blocked: bool
+    result: dict[str, object]
 
 
 class EnqueueJobRequest(BaseModel):
@@ -479,6 +504,9 @@ def get_job_event_consumers_diagnostics(
     consumer_names = [str(item.get("consumer_name") or "") for item in consumers if isinstance(item, dict)]
     policy_changes = _latest_policy_change_map(db, consumer_names)
     rollouts_24h, recent_rollouts = _recent_policy_rollouts(db)
+    runbook_execs_24h, runbook_failures_24h, recent_runbooks, per_consumer_runbooks = _recent_jobs_runbook_metrics(
+        db, consumer_names
+    )
     for item in consumers:
         if not isinstance(item, dict):
             continue
@@ -500,6 +528,9 @@ def get_job_event_consumers_diagnostics(
         brake_active = consumer_name in settings.jobs_event_autoremediation_braked_consumers
         item["emergency_brake_active"] = brake_active
         item["emergency_brake_reason"] = "error_threshold_exceeded_15m" if brake_active else ""
+        runbook_meta = per_consumer_runbooks.get(consumer_name, {})
+        item["runbook_executions_24h"] = int(runbook_meta.get("count", 0) or 0)
+        item["last_runbook_execution_at"] = runbook_meta.get("last_at")
         policy_change = policy_changes.get(consumer_name, {})
         item["last_policy_change_at"] = policy_change.get("created_at")
         item["last_policy_change_actor_email"] = policy_change.get("actor_email")
@@ -508,6 +539,9 @@ def get_job_event_consumers_diagnostics(
     data["emergency_brake_consumers"] = [
         str(item) for item in settings.jobs_event_autoremediation_braked_consumers if str(item).strip()
     ]
+    data["runbook_executions_24h"] = int(runbook_execs_24h)
+    data["runbook_failures_24h"] = int(runbook_failures_24h)
+    data["recent_runbook_executions"] = recent_runbooks
     data["recent_policy_rollouts"] = recent_rollouts
     return JobEventConsumersDiagnosticsResponse(**data)
 
@@ -570,6 +604,157 @@ def _latest_policy_change_map(db: Session, consumer_names: list[str]) -> dict[st
             "actor_email": row.actor_email,
         }
     return out
+
+
+def _jobs_runbook_catalog() -> dict[str, dict[str, object]]:
+    return {
+        "jobs.consumer.repeated_failures_requeue": {
+            "title": "Consumer repeated failures requeue",
+            "description": "Bounded replay of failed consumer deliveries for repeated failure incidents.",
+            "severity": "high",
+            "category": "jobs",
+            "steps": [
+                {"step": 1, "action": "inspect_failed_deliveries"},
+                {"step": 2, "action": "bounded_requeue"},
+            ],
+        },
+        "jobs.consumer.lag_spike_triage": {
+            "title": "Consumer lag spike triage",
+            "description": "Capture deterministic triage snapshot for lag spike incidents.",
+            "severity": "medium",
+            "category": "jobs",
+            "steps": [
+                {"step": 1, "action": "capture_lag_snapshot"},
+                {"step": 2, "action": "recommend_worker_health_checks"},
+            ],
+        },
+        "jobs.consumer.stale_offset_triage": {
+            "title": "Consumer stale offset triage",
+            "description": "Capture deterministic triage snapshot for stale offset incidents.",
+            "severity": "medium",
+            "category": "jobs",
+            "steps": [
+                {"step": 1, "action": "capture_offset_snapshot"},
+                {"step": 2, "action": "recommend_offset_remediation"},
+            ],
+        },
+        "jobs.consumer.emergency_brake_reset": {
+            "title": "Consumer emergency brake reset",
+            "description": "Release emergency brake for a consumer after operator validation.",
+            "severity": "high",
+            "category": "jobs",
+            "steps": [
+                {"step": 1, "action": "verify_brake_state"},
+                {"step": 2, "action": "reset_brake"},
+            ],
+        },
+    }
+
+
+def _get_or_create_jobs_runbook(db: Session, *, code: str) -> Runbook:
+    catalog = _jobs_runbook_catalog()
+    if code not in catalog:
+        raise ValueError("Unknown runbook_code")
+    row = db.scalar(select(Runbook).where(Runbook.code == code))
+    if row is not None:
+        return row
+    meta = catalog[code]
+    row = Runbook(
+        id=str(uuid.uuid4()),
+        tenant_id=None,
+        name=code,
+        code=code,
+        title=str(meta["title"]),
+        description=str(meta["description"]),
+        category=str(meta["category"]),
+        severity=str(meta["severity"]),
+        steps_json=json.dumps(meta["steps"], ensure_ascii=False),
+        estimated_minutes=10,
+        is_active=True,
+        requires_approval=False,
+        created_by_id=None,
+        updated_by_id=None,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _create_jobs_runbook_execution(
+    db: Session,
+    *,
+    runbook: Runbook,
+    consumer_name: str,
+    started_by: str,
+    dry_run: bool,
+    status: str,
+    result: dict[str, object],
+) -> RunbookExecution:
+    execution = RunbookExecution(
+        id=str(uuid.uuid4()),
+        tenant_id=None,
+        runbook_id=runbook.id,
+        ticket_id=None,
+        status=status,
+        current_step=2,
+        started_by=started_by,
+        started_at=datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+        result_summary=json.dumps(
+            {
+                "consumer_name": consumer_name,
+                "runbook_code": runbook.code,
+                "dry_run": dry_run,
+                "status": status,
+                "result": result,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db.add(execution)
+    db.flush()
+    return execution
+
+
+def _recent_jobs_runbook_metrics(db: Session, consumer_names: list[str]) -> tuple[int, int, list[dict[str, object]], dict[str, dict[str, object]]]:
+    window_start = datetime.now(UTC) - timedelta(hours=24)
+    rows = list(
+        db.scalars(
+            select(RunbookExecution)
+            .join(Runbook, Runbook.id == RunbookExecution.runbook_id)
+            .where(Runbook.code.like("jobs.consumer.%"))
+            .where(RunbookExecution.created_at >= window_start)
+            .order_by(RunbookExecution.created_at.desc())
+            .limit(200)
+        ).all()
+    )
+    recent: list[dict[str, object]] = []
+    per_consumer: dict[str, dict[str, object]] = {name: {"count": 0, "last_at": None} for name in consumer_names}
+    failures = 0
+    for row in rows:
+        summary = _decode(row.result_summary)
+        if not isinstance(summary, dict):
+            summary = {}
+        consumer_name = str(summary.get("consumer_name") or "")
+        if consumer_name in per_consumer:
+            per_consumer[consumer_name]["count"] = int(per_consumer[consumer_name]["count"] or 0) + 1
+            if per_consumer[consumer_name]["last_at"] is None:
+                per_consumer[consumer_name]["last_at"] = row.completed_at or row.created_at
+        if row.status in {"failed", "guardrail_blocked"}:
+            failures += 1
+        if len(recent) < 12:
+            recent.append(
+                {
+                    "execution_id": row.id,
+                    "consumer_name": consumer_name,
+                    "status": row.status,
+                    "started_by": row.started_by,
+                    "created_at": row.created_at,
+                    "runbook_code": str(summary.get("runbook_code") or ""),
+                    "dry_run": bool(summary.get("dry_run", False)),
+                }
+            )
+    return len(rows), failures, recent, per_consumer
 
 
 def _policy_state(settings, db: Session) -> dict[str, object]:
@@ -866,6 +1051,154 @@ def reset_job_event_consumer_autoremediation_brake(
         effective_policy_hash=_policy_hash(effective_policy),
         last_policy_change_at=saved_state.get("updated_at"),
         last_policy_change_actor_email=current_user.email,
+    )
+
+
+@router.post("/event-consumer-runbook", response_model=JobEventConsumerRunbookResponse)
+def execute_job_event_consumer_runbook(
+    request: JobEventConsumerRunbookRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    runbook_confirm: str | None = Header(default=None, alias="X-Runbook-Confirm"),
+) -> JobEventConsumerRunbookResponse:
+    _require_enqueue(current_user)
+    settings = get_settings()
+    _policy_state(settings, db)
+    allowed = {settings.jobs_event_consumer_name, settings.jobs_event_automation_consumer_name}
+    if request.consumer_name not in allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown consumer_name")
+    if request.runbook_code not in _jobs_runbook_catalog():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown runbook_code")
+    if not request.dry_run and runbook_confirm != "CONFIRM":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Execution requires header X-Runbook-Confirm: CONFIRM")
+
+    diagnostics = job_event_consumers_diagnostics(
+        db,
+        stream_name=settings.jobs_event_stream_name,
+        consumer_names=[settings.jobs_event_consumer_name, settings.jobs_event_automation_consumer_name],
+        max_attempts=settings.jobs_event_consumer_max_attempts,
+        lag_alert_threshold=settings.jobs_event_consumer_lag_alert_threshold,
+        stale_offset_seconds=settings.jobs_event_consumer_stale_offset_seconds,
+    )
+    consumer_diag = next(
+        (item for item in diagnostics.get("consumers", []) if item.get("consumer_name") == request.consumer_name),
+        None,
+    )
+    if not isinstance(consumer_diag, dict):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Consumer diagnostics not found")
+
+    runbook = _get_or_create_jobs_runbook(db, code=request.runbook_code)
+    status_value = "dry_run" if request.dry_run else "success"
+    guardrail_blocked = False
+    result: dict[str, object]
+
+    if request.runbook_code == "jobs.consumer.repeated_failures_requeue":
+        if int(consumer_diag.get("failed", 0) or 0) <= 0:
+            guardrail_blocked = True
+            status_value = "guardrail_blocked"
+            result = {"reason": "no_failed_deliveries", "consumer_name": request.consumer_name}
+        else:
+            recovery = recover_job_event_consumer_deliveries(
+                db,
+                consumer_name=request.consumer_name,
+                stream_name=settings.jobs_event_stream_name,
+                statuses=["failed"],
+                event_types=None,
+                limit=request.limit,
+                dry_run=request.dry_run,
+            )
+            result = {
+                "consumer_name": request.consumer_name,
+                "selected": int(recovery.get("selected", 0) or 0),
+                "requeued": int(recovery.get("requeued", 0) or 0),
+            }
+    elif request.runbook_code == "jobs.consumer.lag_spike_triage":
+        if int(consumer_diag.get("lag_events", 0) or 0) <= 0:
+            guardrail_blocked = True
+            status_value = "guardrail_blocked"
+            result = {"reason": "no_lag_spike_detected", "consumer_name": request.consumer_name}
+        else:
+            result = {
+                "consumer_name": request.consumer_name,
+                "lag_events": int(consumer_diag.get("lag_events", 0) or 0),
+                "recommended_actions": list(consumer_diag.get("recommended_actions") or []),
+            }
+    elif request.runbook_code == "jobs.consumer.stale_offset_triage":
+        if not bool(consumer_diag.get("stale_offset", False)):
+            guardrail_blocked = True
+            status_value = "guardrail_blocked"
+            result = {"reason": "offset_not_stale", "consumer_name": request.consumer_name}
+        else:
+            result = {
+                "consumer_name": request.consumer_name,
+                "offset_updated_at": consumer_diag.get("offset_updated_at"),
+                "oldest_undelivered_age_seconds": int(consumer_diag.get("oldest_undelivered_age_seconds", 0) or 0),
+            }
+    else:
+        policy = get_job_event_consumer_autoremediation_policy(
+            consumer_name=request.consumer_name,
+            current_user=current_user,
+            db=db,
+        )
+        if request.consumer_name not in policy.emergency_brake_consumers:
+            guardrail_blocked = True
+            status_value = "guardrail_blocked"
+            result = {"reason": "emergency_brake_not_active", "consumer_name": request.consumer_name}
+        elif request.dry_run:
+            result = {
+                "consumer_name": request.consumer_name,
+                "would_reset_brake": True,
+                "policy_version": policy.policy_version,
+            }
+        else:
+            brake_request = JobEventConsumerAutoremediationBrakeResetRequest(
+                consumer_name=request.consumer_name,
+                expected_version=policy.policy_version,
+            )
+            reset_result = reset_job_event_consumer_autoremediation_brake(
+                request=brake_request,
+                current_user=current_user,
+                db=db,
+            )
+            result = {
+                "consumer_name": request.consumer_name,
+                "policy_version": reset_result.policy_version,
+                "emergency_brake_consumers": reset_result.emergency_brake_consumers,
+            }
+
+    execution = _create_jobs_runbook_execution(
+        db,
+        runbook=runbook,
+        consumer_name=request.consumer_name,
+        started_by=current_user.email,
+        dry_run=request.dry_run,
+        status=status_value,
+        result=result,
+    )
+    log_audit(
+        db,
+        action="jobs.event_consumer_runbook.dry_run" if request.dry_run else "jobs.event_consumer_runbook.execute",
+        entity_type="runbook_execution",
+        entity_id=execution.id,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "consumer_name": request.consumer_name,
+            "runbook_code": request.runbook_code,
+            "dry_run": request.dry_run,
+            "status": status_value,
+            "guardrail_blocked": guardrail_blocked,
+        },
+    )
+    db.commit()
+    return JobEventConsumerRunbookResponse(
+        execution_id=execution.id,
+        consumer_name=request.consumer_name,
+        runbook_code=request.runbook_code,
+        dry_run=request.dry_run,
+        status=status_value,
+        guardrail_blocked=guardrail_blocked,
+        result=result,
     )
 
 

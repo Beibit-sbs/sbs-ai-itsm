@@ -393,6 +393,9 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "policy_version",
         "policy_rollouts_24h",
         "emergency_brake_consumers",
+        "runbook_executions_24h",
+        "runbook_failures_24h",
+        "recent_runbook_executions",
         "recent_policy_rollouts",
         "recent_recovery_actions",
         "recent_autoremediation_actions",
@@ -434,6 +437,8 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "rate_budget_1h_limit",
         "emergency_brake_active",
         "emergency_brake_reason",
+        "runbook_executions_24h",
+        "last_runbook_execution_at",
         "last_policy_change_at",
         "last_policy_change_actor_email",
         "status",
@@ -660,6 +665,100 @@ def test_job_event_consumer_autoremediation_brake_reset(app) -> None:
         assert reset.status_code == 200, reset.text
         reset_payload = reset.json()
         assert "notifications-consumer" not in reset_payload["emergency_brake_consumers"]
+
+
+def test_job_event_consumer_runbook_repeated_failures_dry_run_and_execute(app) -> None:
+    from app.db.session import SessionLocal
+    from app.core.config import get_settings
+
+    settings = get_settings()
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"runbook": True}, max_attempts=1)
+            db.commit()
+            event = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == job.id).one()
+            db.add(
+                JobEventConsumerDelivery(
+                    id="runbook-failure-delivery",
+                    consumer_name="notifications-consumer",
+                    event_id=event.id,
+                    stream_name=settings.jobs_event_stream_name,
+                    stream_entry_id="16-0",
+                    status="failed",
+                    attempts=2,
+                    last_error="boom",
+                    delivered_at=None,
+                )
+            )
+            db.commit()
+
+        dry_run = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers=_auth_headers(token),
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.repeated_failures_requeue",
+                "dry_run": True,
+                "limit": 10,
+            },
+        )
+        assert dry_run.status_code == 200, dry_run.text
+        dry_payload = dry_run.json()
+        assert dry_payload["status"] == "dry_run"
+        assert dry_payload["result"]["selected"] >= 1
+
+        denied = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers=_auth_headers(token),
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.repeated_failures_requeue",
+                "dry_run": False,
+                "limit": 10,
+            },
+        )
+        assert denied.status_code == 400
+
+        execute = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers={**_auth_headers(token), "X-Runbook-Confirm": "CONFIRM"},
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.repeated_failures_requeue",
+                "dry_run": False,
+                "limit": 10,
+            },
+        )
+        assert execute.status_code == 200, execute.text
+        payload = execute.json()
+        assert payload["status"] == "success"
+        assert payload["result"]["requeued"] >= 1
+
+        diag = client.get("/api/v1/jobs/event-consumers-diagnostics", headers=_auth_headers(token))
+        assert diag.status_code == 200, diag.text
+        diag_payload = diag.json()
+        assert diag_payload["runbook_executions_24h"] >= 2
+
+
+def test_job_event_consumer_runbook_guardrail_blocked_when_no_lag(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        response = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers=_auth_headers(token),
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.lag_spike_triage",
+                "dry_run": True,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["guardrail_blocked"] is True
+    assert payload["status"] == "guardrail_blocked"
 
 
 def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:
