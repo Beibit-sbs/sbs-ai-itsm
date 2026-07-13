@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-SAFETY-014`
-- Latest stage implementation commit: `PENDING_COMMIT`
+- Latest stage implementation commit: `df24c10`
 
 ## Stage Log (Newest First)
 
-- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-CONSUMER-SAFETY-014
+- `df24c10` PLATFORM-CORE-ASYNC-CONSUMER-SAFETY-014
   - Added per-consumer recovery safety controls: cooldown and hourly execution rate limit.
   - Added operator audit actions for recovery preview/execute and surfaced them in diagnostics.
   - Extended diagnostics with recovery counters and recent operator action feed.
