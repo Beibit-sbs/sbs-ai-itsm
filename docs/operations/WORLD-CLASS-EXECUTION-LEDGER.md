@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-GOVERNANCE-015`
-- Latest stage implementation commit: `PENDING_COMMIT`
+- Latest stage implementation commit: `5d19068`
 
 ## Stage Log (Newest First)
 
-- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-CONSUMER-GOVERNANCE-015
+- `5d19068` PLATFORM-CORE-ASYNC-CONSUMER-GOVERNANCE-015
   - Added governance validation for execute recovery: reason code, change ticket linkage, and optional dual-control approver.
   - Persisted structured governance metadata in recovery audit records.
   - Extended diagnostics with governance compliance counters and rate indicators.
