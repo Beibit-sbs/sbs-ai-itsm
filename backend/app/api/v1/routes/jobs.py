@@ -59,6 +59,13 @@ from app.services.jobs.metrics_polling import (
     should_poll_now,
     estimate_next_poll_time,
 )
+from app.services.jobs.background_scheduler import (
+    start_scheduler,
+    stop_scheduler,
+    get_scheduler_status,
+    restart_scheduler,
+    get_scheduler_metrics,
+)
 from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
@@ -527,6 +534,67 @@ class PollMetricsNowResponse(BaseModel):
     auto_rollback_count: int
     errors: list[str]
     timestamp: datetime
+
+
+# Stage 031: Background Scheduler Models
+class SchedulerStartRequest(BaseModel):
+    """Request to start background scheduler."""
+    poll_interval_seconds: int = Field(default=30, ge=5, le=300)
+
+
+class SchedulerStartResponse(BaseModel):
+    """Response from starting scheduler."""
+    status: str
+    started_at: datetime | None
+    poll_interval_seconds: int
+    job_id: str | None = None
+    poll_count: int | None = None
+
+
+class SchedulerStopResponse(BaseModel):
+    """Response from stopping scheduler."""
+    status: str
+    stopped_at: datetime
+    uptime_seconds: int | None
+    total_polls: int
+    total_errors: int
+
+
+class SchedulerStatusResponse(BaseModel):
+    """Current scheduler status and statistics."""
+    running: bool
+    started_at: datetime | None
+    uptime_seconds: int | None
+    poll_count: int
+    poll_errors: int
+    active_jobs: int
+    next_poll_in_seconds: int | None
+
+
+class SchedulerRestartRequest(BaseModel):
+    """Request to restart scheduler with new interval."""
+    poll_interval_seconds: int = Field(default=30, ge=5, le=300)
+
+
+class SchedulerRestartResponse(BaseModel):
+    """Response from restarting scheduler."""
+    status: str
+    stop_result: dict[str, object]
+    start_result: dict[str, object]
+
+
+class SchedulerMetricsResponse(BaseModel):
+    """Detailed scheduler metrics."""
+    running: bool
+    started_at: datetime | None
+    uptime_seconds: int | None
+    poll_count: int
+    poll_errors: int
+    active_jobs: int
+    next_poll_in_seconds: int | None
+    error_rate_percent: float
+    average_errors_per_poll: float
+    last_poll_time: datetime | None
 
 
 class JobEventConsumerRunbookRequest(BaseModel):
@@ -3439,6 +3507,218 @@ def poll_metrics_now_endpoint(
         auto_rollback_count=stats["auto_rollback_count"],
         errors=stats["errors"],
         timestamp=datetime.now(UTC),
+    )
+
+
+# Stage 031: Background Scheduler Endpoints
+
+@router.post(
+    "/scheduler/start",
+    response_model=SchedulerStartResponse,
+)
+def start_scheduler_endpoint(
+    request: SchedulerStartRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SchedulerStartResponse:
+    """Start background metrics polling scheduler.
+    
+    Starts an APScheduler background job that continuously polls
+    active rollouts every N seconds (default: 30s).
+    
+    Returns:
+    - status: 'started' or 'already_running'
+    - started_at: When scheduler started
+    - poll_interval_seconds: Configured polling interval
+    - job_id: APScheduler job ID
+    """
+    _require_enqueue(current_user)
+    
+    result = start_scheduler(request.poll_interval_seconds)
+    
+    log_audit(
+        db,
+        action="scheduler.started",
+        entity_type="background_scheduler",
+        entity_id="metrics_polling",
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "poll_interval_seconds": request.poll_interval_seconds,
+            "status": result["status"],
+        },
+    )
+    db.commit()
+    
+    return SchedulerStartResponse(
+        status=result["status"],
+        started_at=result["started_at"],
+        poll_interval_seconds=result["poll_interval_seconds"],
+        job_id=result.get("job_id"),
+        poll_count=result.get("poll_count"),
+    )
+
+
+@router.post(
+    "/scheduler/stop",
+    response_model=SchedulerStopResponse,
+)
+def stop_scheduler_endpoint(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SchedulerStopResponse:
+    """Stop background metrics polling scheduler.
+    
+    Gracefully stops the background polling job.
+    
+    Returns:
+    - status: 'stopped' or 'not_running'
+    - stopped_at: When scheduler stopped
+    - uptime_seconds: How long scheduler was running
+    - total_polls: Total polling cycles completed
+    - total_errors: Total errors during polling
+    """
+    _require_enqueue(current_user)
+    
+    result = stop_scheduler()
+    
+    log_audit(
+        db,
+        action="scheduler.stopped",
+        entity_type="background_scheduler",
+        entity_id="metrics_polling",
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "status": result["status"],
+            "total_polls": result.get("total_polls", 0),
+            "total_errors": result.get("total_errors", 0),
+        },
+    )
+    db.commit()
+    
+    return SchedulerStopResponse(
+        status=result["status"],
+        stopped_at=result["stopped_at"],
+        uptime_seconds=result.get("uptime_seconds"),
+        total_polls=result.get("total_polls", 0),
+        total_errors=result.get("total_errors", 0),
+    )
+
+
+@router.get(
+    "/scheduler/status",
+    response_model=SchedulerStatusResponse,
+)
+def get_scheduler_status_endpoint(
+    current_user: AuthUserResponse = Depends(get_current_user),
+) -> SchedulerStatusResponse:
+    """Get current scheduler status.
+    
+    Returns:
+    - running: Whether scheduler is active
+    - started_at: When scheduler started
+    - uptime_seconds: How long running
+    - poll_count: Total polls completed
+    - poll_errors: Total polling errors
+    - active_jobs: Number of scheduled jobs
+    - next_poll_in_seconds: Estimated time until next poll
+    """
+    _require_read(current_user)
+    
+    status = get_scheduler_status()
+    
+    return SchedulerStatusResponse(
+        running=status["running"],
+        started_at=status["started_at"],
+        uptime_seconds=status["uptime_seconds"],
+        poll_count=status["poll_count"],
+        poll_errors=status["poll_errors"],
+        active_jobs=status["active_jobs"],
+        next_poll_in_seconds=status.get("next_poll_in_seconds"),
+    )
+
+
+@router.post(
+    "/scheduler/restart",
+    response_model=SchedulerRestartResponse,
+)
+def restart_scheduler_endpoint(
+    request: SchedulerRestartRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SchedulerRestartResponse:
+    """Restart scheduler with optional new polling interval.
+    
+    Stops current scheduler and starts new one with updated interval.
+    Useful for changing polling frequency without full restart.
+    
+    Returns:
+    - status: 'restarted'
+    - stop_result: Result of stopping old scheduler
+    - start_result: Result of starting new scheduler
+    """
+    _require_enqueue(current_user)
+    
+    result = restart_scheduler(request.poll_interval_seconds)
+    
+    log_audit(
+        db,
+        action="scheduler.restarted",
+        entity_type="background_scheduler",
+        entity_id="metrics_polling",
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "new_poll_interval_seconds": request.poll_interval_seconds,
+            "status": result["status"],
+        },
+    )
+    db.commit()
+    
+    return SchedulerRestartResponse(
+        status=result["status"],
+        stop_result=result["stop_result"],
+        start_result=result["start_result"],
+    )
+
+
+@router.get(
+    "/scheduler/metrics",
+    response_model=SchedulerMetricsResponse,
+)
+def get_scheduler_metrics_endpoint(
+    current_user: AuthUserResponse = Depends(get_current_user),
+) -> SchedulerMetricsResponse:
+    """Get detailed scheduler metrics for monitoring.
+    
+    Returns comprehensive metrics including error rates,
+    uptime, poll counts, and performance statistics.
+    
+    Returns:
+    - running: Scheduler state
+    - uptime_seconds: Runtime duration
+    - poll_count: Total polling cycles
+    - poll_errors: Total errors
+    - error_rate_percent: Error rate as percentage
+    - average_errors_per_poll: Errors per cycle average
+    - next_poll_in_seconds: Time until next poll
+    """
+    _require_read(current_user)
+    
+    metrics = get_scheduler_metrics()
+    
+    return SchedulerMetricsResponse(
+        running=metrics["running"],
+        started_at=metrics["started_at"],
+        uptime_seconds=metrics["uptime_seconds"],
+        poll_count=metrics["poll_count"],
+        poll_errors=metrics["poll_errors"],
+        active_jobs=metrics["active_jobs"],
+        next_poll_in_seconds=metrics.get("next_poll_in_seconds"),
+        error_rate_percent=metrics["error_rate_percent"],
+        average_errors_per_poll=metrics["average_errors_per_poll"],
+        last_poll_time=metrics.get("last_poll_time"),
     )
 
 
