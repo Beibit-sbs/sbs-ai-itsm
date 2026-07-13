@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-013`
-- Latest stage implementation commit: `PENDING_COMMIT`
+- Latest stage implementation commit: `1beb8a6`
 
 ## Stage Log (Newest First)
 
-- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-013
+- `1beb8a6` PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-013
   - Added protected replay tooling for consumer deliveries with bounded filters and dry-run preview.
   - Execution path now requires explicit confirmation header to avoid accidental mass requeue.
   - Recovery is isolated per consumer and preserves immutable lifecycle source records.
