@@ -90,6 +90,14 @@ from app.services.jobs.alert_notifications import (
     determine_routing,
     execute_alert,
 )
+from app.services.jobs.dashboard_service import (
+    get_dashboard_summary,
+    get_metrics_timeline,
+    get_active_alerts,
+    get_rollout_comparison,
+    get_anomaly_timeline,
+    get_metric_correlation_matrix,
+)
 from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
@@ -788,6 +796,115 @@ class CloudWatchMetricsResponse(BaseModel):
     throughput_eps: float | None
     collected_at: str
     source: str = "cloudwatch"
+
+
+# Stage 035: Dashboard Response Models
+
+
+class DashboardSummaryResponse(BaseModel):
+    """Dashboard overview snapshot."""
+    timestamp: str
+    active_rollouts: int
+    avg_health_score: float
+    health_status: str  # healthy, degraded, critical
+    active_alerts: int
+    critical_alerts: int
+    unresolved_anomalies: int
+    system_status: str  # operational, degraded, critical
+
+
+class MetricsTimelinePoint(BaseModel):
+    """Single point in metrics timeline."""
+    timestamp: str
+    value: float
+
+
+class MetricsTimelineResponse(BaseModel):
+    """Time-series metrics for charting."""
+    rollout_id: str
+    metric_type: str
+    time_window_minutes: int
+    timestamps: list[str]
+    values: list[float]
+    statistics: dict  # {average, minimum, maximum, data_points}
+
+
+class AlertSummaryItem(BaseModel):
+    """Individual alert in summary."""
+    id: str
+    rule_id: str
+    rule_name: str
+    rollout_id: str
+    metric: str
+    current_value: float
+    threshold: float
+    operator: str
+    severity: str
+    status: str
+    triggered_at: str | None
+    acknowledged_at: str | None
+    duration_seconds: int | None
+    breach_count: int
+    breach_percentage: float | None
+
+
+class ActiveAlertsResponse(BaseModel):
+    """Current active alerts."""
+    alerts: list[AlertSummaryItem]
+    count: int
+    timestamp: str
+
+
+class RolloutComparisonItem(BaseModel):
+    """Single rollout in comparison."""
+    rollout_id: str
+    error_rate: float | None
+    latency_p99_ms: float | None
+    throughput_eps: float | None
+    health_score: float | None
+    health_status: str | None
+    active_alerts: int
+    error_trend: bool | None
+
+
+class RolloutComparisonResponse(BaseModel):
+    """Rollout comparison results."""
+    comparison: list[RolloutComparisonItem]
+    count: int
+    timestamp: str
+
+
+class AnomalyTimelineItem(BaseModel):
+    """Single anomaly in timeline."""
+    id: str
+    rollout_id: str
+    metric: str
+    detection_method: str
+    anomaly_score: float
+    severity: str
+    value: float
+    baseline: float
+    deviation_percent: float
+    created_at: str
+    acknowledged: bool
+    resolved_at: str | None
+
+
+class AnomalyTimelineResponse(BaseModel):
+    """Anomaly detection timeline."""
+    anomalies: list[AnomalyTimelineItem]
+    count: int
+    time_window_minutes: int
+    timestamp: str
+
+
+class CorrelationMatrixResponse(BaseModel):
+    """Metric correlation matrix."""
+    rollout_id: str
+    correlation_matrix: dict[str, dict[str, float]]
+    metric_count: int
+    time_window_minutes: int
+    timestamp: str
 
 
 class JobEventConsumerRunbookRequest(BaseModel):
@@ -4449,6 +4566,228 @@ async def collect_cloudwatch_metrics(
         throughput_eps=metrics.get("throughput_eps"),
         collected_at=datetime.utcnow().isoformat() + "Z",
         source="cloudwatch",
+    )
+
+
+# Stage 035: Dashboard Endpoints
+
+
+@router.get(
+    "/dashboard/summary",
+    response_model=DashboardSummaryResponse,
+    tags=["stage_035_dashboard"],
+)
+def get_dashboard(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DashboardSummaryResponse:
+    """Get dashboard health overview.
+    
+    Returns overall system health, alert counts, and anomaly summary.
+    """
+    _require_read(current_user)
+    
+    summary = get_dashboard_summary(db, current_user.tenant_id)
+    
+    return DashboardSummaryResponse(
+        timestamp=summary.get("timestamp"),
+        active_rollouts=summary.get("active_rollouts", 0),
+        avg_health_score=summary.get("avg_health_score", 0),
+        health_status=summary.get("health_status", "unknown"),
+        active_alerts=summary.get("active_alerts", 0),
+        critical_alerts=summary.get("critical_alerts", 0),
+        unresolved_anomalies=summary.get("unresolved_anomalies", 0),
+        system_status=summary.get("system_status", "unknown"),
+    )
+
+
+@router.get(
+    "/dashboard/metrics/{rollout_id}",
+    response_model=MetricsTimelineResponse,
+    tags=["stage_035_dashboard"],
+)
+def get_metrics_chart(
+    rollout_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    metric_type: str = Query("error_rate", regex="^(error_rate|latency_p99|throughput|cpu|memory)$"),
+    minutes_back: int = Query(60, ge=5, le=1440),
+) -> MetricsTimelineResponse:
+    """Get metrics timeline for dashboard charting.
+    
+    Returns time-series data for specified metric and rollout.
+    """
+    _require_read(current_user)
+    
+    timeline = get_metrics_timeline(db, current_user.tenant_id, rollout_id, minutes_back, metric_type)
+    
+    return MetricsTimelineResponse(
+        rollout_id=timeline.get("rollout_id"),
+        metric_type=timeline.get("metric_type"),
+        time_window_minutes=timeline.get("time_window_minutes", 0),
+        timestamps=timeline.get("timestamps", []),
+        values=timeline.get("values", []),
+        statistics=timeline.get("statistics", {}),
+    )
+
+
+@router.get(
+    "/dashboard/alerts",
+    response_model=ActiveAlertsResponse,
+    tags=["stage_035_dashboard"],
+)
+def get_active_alerts_dashboard(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    severity: str | None = Query(None, regex="^(critical|high|medium|low)$"),
+    limit: int = Query(50, ge=1, le=200),
+) -> ActiveAlertsResponse:
+    """Get active alerts for dashboard.
+    
+    Returns current alerts with optional severity filter.
+    """
+    _require_read(current_user)
+    
+    alerts_data = get_active_alerts(db, current_user.tenant_id, severity, limit)
+    
+    alert_items = [
+        AlertSummaryItem(
+            id=alert["id"],
+            rule_id=alert["rule_id"],
+            rule_name=alert["rule_name"],
+            rollout_id=alert["rollout_id"],
+            metric=alert["metric"],
+            current_value=alert["current_value"],
+            threshold=alert["threshold"],
+            operator=alert["operator"],
+            severity=alert["severity"],
+            status=alert["status"],
+            triggered_at=alert["triggered_at"],
+            acknowledged_at=alert["acknowledged_at"],
+            duration_seconds=alert["duration_seconds"],
+            breach_count=alert["breach_count"],
+            breach_percentage=alert["breach_percentage"],
+        )
+        for alert in alerts_data.get("alerts", [])
+    ]
+    
+    return ActiveAlertsResponse(
+        alerts=alert_items,
+        count=alerts_data.get("count", 0),
+        timestamp=alerts_data.get("timestamp"),
+    )
+
+
+@router.get(
+    "/dashboard/compare",
+    response_model=RolloutComparisonResponse,
+    tags=["stage_035_dashboard"],
+)
+def compare_rollouts(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    rollout_ids: str = Query(..., min_length=1, max_length=500),
+) -> RolloutComparisonResponse:
+    """Compare multiple rollouts side-by-side.
+    
+    Rollout IDs should be comma-separated (max 10).
+    """
+    _require_read(current_user)
+    
+    ids = [id.strip() for id in rollout_ids.split(",") if id.strip()]
+    comparison_data = get_rollout_comparison(db, current_user.tenant_id, ids)
+    
+    comparison_items = [
+        RolloutComparisonItem(
+            rollout_id=item["rollout_id"],
+            error_rate=item["error_rate"],
+            latency_p99_ms=item["latency_p99_ms"],
+            throughput_eps=item["throughput_eps"],
+            health_score=item["health_score"],
+            health_status=item["health_status"],
+            active_alerts=item["active_alerts"],
+            error_trend=item["error_trend"],
+        )
+        for item in comparison_data.get("comparison", [])
+    ]
+    
+    return RolloutComparisonResponse(
+        comparison=comparison_items,
+        count=comparison_data.get("count", 0),
+        timestamp=comparison_data.get("timestamp"),
+    )
+
+
+@router.get(
+    "/dashboard/anomalies",
+    response_model=AnomalyTimelineResponse,
+    tags=["stage_035_dashboard"],
+)
+def get_anomalies_timeline(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    rollout_id: str | None = Query(None),
+    minutes_back: int = Query(1440, ge=5, le=10080),
+) -> AnomalyTimelineResponse:
+    """Get anomaly detection timeline for dashboard.
+    
+    Shows anomalies over time with detection methods and severity.
+    """
+    _require_read(current_user)
+    
+    timeline_data = get_anomaly_timeline(db, current_user.tenant_id, rollout_id, minutes_back)
+    
+    anomaly_items = [
+        AnomalyTimelineItem(
+            id=anomaly["id"],
+            rollout_id=anomaly["rollout_id"],
+            metric=anomaly["metric"],
+            detection_method=anomaly["detection_method"],
+            anomaly_score=anomaly["anomaly_score"],
+            severity=anomaly["severity"],
+            value=anomaly["value"],
+            baseline=anomaly["baseline"],
+            deviation_percent=anomaly["deviation_percent"],
+            created_at=anomaly["created_at"],
+            acknowledged=anomaly["acknowledged"],
+            resolved_at=anomaly["resolved_at"],
+        )
+        for anomaly in timeline_data.get("anomalies", [])
+    ]
+    
+    return AnomalyTimelineResponse(
+        anomalies=anomaly_items,
+        count=timeline_data.get("count", 0),
+        time_window_minutes=timeline_data.get("time_window_minutes", 0),
+        timestamp=timeline_data.get("timestamp"),
+    )
+
+
+@router.get(
+    "/dashboard/correlation/{rollout_id}",
+    response_model=CorrelationMatrixResponse,
+    tags=["stage_035_dashboard"],
+)
+def get_correlation_dashboard(
+    rollout_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    time_window_minutes: int = Query(60, ge=5, le=1440),
+) -> CorrelationMatrixResponse:
+    """Get metric correlation matrix for dashboard.
+    
+    Shows how metrics correlate with each other for anomaly analysis.
+    """
+    _require_read(current_user)
+    
+    correlation_data = get_metric_correlation_matrix(db, current_user.tenant_id, rollout_id, time_window_minutes)
+    
+    return CorrelationMatrixResponse(
+        rollout_id=correlation_data.get("rollout_id"),
+        correlation_matrix=correlation_data.get("correlation_matrix", {}),
+        metric_count=correlation_data.get("metric_count", 0),
+        time_window_minutes=correlation_data.get("time_window_minutes", 0),
+        timestamp=correlation_data.get("timestamp"),
     )
 
 
