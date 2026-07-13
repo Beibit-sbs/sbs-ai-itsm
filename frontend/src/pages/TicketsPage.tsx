@@ -71,6 +71,13 @@ type TicketTimelineItem = {
   tone: 'info' | 'success' | 'warning' | 'danger'
 }
 
+type OperatorReplyTemplate = {
+  id: string
+  label: string
+  body: string
+  statuses: string[]
+}
+
 type TicketFormState = {
   title: string
   description: string
@@ -200,6 +207,33 @@ const requesterFieldLabels: Record<'location' | 'requester_contact' | 'descripti
   requester_contact: 'Контакт заявителя',
   description: 'Описание',
 }
+
+const operatorReplyTemplates: OperatorReplyTemplate[] = [
+  {
+    id: 'waiting-user-info',
+    label: 'Запросить уточнение',
+    body: 'Для продолжения работы нужны уточнения: укажите, пожалуйста, где и как воспроизводится проблема, и приложите скриншот ошибки при возможности.',
+    statuses: ['WAITING_USER', 'IN_PROGRESS', 'ASSIGNED'],
+  },
+  {
+    id: 'waiting-user-check',
+    label: 'Попросить проверку решения',
+    body: 'Мы внесли изменения. Пожалуйста, проверьте работу сервиса со своей стороны и сообщите результат в ответном комментарии.',
+    statuses: ['WAITING_USER', 'RESOLVED'],
+  },
+  {
+    id: 'waiting-user-timebox',
+    label: 'Напомнить о сроке',
+    body: 'Чтобы сохранить приоритет обработки, просим ответить по заявке в течение рабочего дня. При отсутствии ответа статус может быть закрыт с возможностью переоткрытия.',
+    statuses: ['WAITING_USER'],
+  },
+  {
+    id: 'waiting-user-security',
+    label: 'Проверка безопасности',
+    body: 'По правилам безопасности подтверждение должно быть выполнено владельцем учетной записи. Пожалуйста, подтвердите, что действия выполнены именно с вашей стороны.',
+    statuses: ['WAITING_USER', 'SECURITY_PHISHING'],
+  },
+]
 
 function formatDateTime(value: string | null | undefined) {
   if (!value) return '—'
@@ -648,6 +682,11 @@ export default function TicketsPage() {
 
   const selectedTableTicket = selectedTicketId ? tickets.find((item) => item.id === selectedTicketId) ?? null : null
   const detail = selectedTicketQuery.data ?? (selectedTableTicket ? toDetailFallback(selectedTableTicket) : null)
+
+  const availableOperatorTemplates = useMemo(() => {
+    if (isRequester || !detail) return []
+    return operatorReplyTemplates.filter((template) => template.statuses.includes(detail.status) || template.statuses.includes(detail.category))
+  }, [detail, isRequester])
 
   const timelineItems = useMemo<TicketTimelineItem[]>(() => {
     if (!detail) return []
@@ -1645,6 +1684,26 @@ export default function TicketsPage() {
                     <div className="activity-columns" style={{ gridTemplateColumns: '1fr' }}>
                       <div className="comment-box">
                         <h4>Добавить комментарий</h4>
+                        {!isRequester && availableOperatorTemplates.length > 0 ? (
+                          <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
+                            <p className="muted" style={{ margin: 0 }}>Быстрые шаблоны ответа:</p>
+                            <div className="analytics-actions" style={{ justifyContent: 'flex-start', flexWrap: 'wrap' }}>
+                              {availableOperatorTemplates.map((template) => (
+                                <button
+                                  key={template.id}
+                                  type="button"
+                                  className="ghost-button"
+                                  onClick={() => {
+                                    setCommentInternal(false)
+                                    setCommentBody(template.body)
+                                  }}
+                                >
+                                  {template.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
                         <textarea value={commentBody} onChange={(event) => setCommentBody(event.target.value)} rows={4} />
                         {canUseInternalComment(role) ? (
                           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
@@ -1652,13 +1711,31 @@ export default function TicketsPage() {
                             Внутренний комментарий
                           </label>
                         ) : null}
-                        <button
-                          type="button"
-                          onClick={() => commentMutation.mutate({ ticketId: detail.id, body: commentBody, is_internal: commentInternal && canUseInternalComment(role) })}
-                          disabled={!commentBody.trim() || commentMutation.isPending}
-                        >
-                          {commentMutation.isPending ? 'Отправка...' : 'Добавить комментарий'}
-                        </button>
+                        <div className="analytics-actions" style={{ justifyContent: 'flex-start', flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            onClick={() => commentMutation.mutate({ ticketId: detail.id, body: commentBody, is_internal: commentInternal && canUseInternalComment(role) })}
+                            disabled={!commentBody.trim() || commentMutation.isPending}
+                          >
+                            {commentMutation.isPending ? 'Отправка...' : 'Добавить комментарий'}
+                          </button>
+                          {!isRequester && detail.status === 'WAITING_USER' && availableOperatorTemplates.length > 0 ? (
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              disabled={commentMutation.isPending}
+                              onClick={() =>
+                                commentMutation.mutate({
+                                  ticketId: detail.id,
+                                  body: availableOperatorTemplates[0]?.body ?? commentBody,
+                                  is_internal: false,
+                                })
+                              }
+                            >
+                              Отправить шаблон
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                       <div className="activity-list">
                         {detail.comments.length === 0 ? <p className="muted">Комментариев пока нет.</p> : null}
