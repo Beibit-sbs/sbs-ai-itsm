@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-SAFETY-014`
-- Latest stage implementation commit: `df24c10`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-GOVERNANCE-015`
+- Latest stage implementation commit: `PENDING_COMMIT`
 
 ## Stage Log (Newest First)
+
+- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-CONSUMER-GOVERNANCE-015
+  - Added governance validation for execute recovery: reason code, change ticket linkage, and optional dual-control approver.
+  - Persisted structured governance metadata in recovery audit records.
+  - Extended diagnostics with governance compliance counters and rate indicators.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-GOVERNANCE-015-REPORT.md`
 
 - `df24c10` PLATFORM-CORE-ASYNC-CONSUMER-SAFETY-014
   - Added per-consumer recovery safety controls: cooldown and hourly execution rate limit.
@@ -140,17 +146,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-GOVERNANCE-015`
+- `PLATFORM-CORE-ASYNC-CONSUMER-AUTOREMEDIATION-016`
 
 Scope proposal:
-- Add governance controls for recovery actions (reason codes, change ticket linkage, and optional dual-control mode).
-- Require structured operator context to improve post-incident forensics and compliance traceability.
-- Expose governance compliance indicators alongside recovery safety diagnostics.
+- Add guarded auto-remediation mode for selected consumer failure classes with strict limits.
+- Drive remediation decisions from diagnostics thresholds while preserving explicit opt-in and audit visibility.
+- Keep manual governance controls as override path with clear operator precedence.
 
 Exit criteria:
-- Recovery execute requires governance metadata (reason/change reference) and persists it in audit trail.
-- Diagnostics expose compliance coverage of recent recovery actions.
-- Tests cover governance validation rules and non-regression of safety controls.
+- Auto-remediation can re-drive narrowly scoped failures without operator request when enabled.
+- Diagnostics expose auto-remediation activity separately from manual recovery.
+- Tests cover safety boundaries and audit traces for automatic actions.
 
 ## Stage Execution Template
 

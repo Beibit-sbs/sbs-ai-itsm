@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     jobs_event_consumer_stale_offset_seconds: int = 300
     jobs_event_recovery_cooldown_seconds: int = 60
     jobs_event_recovery_max_exec_per_hour: int = 6
+    jobs_event_recovery_require_change_ticket: bool = True
+    jobs_event_recovery_dual_control_required: bool = False
     jobs_retry_base_seconds: float = 0.5
     jobs_retry_max_seconds: float = 15.0
 

@@ -386,6 +386,9 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "consumer_count",
         "overall_status",
         "recovery_actions_24h",
+        "governance_execute_actions_24h",
+        "governance_compliant_actions_24h",
+        "governance_compliance_rate_pct",
         "recent_recovery_actions",
         "consumers",
     ):
@@ -411,6 +414,8 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "stale_offset",
         "recovery_preview_24h",
         "recovery_execute_24h",
+        "governance_compliant_execute_24h",
+        "governance_missing_execute_24h",
         "last_recovery_execute_at",
         "last_recovery_execute_actor_email",
         "status",
@@ -479,7 +484,13 @@ def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:
         execute = client.post(
             "/api/v1/jobs/event-consumer-recovery",
             headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
-            json={"consumer_name": "notifications-consumer", "dry_run": False, "limit": 10},
+            json={
+                "consumer_name": "notifications-consumer",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "manual_operator_intervention",
+                "change_ticket_ref": "CHG-1001",
+            },
         )
         assert execute.status_code == 200, execute.text
         payload = execute.json()
@@ -488,7 +499,13 @@ def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:
         execute_repeat = client.post(
             "/api/v1/jobs/event-consumer-recovery",
             headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
-            json={"consumer_name": "notifications-consumer", "dry_run": False, "limit": 10},
+            json={
+                "consumer_name": "notifications-consumer",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "manual_operator_intervention",
+                "change_ticket_ref": "CHG-1002",
+            },
         )
         assert execute_repeat.status_code == 200, execute_repeat.text
 
@@ -541,16 +558,108 @@ def test_event_consumer_recovery_cooldown_guard(app) -> None:
         first = client.post(
             "/api/v1/jobs/event-consumer-recovery",
             headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
-            json={"consumer_name": "notifications-consumer", "dry_run": False, "limit": 10},
+            json={
+                "consumer_name": "notifications-consumer",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "downstream_outage",
+                "change_ticket_ref": "CHG-2001",
+            },
         )
         assert first.status_code == 200, first.text
 
         second = client.post(
             "/api/v1/jobs/event-consumer-recovery",
             headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
-            json={"consumer_name": "notifications-consumer", "dry_run": False, "limit": 10},
+            json={
+                "consumer_name": "notifications-consumer",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "downstream_outage",
+                "change_ticket_ref": "CHG-2002",
+            },
         )
         assert second.status_code == 429, second.text
+
+
+def test_event_consumer_recovery_governance_validation_and_dual_control(app) -> None:
+    from app.db.session import SessionLocal
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_event_recovery_cooldown_seconds = 0
+    settings.jobs_event_recovery_max_exec_per_hour = 100
+    settings.jobs_event_recovery_require_change_ticket = True
+    settings.jobs_event_recovery_dual_control_required = True
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"gov": True}, max_attempts=1)
+            db.commit()
+            event = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == job.id).one()
+            db.add(
+                JobEventConsumerDelivery(
+                    id="recovery-governance-delivery",
+                    consumer_name="notifications-consumer",
+                    event_id=event.id,
+                    stream_name="jobs:lifecycle",
+                    stream_entry_id="12-0",
+                    status="failed",
+                    attempts=1,
+                    last_error="boom",
+                    delivered_at=None,
+                )
+            )
+            db.commit()
+
+        missing_reason = client.post(
+            "/api/v1/jobs/event-consumer-recovery",
+            headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
+            json={"consumer_name": "notifications-consumer", "dry_run": False, "limit": 10, "change_ticket_ref": "CHG-3001"},
+        )
+        assert missing_reason.status_code == 400
+
+        missing_approver = client.post(
+            "/api/v1/jobs/event-consumer-recovery",
+            headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
+            json={
+                "consumer_name": "notifications-consumer",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "bugfix_rollout",
+                "change_ticket_ref": "CHG-3002",
+            },
+        )
+        assert missing_approver.status_code == 400
+
+        same_actor_approver = client.post(
+            "/api/v1/jobs/event-consumer-recovery",
+            headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
+            json={
+                "consumer_name": "notifications-consumer",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "bugfix_rollout",
+                "change_ticket_ref": "CHG-3003",
+                "approved_by_email": "root@sbs.local",
+            },
+        )
+        assert same_actor_approver.status_code == 400
+
+        ok = client.post(
+            "/api/v1/jobs/event-consumer-recovery",
+            headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
+            json={
+                "consumer_name": "notifications-consumer",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "bugfix_rollout",
+                "change_ticket_ref": "CHG-3004",
+                "approved_by_email": "admin@sbs.local",
+            },
+        )
+        assert ok.status_code == 200, ok.text
 
 
 def test_create_outbox_entry_is_idempotent_by_job_and_queue(app) -> None:

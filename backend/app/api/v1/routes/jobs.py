@@ -37,6 +37,14 @@ from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
 
+ALLOWED_RECOVERY_REASON_CODES = {
+    "downstream_outage",
+    "transient_dependency_failure",
+    "bugfix_rollout",
+    "manual_operator_intervention",
+    "post_incident_reconciliation",
+}
+
 
 ALLOWED_READ_PERMISSIONS = (
     "admin.settings.read",
@@ -182,6 +190,8 @@ class JobEventConsumerDiagnosticsItemResponse(BaseModel):
     stale_offset: bool
     recovery_preview_24h: int
     recovery_execute_24h: int
+    governance_compliant_execute_24h: int
+    governance_missing_execute_24h: int
     last_recovery_execute_at: datetime | None
     last_recovery_execute_actor_email: str | None
     status: str
@@ -194,6 +204,9 @@ class JobEventConsumersDiagnosticsResponse(BaseModel):
     consumer_count: int
     overall_status: str
     recovery_actions_24h: int
+    governance_execute_actions_24h: int
+    governance_compliant_actions_24h: int
+    governance_compliance_rate_pct: float
     recent_recovery_actions: list[dict[str, object]]
     consumers: list[JobEventConsumerDiagnosticsItemResponse]
 
@@ -204,6 +217,9 @@ class JobEventConsumerRecoveryRequest(BaseModel):
     event_types: list[str] | None = None
     limit: int = Field(default=50, ge=1, le=200)
     dry_run: bool = True
+    reason_code: str | None = Field(default=None, min_length=3, max_length=80)
+    change_ticket_ref: str | None = Field(default=None, min_length=3, max_length=80)
+    approved_by_email: str | None = Field(default=None, min_length=5, max_length=255)
 
 
 class JobEventConsumerRecoveryItemResponse(BaseModel):
@@ -406,6 +422,31 @@ def recover_job_event_consumer(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Execution requires header X-Recovery-Confirm: CONFIRM",
         )
+    reason_code = (request.reason_code or "").strip().lower()
+    change_ticket_ref = (request.change_ticket_ref or "").strip()
+    approved_by_email = (request.approved_by_email or "").strip().lower()
+    if not request.dry_run:
+        if reason_code not in ALLOWED_RECOVERY_REASON_CODES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="reason_code is required and must be one of allowed governance codes",
+            )
+        if settings.jobs_event_recovery_require_change_ticket and not change_ticket_ref:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="change_ticket_ref is required for execute recovery",
+            )
+        if settings.jobs_event_recovery_dual_control_required:
+            if not approved_by_email:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="approved_by_email is required when dual-control mode is enabled",
+                )
+            if approved_by_email == current_user.email.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="approved_by_email must be different from actor",
+                )
 
     if not request.dry_run:
         safety = job_event_consumer_recovery_safety_state(
@@ -449,6 +490,9 @@ def recover_job_event_consumer(
             "dry_run": request.dry_run,
             "selected": int(data.get("selected", 0) or 0),
             "requeued": int(data.get("requeued", 0) or 0),
+            "reason_code": reason_code,
+            "change_ticket_ref": change_ticket_ref,
+            "approved_by_email": approved_by_email,
         },
     )
     if not request.dry_run:

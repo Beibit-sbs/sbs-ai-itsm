@@ -240,6 +240,8 @@ def job_event_consumers_diagnostics(
         name: {
             "preview_24h": 0,
             "execute_24h": 0,
+            "governance_compliant_execute_24h": 0,
+            "governance_missing_execute_24h": 0,
             "last_execute_at": None,
             "last_execute_actor_email": None,
         }
@@ -257,6 +259,15 @@ def job_event_consumers_diagnostics(
             recovery_agg[consumer]["preview_24h"] = int(recovery_agg[consumer]["preview_24h"] or 0) + 1
         if row.action.endswith(".execute"):
             recovery_agg[consumer]["execute_24h"] = int(recovery_agg[consumer]["execute_24h"] or 0) + 1
+            governance_compliant = bool(metadata.get("reason_code")) and bool(metadata.get("change_ticket_ref"))
+            if governance_compliant:
+                recovery_agg[consumer]["governance_compliant_execute_24h"] = (
+                    int(recovery_agg[consumer]["governance_compliant_execute_24h"] or 0) + 1
+                )
+            else:
+                recovery_agg[consumer]["governance_missing_execute_24h"] = (
+                    int(recovery_agg[consumer]["governance_missing_execute_24h"] or 0) + 1
+                )
             if recovery_agg[consumer]["last_execute_at"] is None:
                 recovery_agg[consumer]["last_execute_at"] = _as_utc(row.created_at)
                 recovery_agg[consumer]["last_execute_actor_email"] = row.actor_email
@@ -270,6 +281,10 @@ def job_event_consumers_diagnostics(
                     "dry_run": bool(metadata.get("dry_run", False)),
                     "selected": int(metadata.get("selected", 0) or 0),
                     "requeued": int(metadata.get("requeued", 0) or 0),
+                    "reason_code": str(metadata.get("reason_code") or ""),
+                    "change_ticket_ref": str(metadata.get("change_ticket_ref") or ""),
+                    "approved_by_email": str(metadata.get("approved_by_email") or ""),
+                    "governance_compliant": bool(metadata.get("reason_code")) and bool(metadata.get("change_ticket_ref")),
                 }
             )
 
@@ -383,6 +398,8 @@ def job_event_consumers_diagnostics(
                 "stale_offset": stale_offset,
                 "recovery_preview_24h": int(recovery_data.get("preview_24h", 0) or 0),
                 "recovery_execute_24h": int(recovery_data.get("execute_24h", 0) or 0),
+                "governance_compliant_execute_24h": int(recovery_data.get("governance_compliant_execute_24h", 0) or 0),
+                "governance_missing_execute_24h": int(recovery_data.get("governance_missing_execute_24h", 0) or 0),
                 "last_recovery_execute_at": recovery_data.get("last_execute_at"),
                 "last_recovery_execute_actor_email": recovery_data.get("last_execute_actor_email"),
                 "status": status,
@@ -396,12 +413,25 @@ def job_event_consumers_diagnostics(
     elif any(item["status"] == "warning" for item in consumers):
         overall_status = "warning"
 
+    governance_execute_actions_24h = sum(int(item.get("execute_24h", 0) or 0) for item in recovery_agg.values())
+    governance_compliant_actions_24h = sum(
+        int(item.get("governance_compliant_execute_24h", 0) or 0) for item in recovery_agg.values()
+    )
+    governance_compliance_rate_pct = (
+        round((governance_compliant_actions_24h / governance_execute_actions_24h) * 100, 2)
+        if governance_execute_actions_24h
+        else 100.0
+    )
+
     return {
         "stream_name": stream_name,
         "total_events": total_events,
         "consumer_count": len(consumers),
         "overall_status": overall_status,
         "recovery_actions_24h": len(recent_recovery_rows),
+        "governance_execute_actions_24h": governance_execute_actions_24h,
+        "governance_compliant_actions_24h": governance_compliant_actions_24h,
+        "governance_compliance_rate_pct": governance_compliance_rate_pct,
         "recent_recovery_actions": recent_recovery_actions,
         "consumers": consumers,
     }
