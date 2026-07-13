@@ -518,6 +518,111 @@ def job_event_consumer_autoremediation_safety_state(
     }
 
 
+def _parse_window(value: str) -> tuple[int, int] | None:
+    raw = value.strip()
+    if not raw or "-" not in raw:
+        return None
+    start_raw, end_raw = [part.strip() for part in raw.split("-", 1)]
+
+    def _to_minutes(token: str) -> int | None:
+        parts = token.split(":")
+        if len(parts) != 2:
+            return None
+        if not parts[0].isdigit() or not parts[1].isdigit():
+            return None
+        hour = int(parts[0])
+        minute = int(parts[1])
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return None
+        return hour * 60 + minute
+
+    start = _to_minutes(start_raw)
+    end = _to_minutes(end_raw)
+    if start is None or end is None:
+        return None
+    return (start, end)
+
+
+def is_autoremediation_suppressed_now(*, now: datetime, windows_utc: list[str]) -> bool:
+    minute_of_day = now.hour * 60 + now.minute
+    for item in windows_utc:
+        parsed = _parse_window(str(item))
+        if parsed is None:
+            continue
+        start, end = parsed
+        if start <= end:
+            if start <= minute_of_day <= end:
+                return True
+            continue
+        # Wrap-over window, e.g. 23:00-02:00
+        if minute_of_day >= start or minute_of_day <= end:
+            return True
+    return False
+
+
+def job_event_consumer_autoremediation_preview(
+    db: Session,
+    *,
+    consumer_name: str,
+    stream_name: str,
+    max_attempts: int,
+    min_failed_age_seconds: int,
+    allowed_event_types: list[str],
+    error_denylist: list[str],
+    limit: int,
+) -> dict[str, object]:
+    effective_limit = max(1, min(200, int(limit)))
+    cutoff = _now() - timedelta(seconds=max(0, int(min_failed_age_seconds)))
+    event_types = [item.strip() for item in allowed_event_types if item and item.strip()]
+    denylist = [item.strip().lower() for item in error_denylist if item and item.strip()]
+
+    stmt = (
+        select(JobEventConsumerDelivery, JobLifecycleEvent.event_type)
+        .join(JobLifecycleEvent, JobLifecycleEvent.id == JobEventConsumerDelivery.event_id)
+        .where(JobEventConsumerDelivery.consumer_name == consumer_name)
+        .where(JobEventConsumerDelivery.stream_name == stream_name)
+        .where(JobEventConsumerDelivery.status == "failed")
+        .where(JobEventConsumerDelivery.attempts >= max_attempts)
+        .where(JobEventConsumerDelivery.updated_at <= cutoff)
+        .order_by(JobEventConsumerDelivery.updated_at.asc())
+        .limit(effective_limit)
+    )
+    if event_types:
+        stmt = stmt.where(JobLifecycleEvent.event_type.in_(event_types))
+
+    rows = list(db.execute(stmt).all())
+    items: list[dict[str, object]] = []
+    selected = 0
+    skipped_by_denylist = 0
+    for delivery, event_type in rows:
+        last_error = str(delivery.last_error or "")
+        lowered = last_error.lower()
+        denied = any(fragment in lowered for fragment in denylist)
+        if denied:
+            skipped_by_denylist += 1
+            continue
+        selected += 1
+        items.append(
+            {
+                "delivery_id": delivery.id,
+                "event_id": delivery.event_id,
+                "event_type": str(event_type),
+                "attempts": int(delivery.attempts or 0),
+                "last_error": last_error,
+            }
+        )
+
+    return {
+        "consumer_name": consumer_name,
+        "stream_name": stream_name,
+        "requested_limit": effective_limit,
+        "raw_candidates": len(rows),
+        "selected": selected,
+        "skipped_by_denylist": skipped_by_denylist,
+        "items": items[:20],
+    }
+
+
 def job_event_consumer_autoremediate(
     db: Session,
     *,
@@ -526,11 +631,13 @@ def job_event_consumer_autoremediate(
     max_attempts: int,
     min_failed_age_seconds: int,
     allowed_event_types: list[str],
+    error_denylist: list[str],
     limit: int,
 ) -> dict[str, object]:
     effective_limit = max(1, min(200, int(limit)))
     cutoff = _now() - timedelta(seconds=max(0, int(min_failed_age_seconds)))
     event_types = [item.strip() for item in allowed_event_types if item and item.strip()]
+    denylist = [item.strip().lower() for item in error_denylist if item and item.strip()]
 
     stmt = (
         select(JobEventConsumerDelivery, JobLifecycleEvent.event_type)
@@ -551,6 +658,10 @@ def job_event_consumer_autoremediate(
     items: list[dict[str, object]] = []
     now = _now()
     for delivery, event_type in rows:
+        last_error = str(delivery.last_error or "")
+        lowered = last_error.lower()
+        if any(fragment in lowered for fragment in denylist):
+            continue
         items.append(
             {
                 "delivery_id": delivery.id,
@@ -558,6 +669,7 @@ def job_event_consumer_autoremediate(
                 "event_type": str(event_type),
                 "attempts_before": int(delivery.attempts or 0),
                 "status_before": delivery.status,
+                "last_error": last_error,
             }
         )
         delivery.status = "failed"
@@ -1101,6 +1213,8 @@ __all__ = [
     "job_event_consumers_diagnostics",
     "job_event_consumer_recovery_safety_state",
     "job_event_consumer_autoremediation_safety_state",
+    "job_event_consumer_autoremediation_preview",
+    "is_autoremediation_suppressed_now",
     "job_event_consumer_autoremediate",
     "recover_job_event_consumer_deliveries",
     "list_job_events",

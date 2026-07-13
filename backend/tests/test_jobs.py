@@ -427,6 +427,85 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         assert key in first
 
 
+def test_job_event_consumer_autoremediation_preview_shape(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        response = client.get(
+            "/api/v1/jobs/event-consumer-autoremediation-preview",
+            headers=_auth_headers(token),
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    for key in (
+        "consumer_name",
+        "stream_name",
+        "requested_limit",
+        "suppression_active",
+        "suppression_windows_utc",
+        "raw_candidates",
+        "selected",
+        "skipped_by_denylist",
+        "effective_policy",
+        "items",
+    ):
+        assert key in data
+
+
+def test_job_event_consumer_autoremediation_preview_applies_denylist(app) -> None:
+    from app.core.config import get_settings
+    from app.db.session import SessionLocal
+
+    settings = get_settings()
+    settings.jobs_event_consumer_name = "notifications-consumer"
+    settings.jobs_event_autoremediation_error_denylist = ["permanent"]
+    settings.jobs_event_autoremediation_policy_profiles = {
+        "notifications-consumer": {
+            "enabled": True,
+            "allowed_event_types": ["failed"],
+            "min_failed_age_seconds": 0,
+            "max_requeued_per_cycle": 20,
+            "cooldown_seconds": 0,
+            "max_per_hour": 100,
+        }
+    }
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"preview": True}, max_attempts=1)
+            db.commit()
+            event = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == job.id).one()
+            event.event_type = "failed"
+            event.current_status = "failed"
+            db.add(
+                JobEventConsumerDelivery(
+                    id="preview-denylist-delivery",
+                    consumer_name="notifications-consumer",
+                    event_id=event.id,
+                    stream_name=settings.jobs_event_stream_name,
+                    stream_entry_id="15-0",
+                    status="failed",
+                    attempts=3,
+                    last_error="permanent_dependency_failure",
+                    delivered_at=None,
+                )
+            )
+            db.commit()
+
+        response = client.get(
+            "/api/v1/jobs/event-consumer-autoremediation-preview?consumer_name=notifications-consumer&limit=20",
+            headers=_auth_headers(token),
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["raw_candidates"] >= 1
+    assert data["skipped_by_denylist"] >= 1
+    assert data["selected"] == 0
+
+
 def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:
     from app.db.session import SessionLocal
     from app.core.config import get_settings

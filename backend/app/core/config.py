@@ -1,4 +1,5 @@
 from functools import lru_cache
+import json
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -46,6 +47,9 @@ class Settings(BaseSettings):
     jobs_event_autoremediation_max_requeued_per_cycle: int = 5
     jobs_event_autoremediation_cooldown_seconds: int = 300
     jobs_event_autoremediation_max_per_hour: int = 20
+    jobs_event_autoremediation_policy_profiles: dict[str, object] | str = {}
+    jobs_event_autoremediation_suppression_windows_utc: list[str] | str = []
+    jobs_event_autoremediation_error_denylist: list[str] | str = []
     jobs_retry_base_seconds: float = 0.5
     jobs_retry_max_seconds: float = 15.0
 
@@ -70,12 +74,30 @@ class Settings(BaseSettings):
     @field_validator(
         "jobs_event_autoremediation_consumers",
         "jobs_event_autoremediation_allowed_event_types",
+        "jobs_event_autoremediation_suppression_windows_utc",
+        "jobs_event_autoremediation_error_denylist",
         mode="before",
     )
     @classmethod
     def parse_csv_lists(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("jobs_event_autoremediation_policy_profiles", mode="before")
+    @classmethod
+    def parse_json_object(cls, value: object) -> object:
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return {}
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("JOBS_EVENT_AUTOREMEDIATION_POLICY_PROFILES must be valid JSON object") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError("JOBS_EVENT_AUTOREMEDIATION_POLICY_PROFILES must be a JSON object")
+            return parsed
         return value
 
     @field_validator("access_token_ttl_minutes", "refresh_token_ttl_minutes")
@@ -114,6 +136,13 @@ class Settings(BaseSettings):
     def jobs_event_limits_must_be_non_negative(cls, value: int) -> int:
         if value < 0:
             raise ValueError("JOBS event limits must be >= 0")
+        return value
+
+    @field_validator("jobs_event_autoremediation_policy_profiles")
+    @classmethod
+    def jobs_event_policy_profiles_must_be_object(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            raise ValueError("JOBS_EVENT_AUTOREMEDIATION_POLICY_PROFILES must be an object")
         return value
 
 

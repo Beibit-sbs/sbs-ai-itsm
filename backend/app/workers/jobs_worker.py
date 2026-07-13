@@ -28,6 +28,7 @@ from app.services.jobs import (
     get_job,
     job_event_consumer_autoremediate,
     job_event_consumer_autoremediation_safety_state,
+    is_autoremediation_suppressed_now,
 )
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 
@@ -367,29 +368,61 @@ def _run_auto_remediation_cycle(*, max_per_consumer: int | None = None) -> int:
     if not configured_consumers:
         return 0
 
-    allowed_event_types = [item for item in settings.jobs_event_autoremediation_allowed_event_types if item]
+    profile_map = (
+        settings.jobs_event_autoremediation_policy_profiles
+        if isinstance(settings.jobs_event_autoremediation_policy_profiles, dict)
+        else {}
+    )
+    suppression_windows_utc = [str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item]
+    if is_autoremediation_suppressed_now(now=datetime.now(UTC), windows_utc=suppression_windows_utc):
+        return 0
+
+    global_allowed_event_types = [item for item in settings.jobs_event_autoremediation_allowed_event_types if item]
+    error_denylist = [item for item in settings.jobs_event_autoremediation_error_denylist if item]
     requeued_total = 0
     for consumer_name in configured_consumers:
         db = SessionLocal()
         try:
+            profile_raw = profile_map.get(consumer_name, {})
+            profile = profile_raw if isinstance(profile_raw, dict) else {}
+            if not bool(profile.get("enabled", True)):
+                db.rollback()
+                continue
+
+            policy_min_failed_age_seconds = int(
+                profile.get("min_failed_age_seconds", settings.jobs_event_autoremediation_min_failed_age_seconds)
+            )
+            policy_max_per_hour = int(profile.get("max_per_hour", settings.jobs_event_autoremediation_max_per_hour))
+            policy_cooldown_seconds = int(profile.get("cooldown_seconds", settings.jobs_event_autoremediation_cooldown_seconds))
+            policy_max_requeued_per_cycle = int(
+                profile.get("max_requeued_per_cycle", settings.jobs_event_autoremediation_max_requeued_per_cycle)
+            )
+            profile_event_types = profile.get("allowed_event_types", global_allowed_event_types)
+            allowed_event_types = (
+                [str(item) for item in profile_event_types if str(item).strip()]
+                if isinstance(profile_event_types, list)
+                else global_allowed_event_types
+            )
+
             safety = job_event_consumer_autoremediation_safety_state(
                 db,
                 consumer_name=consumer_name,
-                cooldown_seconds=settings.jobs_event_autoremediation_cooldown_seconds,
-                max_per_hour=settings.jobs_event_autoremediation_max_per_hour,
+                cooldown_seconds=max(0, policy_cooldown_seconds),
+                max_per_hour=max(0, policy_max_per_hour),
             )
             if bool(safety.get("cooldown_active")) or bool(safety.get("rate_limit_exceeded")):
                 db.rollback()
                 continue
 
-            effective_limit = max_per_consumer or settings.jobs_event_autoremediation_max_requeued_per_cycle
+            effective_limit = max_per_consumer or policy_max_requeued_per_cycle
             result = job_event_consumer_autoremediate(
                 db,
                 consumer_name=consumer_name,
                 stream_name=settings.jobs_event_stream_name,
                 max_attempts=settings.jobs_event_consumer_max_attempts,
-                min_failed_age_seconds=settings.jobs_event_autoremediation_min_failed_age_seconds,
+                min_failed_age_seconds=max(0, policy_min_failed_age_seconds),
                 allowed_event_types=allowed_event_types,
+                error_denylist=error_denylist,
                 limit=effective_limit,
             )
             if int(result.get("requeued", 0) or 0) > 0:

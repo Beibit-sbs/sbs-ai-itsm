@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-AUTOREMEDIATION-016`
-- Latest stage implementation commit: `5850ef4`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-POLICY-TUNING-017`
+- Latest stage implementation commit: `pending`
 
 ## Stage Log (Newest First)
+
+- `pending` PLATFORM-CORE-ASYNC-CONSUMER-POLICY-TUNING-017
+  - Added per-consumer auto-remediation policy profiles with overrideable limits and allowed event scopes.
+  - Added UTC suppression windows and denylist filters to reduce noisy or unsafe automatic retries.
+  - Added `GET /jobs/event-consumer-autoremediation-preview` dry-run preview with effective policy visibility.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-POLICY-TUNING-017-REPORT.md`
 
 - `5850ef4` PLATFORM-CORE-ASYNC-CONSUMER-AUTOREMEDIATION-016
   - Added guarded worker-side auto-remediation cycle for exhausted failed consumer deliveries with per-consumer allowlist and policy limits.
@@ -152,17 +158,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-POLICY-TUNING-017`
+- `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-AUTOMATION-018`
 
 Scope proposal:
-- Add policy tuning controls for per-consumer auto-remediation profiles (limits and event scopes by consumer).
-- Add dry-run diagnostics preview for prospective auto-remediation impact before policy enable/changes.
-- Add explicit suppression windows and operator-maintained denylist for noisy event signatures.
+- Add operator runbook endpoint(s) to safely activate/deactivate suppression windows and profile flags at runtime.
+- Add policy drift diagnostics (effective policy hash + last policy change audit context) in consumer diagnostics.
+- Add optional canary mode that limits auto-remediation to a tiny sample per cycle before full rollout.
 
 Exit criteria:
-- Policy profiles can be adjusted safely without code changes and are reflected in diagnostics.
-- Dry-run preview estimates selected/requeued counts by policy constraints.
-- Tests validate policy precedence and suppression behavior.
+- Operators can adjust policy safely through audited API calls without direct env edits.
+- Diagnostics expose policy drift/canary status with clear remediation hints.
+- Tests cover runbook controls and canary safety boundaries.
 
 ## Stage Execution Template
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
 from pydantic import BaseModel, Field
@@ -21,6 +21,8 @@ from app.services.jobs import (
     get_job as service_get_job,
     job_event_bus_summary,
     job_event_consumers_diagnostics,
+    job_event_consumer_autoremediation_preview,
+    is_autoremediation_suppressed_now,
     job_event_consumer_recovery_safety_state,
     job_event_consumer_summary,
     job_summary,
@@ -244,6 +246,27 @@ class JobEventConsumerRecoveryResponse(BaseModel):
     items: list[JobEventConsumerRecoveryItemResponse]
 
 
+class JobEventConsumerAutoremediationPreviewItemResponse(BaseModel):
+    delivery_id: str
+    event_id: str
+    event_type: str
+    attempts: int
+    last_error: str
+
+
+class JobEventConsumerAutoremediationPreviewResponse(BaseModel):
+    consumer_name: str
+    stream_name: str
+    requested_limit: int
+    suppression_active: bool
+    suppression_windows_utc: list[str]
+    raw_candidates: int
+    selected: int
+    skipped_by_denylist: int
+    effective_policy: dict[str, object]
+    items: list[JobEventConsumerAutoremediationPreviewItemResponse]
+
+
 class EnqueueJobRequest(BaseModel):
     task_name: str = Field(..., min_length=1, max_length=120)
     payload: dict[str, object] | None = None
@@ -399,6 +422,73 @@ def get_job_event_consumers_diagnostics(
         stale_offset_seconds=settings.jobs_event_consumer_stale_offset_seconds,
     )
     return JobEventConsumersDiagnosticsResponse(**data)
+
+
+def _effective_autoremediation_policy(settings, consumer_name: str) -> dict[str, object]:
+    profile_raw = settings.jobs_event_autoremediation_policy_profiles.get(consumer_name, {})
+    profile = profile_raw if isinstance(profile_raw, dict) else {}
+
+    allowed_event_types = profile.get("allowed_event_types", settings.jobs_event_autoremediation_allowed_event_types)
+    if not isinstance(allowed_event_types, list):
+        allowed_event_types = settings.jobs_event_autoremediation_allowed_event_types
+
+    return {
+        "enabled": bool(profile.get("enabled", True)),
+        "min_failed_age_seconds": int(
+            profile.get("min_failed_age_seconds", settings.jobs_event_autoremediation_min_failed_age_seconds)
+        ),
+        "max_requeued_per_cycle": int(
+            profile.get("max_requeued_per_cycle", settings.jobs_event_autoremediation_max_requeued_per_cycle)
+        ),
+        "cooldown_seconds": int(profile.get("cooldown_seconds", settings.jobs_event_autoremediation_cooldown_seconds)),
+        "max_per_hour": int(profile.get("max_per_hour", settings.jobs_event_autoremediation_max_per_hour)),
+        "allowed_event_types": [str(item) for item in allowed_event_types if str(item).strip()],
+    }
+
+
+@router.get(
+    "/event-consumer-autoremediation-preview",
+    response_model=JobEventConsumerAutoremediationPreviewResponse,
+)
+def get_job_event_consumer_autoremediation_preview(
+    consumer_name: str | None = Query(default=None, max_length=80),
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobEventConsumerAutoremediationPreviewResponse:
+    _require_read(current_user)
+    settings = get_settings()
+    selected_consumer = consumer_name or settings.jobs_event_consumer_name
+    allowed = {settings.jobs_event_consumer_name, settings.jobs_event_automation_consumer_name}
+    if selected_consumer not in allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown consumer_name")
+
+    effective_policy = _effective_autoremediation_policy(settings, selected_consumer)
+    suppression_windows_utc = [str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item]
+    suppression_active = is_autoremediation_suppressed_now(now=datetime.now(UTC), windows_utc=suppression_windows_utc)
+
+    data = job_event_consumer_autoremediation_preview(
+        db,
+        consumer_name=selected_consumer,
+        stream_name=settings.jobs_event_stream_name,
+        max_attempts=settings.jobs_event_consumer_max_attempts,
+        min_failed_age_seconds=max(0, int(effective_policy["min_failed_age_seconds"])),
+        allowed_event_types=[str(item) for item in effective_policy["allowed_event_types"]],
+        error_denylist=[str(item) for item in settings.jobs_event_autoremediation_error_denylist if item],
+        limit=min(limit, int(effective_policy["max_requeued_per_cycle"])),
+    )
+    return JobEventConsumerAutoremediationPreviewResponse(
+        consumer_name=str(data["consumer_name"]),
+        stream_name=str(data["stream_name"]),
+        requested_limit=int(data["requested_limit"]),
+        suppression_active=suppression_active,
+        suppression_windows_utc=suppression_windows_utc,
+        raw_candidates=int(data["raw_candidates"]),
+        selected=int(data["selected"]),
+        skipped_by_denylist=int(data["skipped_by_denylist"]),
+        effective_policy=effective_policy,
+        items=[JobEventConsumerAutoremediationPreviewItemResponse(**item) for item in data["items"]],
+    )
 
 
 @router.post("/event-consumer-recovery", response_model=JobEventConsumerRecoveryResponse)
