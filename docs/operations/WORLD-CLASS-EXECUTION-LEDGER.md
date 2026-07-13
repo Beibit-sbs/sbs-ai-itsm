@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-AUTOREMEDIATION-016`
-- Latest stage implementation commit: `pending`
+- Latest stage implementation commit: `5850ef4`
 
 ## Stage Log (Newest First)
 
-- `pending` PLATFORM-CORE-ASYNC-CONSUMER-AUTOREMEDIATION-016
+- `5850ef4` PLATFORM-CORE-ASYNC-CONSUMER-AUTOREMEDIATION-016
   - Added guarded worker-side auto-remediation cycle for exhausted failed consumer deliveries with per-consumer allowlist and policy limits.
   - Added dedicated auto-remediation safety checks (cooldown + hourly rate cap) and audit action `jobs.event_consumer_recovery.auto`.
   - Extended consumer diagnostics to separate auto-remediation counters/actions from manual recovery/governance signals.
