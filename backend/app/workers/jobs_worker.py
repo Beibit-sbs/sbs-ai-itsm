@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
 from datetime import UTC, datetime
+from typing import Callable
 
 from redis import Redis
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -17,6 +19,7 @@ from app.models.job_event_consumer_offset import JobEventConsumerOffset
 from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.user import User
+from app.services.automation import trigger_automation_event
 from app.services.notifications import create_domain_event_notification
 from app.services.jobs import create_job_lifecycle_event, execute_job, get_job
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
@@ -162,15 +165,69 @@ def _create_notification_for_event(db, event: JobLifecycleEvent) -> None:
     )
 
 
-def _consume_event_stream_batch(redis_client: Redis, *, batch_size: int = 100) -> int:
+def _process_notifications_consumer(db, event: JobLifecycleEvent) -> None:
+    _create_notification_for_event(db, event)
+
+
+def _parse_event_payload(event: JobLifecycleEvent) -> dict[str, str | dict | list | int | float | bool | None]:
+    payload: dict[str, str | dict | list | int | float | bool | None] = {}
+    if event.payload_json:
+        try:
+            raw = json.loads(event.payload_json)
+            if isinstance(raw, dict):
+                payload = raw
+        except (TypeError, ValueError):
+            payload = {}
+    return payload
+
+
+def _process_automation_consumer(db, event: JobLifecycleEvent) -> None:
+    payload = _parse_event_payload(event)
+    context = {
+        "event": {
+            "id": event.id,
+            "event_type": event.event_type,
+            "previous_status": event.previous_status,
+            "current_status": event.current_status,
+            "created_at": event.created_at.isoformat(),
+            "payload": payload,
+        },
+        "job": {
+            "id": event.job_id,
+            "task_name": event.task_name,
+            "tenant_id": event.tenant_id,
+            "actor_user_id": event.actor_user_id,
+            "correlation_id": event.correlation_id,
+        },
+        "entity_type": "job",
+        "entity_id": event.job_id,
+    }
+    trigger_automation_event(
+        db,
+        tenant_id=event.tenant_id,
+        trigger_type=f"job_lifecycle.{event.event_type}",
+        context=context,
+        actor_email=None,
+    )
+
+
+def _consume_event_stream_batch(
+    redis_client: Redis,
+    *,
+    consumer_name: str | None = None,
+    handler: Callable | None = None,
+    batch_size: int = 100,
+) -> int:
     settings = get_settings()
     db = SessionLocal()
     processed = 0
     now = datetime.now(UTC)
+    effective_consumer_name = consumer_name or settings.jobs_event_consumer_name
+    effective_handler = handler or _process_notifications_consumer
     try:
         offset = _get_or_create_consumer_offset(
             db,
-            consumer_name=settings.jobs_event_consumer_name,
+            consumer_name=effective_consumer_name,
             stream_name=settings.jobs_event_stream_name,
         )
         rows = redis_client.xread({settings.jobs_event_stream_name: offset.last_stream_id}, count=batch_size)
@@ -194,14 +251,14 @@ def _consume_event_stream_batch(redis_client: Redis, *, batch_size: int = 100) -
 
             delivery = db.scalar(
                 select(JobEventConsumerDelivery).where(
-                    JobEventConsumerDelivery.consumer_name == settings.jobs_event_consumer_name,
+                    JobEventConsumerDelivery.consumer_name == effective_consumer_name,
                     JobEventConsumerDelivery.event_id == event_id,
                 )
             )
             if delivery is None:
                 delivery = JobEventConsumerDelivery(
                     id=_uuid(),
-                    consumer_name=settings.jobs_event_consumer_name,
+                    consumer_name=effective_consumer_name,
                     event_id=event_id,
                     stream_name=settings.jobs_event_stream_name,
                     stream_entry_id=stream_entry_id,
@@ -215,7 +272,7 @@ def _consume_event_stream_batch(redis_client: Redis, *, batch_size: int = 100) -
 
             if delivery.status != "delivered":
                 try:
-                    _create_notification_for_event(db, event)
+                    effective_handler(db, event)
                     delivery.attempts += 1
                     delivery.status = "delivered"
                     delivery.delivered_at = now
@@ -239,15 +296,22 @@ def _consume_event_stream_batch(redis_client: Redis, *, batch_size: int = 100) -
         db.close()
 
 
-def _retry_failed_event_consumers_batch(*, batch_size: int = 50) -> int:
+def _retry_failed_event_consumers_batch(
+    *,
+    consumer_name: str | None = None,
+    handler: Callable | None = None,
+    batch_size: int = 50,
+) -> int:
     settings = get_settings()
     db = SessionLocal()
     retried = 0
     now = datetime.now(UTC)
+    effective_consumer_name = consumer_name or settings.jobs_event_consumer_name
+    effective_handler = handler or _process_notifications_consumer
     try:
         stmt = (
             select(JobEventConsumerDelivery)
-            .where(JobEventConsumerDelivery.consumer_name == settings.jobs_event_consumer_name)
+            .where(JobEventConsumerDelivery.consumer_name == effective_consumer_name)
             .where(JobEventConsumerDelivery.status == "failed")
             .where(JobEventConsumerDelivery.attempts < settings.jobs_event_consumer_max_attempts)
             .order_by(JobEventConsumerDelivery.updated_at.asc())
@@ -263,7 +327,7 @@ def _retry_failed_event_consumers_batch(*, batch_size: int = 50) -> int:
                 retried += 1
                 continue
             try:
-                _create_notification_for_event(db, event)
+                effective_handler(db, event)
                 delivery.attempts += 1
                 delivery.status = "delivered"
                 delivery.delivered_at = now
@@ -467,8 +531,24 @@ def run_worker_forever() -> None:
     try:
         while True:
             _relay_job_events_batch(redis_client)
-            _consume_event_stream_batch(redis_client)
-            _retry_failed_event_consumers_batch()
+            _consume_event_stream_batch(
+                redis_client,
+                consumer_name=settings.jobs_event_consumer_name,
+                handler=_process_notifications_consumer,
+            )
+            _retry_failed_event_consumers_batch(
+                consumer_name=settings.jobs_event_consumer_name,
+                handler=_process_notifications_consumer,
+            )
+            _consume_event_stream_batch(
+                redis_client,
+                consumer_name=settings.jobs_event_automation_consumer_name,
+                handler=_process_automation_consumer,
+            )
+            _retry_failed_event_consumers_batch(
+                consumer_name=settings.jobs_event_automation_consumer_name,
+                handler=_process_automation_consumer,
+            )
             _publish_outbox_batch(redis_client)
             _drain_scheduled_jobs(redis_client, settings.jobs_queue_name)
             try:

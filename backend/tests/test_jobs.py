@@ -347,6 +347,30 @@ def test_job_event_consumer_summary_shape(app) -> None:
         assert key in data
 
 
+def test_job_event_consumer_summary_supports_automation_consumer(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        response = client.get(
+            "/api/v1/jobs/event-consumer-summary?consumer_name=automation-consumer",
+            headers=_auth_headers(token),
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["consumer_name"] == "automation-consumer"
+
+
+def test_job_event_consumer_summary_rejects_unknown_consumer(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        response = client.get(
+            "/api/v1/jobs/event-consumer-summary?consumer_name=unknown-consumer",
+            headers=_auth_headers(token),
+        )
+
+    assert response.status_code == 400
+
+
 def test_create_outbox_entry_is_idempotent_by_job_and_queue(app) -> None:
     from app.db.session import SessionLocal
     from app.services.jobs import create_outbox_entry

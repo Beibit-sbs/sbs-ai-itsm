@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     jobs_dead_letter_queue_name: str = "jobs:dead-letter"
     jobs_event_stream_name: str = "jobs:lifecycle"
     jobs_event_consumer_name: str = "notifications-consumer"
+    jobs_event_automation_consumer_name: str = "automation-consumer"
     jobs_event_consumer_max_attempts: int = 3
     jobs_retry_base_seconds: float = 0.5
     jobs_retry_max_seconds: float = 15.0

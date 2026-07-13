@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMERS-010`
-- Latest stage implementation commit: `a841857`
+- Last completed stage: `PLATFORM-CORE-ASYNC-AUTOMATION-HOOKS-011`
+- Latest stage implementation commit: `PENDING_COMMIT`
 
 ## Stage Log (Newest First)
+
+- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-AUTOMATION-HOOKS-011
+  - Added dual downstream consumers over lifecycle stream with isolated delivery/retry state per consumer.
+  - Introduced automation hooks consumer mapped from `job_lifecycle.<event_type>` triggers.
+  - Extended event-consumer summary API to inspect specific consumer state.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-AUTOMATION-HOOKS-011-REPORT.md`
 
 - `a841857` PLATFORM-CORE-ASYNC-CONSUMERS-010
   - Added first downstream consumer pipeline over relayed lifecycle events with per-consumer offsets and idempotent delivery state.
@@ -116,17 +122,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-AUTOMATION-HOOKS-011`
+- `PLATFORM-CORE-ASYNC-OBSERVABILITY-CONSUMERS-012`
 
 Scope proposal:
-- Add the second downstream consumer path for automation hooks with the same idempotent delivery contract.
-- Reuse delivery/offset model from 010 and keep retries isolated per consumer.
-- Define minimal rule matching and bounded payload contract for automation follow-up actions.
+- Add consumer-level observability surfaces (per-consumer lag, retry pressure, failure rates, stale offsets).
+- Expose diagnostics that compare consumers side-by-side on the same stream.
+- Add operator-ready remediation guidance when one consumer degrades while others stay healthy.
 
 Exit criteria:
-- Automation consumer reacts to lifecycle events and records delivery status with retries.
-- Existing notifications consumer behavior remains stable and idempotent.
-- Tests cover consumer coexistence and isolated retry semantics.
+- API diagnostics expose per-consumer health and lag indicators.
+- Tests cover degraded consumer scenarios without cross-consumer impact.
+- Runtime smoke validates diagnostics endpoint and non-regression of existing consumers.
 
 ## Stage Execution Template
 

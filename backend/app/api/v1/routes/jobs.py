@@ -275,14 +275,22 @@ def get_job_event_bus_summary(
 
 @router.get("/event-consumer-summary", response_model=JobEventConsumerSummaryResponse)
 def get_job_event_consumer_summary(
+    consumer_name: str | None = Query(default=None, max_length=80),
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> JobEventConsumerSummaryResponse:
     _require_read(current_user)
     settings = get_settings()
+    selected_consumer = consumer_name or settings.jobs_event_consumer_name
+    allowed = {settings.jobs_event_consumer_name, settings.jobs_event_automation_consumer_name}
+    if selected_consumer not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unknown consumer_name",
+        )
     data = job_event_consumer_summary(
         db,
-        consumer_name=settings.jobs_event_consumer_name,
+        consumer_name=selected_consumer,
         stream_name=settings.jobs_event_stream_name,
     )
     return JobEventConsumerSummaryResponse(**data)

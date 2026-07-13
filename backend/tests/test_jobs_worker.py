@@ -346,3 +346,51 @@ def test_retry_failed_event_consumers_batch_recovers_deliveries(app, monkeypatch
     assert retried >= 1
     assert failed_after == 0
 
+
+def test_dual_consumers_process_same_event_stream_independently(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    redis = FakeRedis()
+
+    calls: list[str] = []
+
+    def fake_trigger_automation_event(db, *, tenant_id, trigger_type, context, actor_email):
+        del db, tenant_id, context, actor_email
+        calls.append(trigger_type)
+        return []
+
+    monkeypatch.setattr(jobs_worker, "trigger_automation_event", fake_trigger_automation_event)
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"dual": True}, max_attempts=1)
+            db.commit()
+
+        _relay_job_events_batch(redis, batch_size=100)
+        notif_count = _consume_event_stream_batch(redis, consumer_name="notifications-consumer", batch_size=100)
+        auto_count = _consume_event_stream_batch(
+            redis,
+            consumer_name="automation-consumer",
+            handler=jobs_worker._process_automation_consumer,
+            batch_size=100,
+        )
+
+        with SessionLocal() as db:
+            notif_deliveries = (
+                db.query(JobEventConsumerDelivery)
+                .filter(JobEventConsumerDelivery.consumer_name == "notifications-consumer")
+                .count()
+            )
+            auto_deliveries = (
+                db.query(JobEventConsumerDelivery)
+                .filter(JobEventConsumerDelivery.consumer_name == "automation-consumer")
+                .count()
+            )
+
+    assert notif_count >= 1
+    assert auto_count >= 1
+    assert notif_deliveries >= 1
+    assert auto_deliveries >= 1
+    assert all(item.startswith("job_lifecycle.") for item in calls)
+
