@@ -163,6 +163,28 @@ function canCreateArticleFromTicket(role: string) {
   return ['saas_root', 'organization_admin', 'it_manager', 'it_agent'].includes(role)
 }
 
+function canQuickAssignToMe(role: string, assigneeId: string | null, assigneeName: string | null) {
+  return role === 'it_agent' && !assigneeId && !(assigneeName || '').trim()
+}
+
+function canQuickStart(role: string, status: string, assigneeId: string | null, assigneeName: string | null, currentUserId: string | undefined, currentUserName: string | undefined) {
+  if (role === 'requester') return false
+  if (!['ASSIGNED', 'TRIAGE', 'REOPENED'].includes(status)) return false
+  if (role === 'it_agent') {
+    return assigneeId === currentUserId || Boolean(currentUserName && assigneeName?.toLowerCase() === currentUserName.toLowerCase())
+  }
+  return true
+}
+
+function canQuickResolve(role: string, status: string, assigneeId: string | null, assigneeName: string | null, currentUserId: string | undefined, currentUserName: string | undefined) {
+  if (role === 'requester') return false
+  if (!['IN_PROGRESS', 'WAITING_USER', 'WAITING_VENDOR'].includes(status)) return false
+  if (role === 'it_agent') {
+    return assigneeId === currentUserId || Boolean(currentUserName && assigneeName?.toLowerCase() === currentUserName.toLowerCase())
+  }
+  return true
+}
+
 export default function TicketsPage() {
   const { session } = useAuth()
   const queryClient = useQueryClient()
@@ -477,6 +499,20 @@ export default function TicketsPage() {
     return Array.from(values).sort((a, b) => a.localeCompare(b, 'ru'))
   }, [tickets])
 
+  const triageStats = useMemo(() => {
+    const overdue = tickets.filter((ticket) => ticket.sla_badge === 'BREACHED').length
+    const dueToday = tickets.filter((ticket) => {
+      const dueAt = ticket.resolution_due_at ?? ticket.sla_due_at
+      if (!dueAt) return false
+      const due = new Date(dueAt)
+      const now = new Date()
+      return due.getFullYear() === now.getFullYear() && due.getMonth() === now.getMonth() && due.getDate() === now.getDate() && !['CLOSED', 'RESOLVED', 'CANCELLED'].includes(ticket.status)
+    }).length
+    const unassigned = tickets.filter((ticket) => !ticket.assignee_id && !ticket.assignee_name).length
+    const critical = tickets.filter((ticket) => ticket.priority === 'CRITICAL').length
+    return { overdue, dueToday, unassigned, critical }
+  }, [tickets])
+
   const toggleTicketSelection = (ticketId: string) => {
     setSelectedTicketIds((current) =>
       current.includes(ticketId) ? current.filter((id) => id !== ticketId) : [...current, ticketId]
@@ -708,6 +744,27 @@ export default function TicketsPage() {
         </section>
       ) : null}
 
+      <section className="foundation-card" style={{ marginTop: 12 }}>
+        <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+          <div className="inline-field">
+            <span>SLA просрочено</span>
+            <strong style={{ color: triageStats.overdue > 0 ? '#b42318' : undefined }}>{triageStats.overdue}</strong>
+          </div>
+          <div className="inline-field">
+            <span>На сегодня</span>
+            <strong style={{ color: triageStats.dueToday > 0 ? '#b54708' : undefined }}>{triageStats.dueToday}</strong>
+          </div>
+          <div className="inline-field">
+            <span>Неназначенные</span>
+            <strong>{triageStats.unassigned}</strong>
+          </div>
+          <div className="inline-field">
+            <span>Критичные</span>
+            <strong style={{ color: triageStats.critical > 0 ? '#b42318' : undefined }}>{triageStats.critical}</strong>
+          </div>
+        </div>
+      </section>
+
       <section className="ticket-table-shell">
         {ticketsQuery.isPending ? <p className="muted">Загрузка заявок...</p> : null}
         {ticketsQuery.isError ? <p className="error-message">Не удалось загрузить список заявок.</p> : null}
@@ -764,9 +821,41 @@ export default function TicketsPage() {
                       </td>
                       <td>{formatDateTime(ticket.updated_at)}</td>
                       <td>
-                        <button type="button" className="ghost-button row-action" onClick={() => setSelectedTicketId(ticket.id)}>
-                          Открыть
-                        </button>
+                        <div className="analytics-actions" style={{ justifyContent: 'flex-start', flexWrap: 'wrap' }}>
+                          {canQuickAssignToMe(role, ticket.assignee_id, ticket.assignee_name) ? (
+                            <button
+                              type="button"
+                              className="ghost-button row-action"
+                              onClick={() => assignMutation.mutate({ ticketId: ticket.id, comment: 'Взял в работу' })}
+                              disabled={assignMutation.isPending}
+                            >
+                              Взять
+                            </button>
+                          ) : null}
+                          {canQuickStart(role, ticket.status, ticket.assignee_id, ticket.assignee_name, session?.user.id, session?.user.full_name) ? (
+                            <button
+                              type="button"
+                              className="ghost-button row-action"
+                              onClick={() => transitionMutation.mutate({ ticketId: ticket.id, status: 'IN_PROGRESS', comment: 'Переведено в работу', is_internal: isStaff })}
+                              disabled={transitionMutation.isPending}
+                            >
+                              Старт
+                            </button>
+                          ) : null}
+                          {canQuickResolve(role, ticket.status, ticket.assignee_id, ticket.assignee_name, session?.user.id, session?.user.full_name) ? (
+                            <button
+                              type="button"
+                              className="ghost-button row-action"
+                              onClick={() => transitionMutation.mutate({ ticketId: ticket.id, status: 'RESOLVED', comment: 'Решено оператором', is_internal: isStaff })}
+                              disabled={transitionMutation.isPending}
+                            >
+                              Решить
+                            </button>
+                          ) : null}
+                          <button type="button" className="ghost-button row-action" onClick={() => setSelectedTicketId(ticket.id)}>
+                            Открыть
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
