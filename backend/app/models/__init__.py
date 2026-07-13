@@ -60,3 +60,8 @@ from app.models.metrics_analysis import (
     PolicyMetricsAnomalyDetection,
     PolicyMetricsHealthAssessment,
 )
+from app.models.alert_notifications import (
+    PolicyAlertNotification,
+    PolicyAlertHistory,
+    PolicyNotificationPreference,
+)

@@ -81,6 +81,15 @@ from app.services.jobs.metrics_analysis import (
     get_anomaly_score,
     analyze_rollout_health,
 )
+from app.services.jobs.alert_notifications import (
+    NotificationService,
+    NotificationChannelType,
+    AlertSeverity,
+    PrometheusMetricsCollector,
+    CloudWatchMetricsCollector,
+    determine_routing,
+    execute_alert,
+)
 from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
@@ -724,6 +733,61 @@ class RolloutHealthResponse(BaseModel):
     metrics: dict[str, float]
     recommendations: list[str]
     time_window_minutes: int
+
+
+# Stage 034: Alert Notification Response Models
+
+
+class NotificationResultItem(BaseModel):
+    """Individual notification result."""
+    channel: str
+    sent: bool
+    message_id: str | None = None
+    error: str | None = None
+    timestamp: str | None = None
+
+
+class AlertExecutionResponse(BaseModel):
+    """Alert execution results."""
+    alert_id: str | None
+    rule_id: str
+    sent_at: str
+    channels_attempted: int
+    channels_succeeded: int
+    notification_results: list[NotificationResultItem]
+    total_recipients: int
+    routing: dict | None = None
+    error: str | None = None
+
+
+class RoutingDecisionResponse(BaseModel):
+    """Alert routing decision."""
+    channels: list[str]
+    escalation_minutes: int
+    on_call_required: bool
+    sla_minutes: int | None
+
+
+class PrometheusMetricsResponse(BaseModel):
+    """Prometheus metrics collection results."""
+    rollout_id: str
+    consumer_name: str
+    error_rate: float | None
+    latency_p99_ms: float | None
+    throughput_eps: float | None
+    collected_at: str
+    source: str = "prometheus"
+
+
+class CloudWatchMetricsResponse(BaseModel):
+    """CloudWatch metrics collection results."""
+    rollout_id: str
+    consumer_name: str
+    error_rate: float | None
+    latency_p99_ms: float | None
+    throughput_eps: float | None
+    collected_at: str
+    source: str = "cloudwatch"
 
 
 class JobEventConsumerRunbookRequest(BaseModel):
@@ -4226,5 +4290,165 @@ async def assess_rollout_health(
         time_window_minutes=health["time_window_minutes"],
     )
 
+
+# Stage 034: Alert Notification Endpoints
+
+
+@router.post(
+    "/alerts/route/{rollout_id}",
+    response_model=RoutingDecisionResponse,
+    tags=["stage_034_notifications"],
+)
+async def determine_alert_routing(
+    rollout_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    severity: str = Query("medium", regex="^(info|low|medium|high|critical)$"),
+    metric_type: str = Query("error_rate"),
+) -> RoutingDecisionResponse:
+    """Determine notification routing for alert.
+    
+    Returns recommended channels, escalation policy, and SLA.
+    """
+    _require_read(current_user)
+    
+    try:
+        severity_enum = AlertSeverity(severity)
+    except ValueError:
+        severity_enum = AlertSeverity.MEDIUM
+    
+    routing = determine_routing(severity_enum, metric_type, "production")
+    
+    return RoutingDecisionResponse(
+        channels=routing["channels"],
+        escalation_minutes=routing["escalation_minutes"],
+        on_call_required=routing["on_call_required"],
+        sla_minutes=routing["sla_minutes"],
+    )
+
+
+@router.post(
+    "/alerts/execute/{alert_rule_id}",
+    response_model=AlertExecutionResponse,
+    tags=["stage_034_notifications"],
+)
+async def trigger_alert_notification(
+    alert_rule_id: str,
+    rollout_id: str,
+    title: str = Query(..., min_length=1, max_length=200),
+    message: str = Query(..., min_length=1, max_length=2000),
+    severity: str = Query("medium", regex="^(info|low|medium|high|critical)$"),
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AlertExecutionResponse:
+    """Execute alert: route and send notifications.
+    
+    Automatically routes to appropriate channels based on severity.
+    """
+    _require_read(current_user)
+    
+    try:
+        severity_enum = AlertSeverity(severity)
+    except ValueError:
+        severity_enum = AlertSeverity.MEDIUM
+    
+    # Create notification service
+    notification_service = NotificationService()
+    
+    # Execute alert
+    result = await execute_alert(
+        db=db,
+        alert_rule_id=alert_rule_id,
+        rollout_id=rollout_id,
+        title=title,
+        message=message,
+        severity=severity_enum,
+        notification_service=notification_service,
+    )
+    
+    notification_results = [
+        NotificationResultItem(
+            channel=r.get("channel"),
+            sent=r.get("sent"),
+            message_id=r.get("message_id"),
+            error=r.get("error"),
+            timestamp=r.get("timestamp"),
+        )
+        for r in result.get("notification_results", [])
+    ]
+    
+    return AlertExecutionResponse(
+        alert_id=result.get("alert_id"),
+        rule_id=result.get("rule_id"),
+        sent_at=result.get("sent_at"),
+        channels_attempted=result.get("channels_attempted"),
+        channels_succeeded=result.get("channels_succeeded"),
+        notification_results=notification_results,
+        total_recipients=result.get("total_recipients"),
+        routing=result.get("routing"),
+        error=result.get("error"),
+    )
+
+
+@router.post(
+    "/metrics/prometheus/{rollout_id}",
+    response_model=PrometheusMetricsResponse,
+    tags=["stage_034_notifications"],
+)
+async def collect_prometheus_metrics(
+    rollout_id: str,
+    consumer_name: str = Query(..., min_length=1, max_length=100),
+    current_user: AuthUserResponse = Depends(get_current_user),
+    prometheus_url: str = Query("http://localhost:9090"),
+) -> PrometheusMetricsResponse:
+    """Collect metrics from Prometheus.
+    
+    Queries real Prometheus instance for error rate, latency, throughput.
+    """
+    _require_read(current_user)
+    
+    collector = PrometheusMetricsCollector(prometheus_url=prometheus_url)
+    metrics = await collector.collect_metrics(rollout_id, consumer_name)
+    
+    return PrometheusMetricsResponse(
+        rollout_id=rollout_id,
+        consumer_name=consumer_name,
+        error_rate=metrics.get("error_rate"),
+        latency_p99_ms=metrics.get("latency_p99_ms"),
+        throughput_eps=metrics.get("throughput_eps"),
+        collected_at=datetime.utcnow().isoformat() + "Z",
+        source="prometheus",
+    )
+
+
+@router.post(
+    "/metrics/cloudwatch/{rollout_id}",
+    response_model=CloudWatchMetricsResponse,
+    tags=["stage_034_notifications"],
+)
+async def collect_cloudwatch_metrics(
+    rollout_id: str,
+    consumer_name: str = Query(..., min_length=1, max_length=100),
+    current_user: AuthUserResponse = Depends(get_current_user),
+    region: str = Query("us-east-1"),
+) -> CloudWatchMetricsResponse:
+    """Collect metrics from CloudWatch.
+    
+    Queries AWS CloudWatch for error rate, latency, throughput.
+    Requires AWS credentials configured in environment.
+    """
+    _require_read(current_user)
+    
+    collector = CloudWatchMetricsCollector(region=region)
+    metrics = await collector.collect_metrics(rollout_id, consumer_name)
+    
+    return CloudWatchMetricsResponse(
+        rollout_id=rollout_id,
+        consumer_name=consumer_name,
+        error_rate=metrics.get("error_rate"),
+        latency_p99_ms=metrics.get("latency_p99_ms"),
+        throughput_eps=metrics.get("throughput_eps"),
+        collected_at=datetime.utcnow().isoformat() + "Z",
+        source="cloudwatch",
+    )
 
 
