@@ -12,6 +12,7 @@ from app.models.automation_action_log import AutomationActionLog
 from app.models.automation_rule import AutomationRule
 from app.models.automation_run import AutomationRun
 from app.models.consumer_policy_override import ConsumerPolicyOverride
+from app.models.policy_canary_rollout import PolicyCanaryRollout
 from app.models.email_message_log import EmailMessageLog
 from app.models.external_system import ExternalSystem
 from app.models.import_job import ImportJob

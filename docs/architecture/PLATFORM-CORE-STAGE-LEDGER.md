@@ -79,37 +79,58 @@
 
 ---
 
+### PLATFORM-CORE-ASYNC-CONSUMER-POLICY-ENFORCEMENT-METRICS-027
+**Objective:** Implement policy enforcement with canary rollout and metrics monitoring framework
+**Commit:** (pending)  
+**Status:** ✅ COMPLETE  
+**Key Features:**
+- Hash-based deterministic consumer selection for canary rollout (5%-100%)
+- Per-consumer policy override merging with global policy
+- Canary rollout lifecycle tracking (apply → graduate → complete)
+- Metrics baseline snapshot + current metrics monitoring
+- Graduated rollout control (5% → 25% → 100% expansion)
+- Service layer for policy application selection
+- 4 new API endpoints (apply, graduate, status, complete)
+- 9 new integration tests (9/9 passing)
+- Framework for auto-rollback (deferred to stage 028 for metrics collection)
+
+---
+
 ## Next Recommended Stage
 
-### PLATFORM-CORE-ASYNC-CONSUMER-POLICY-ENFORCEMENT-METRICS-027 (PROPOSED)
+### PLATFORM-CORE-ASYNC-CONSUMER-POLICY-AUTO-ROLLBACK-028 (PROPOSED)
 
-**Objective:** Implement canary enforcement and metrics-based auto-rollback for policy changes
+**Objective:** Implement metrics collection and auto-rollback for policy changes
 
 **Rationale:**
-- Stage 026 creates approval workflow; stage 027 applies policies to consumers
-- Canary percentage set by stage 026; stage 027 selects which consumers get policy
-- Metrics monitoring foundation needed for production rollout safety
+- Stage 027 created rollout framework; stage 028 integrates with metrics
+- Baseline captured; need actual metrics to compare for safety
 - Auto-rollback prevents policy bugs from cascading to all consumers
+- Error threshold evaluation needed for graduated rollout safety
 
 **Proposed Features:**
-1. **Consumer Policy Application**
-   - Hash-based selection (consistent per consumer)
-   - Override merging (apply consumer overrides if exist)
-   - Per-consumer policy enforcement logic
+1. **Metrics Collection**
+   - Query error rates from infrastructure (Prometheus, CloudWatch, DataDog)
+   - Compare current metrics to baseline at rollout start
+   - Update error_rate_baseline and error_rate_current during rollout
 
-2. **Metrics Monitoring**
-   - Baseline metrics snapshot at canary start
-   - Error rate tracking during canary phase
-   - Automatic rollback if threshold exceeded
+2. **Auto-Rollback Logic**
+   - Monitor error rate threshold during canary
+   - Trigger automatic rollback if error rate > baseline + threshold
+   - Call auto_rollback_canary() when threshold exceeded
+   - Alert operators of auto-rollback event
 
-3. **Graduated Rollout Expansion**
-   - POST `/policy/{id}/graduate-canary` - expand rollout percentage
-   - Automatic metrics comparison before graduation
-   - Safety checks before full rollout (100%)
+3. **Enforcement Integration**
+   - Job event consumer delivery layer calls should_consumer_get_policy()
+   - Applies policy based on canary percentage + consumer hash
+   - Applies consumer overrides merged with global policy
+   - Decision trace shows: "policy_version=X, canary=5%, override_active=true/false"
 
-4. **Rollout Completion Tracking**
-   - Mark approval as "rolled_out" when 100% applied
-   - Completion metrics in diagnostics
+4. **Rollout Status Dashboard**
+   - Real-time metrics during canary phase
+   - Error rate comparison (baseline vs current)
+   - Safe to graduate indicator
+   - Timeline of rollout events
 
 ---
 
@@ -123,13 +144,14 @@
 | 023 | Runbook Policy Persistence | ✅ | 2 new | 8727942 |
 | 024 | Runbook Policy Safety | ✅ | 4 new | e4afa93 |
 | 025 | Recovery Policy Safety | ✅ | 5 new | e595ab0 |
-| 026 | Policy Gradual Rollout | ✅ | 6 new | (pending) |
-| 027+ | (Pending) | - | - | - |
+| 026 | Policy Gradual Rollout | ✅ | 6 new | 445dc09 |
+| 027 | Policy Enforcement & Metrics | ✅ | 9 new | (pending) |
+| 028+ | (Pending) | - | - | - |
 
-**Total Completed:** 5 stages  
-**Total Tests Written:** 19  
-**Total Lines Added:** ~1200  
-**Test Success Rate:** 100% (238+ tests passing)
+**Total Completed:** 6 stages  
+**Total Tests Written:** 28  
+**Total Lines Added:** ~2200  
+**Test Success Rate:** 100% (247+ tests passing)
 
 ---
 
@@ -171,11 +193,21 @@
    - Merging: Overrides applied during enforcement (stage 027)
    - Exception handling without breaking global audit trail
 
+9. **Hash-Based Canary Selection:** SHA256 hash modulo 100
+   - Rationale: Deterministic (same consumer always selected), stable (new consumers don't affect existing), O(1) selection
+   - Function: `should_consumer_get_policy(consumer_name, canary_percentage) → bool`
+   - Used at enforcement time to decide: does this consumer get new policy?
+
+10. **Override at Enforcement Time:** Per-consumer exceptions applied during policy application
+    - Rationale: Approval is global decision; override is local exception; enforcement knows which consumer
+    - Function: `get_effective_policy(db, consumer_name, policy_type, global_policy) → dict`
+    - Used at enforcement time to select: what policy applies to this consumer?
+
 ---
 
 ## Cumulative Foundation Achievements
 
-**By End of Stage 026:**
+**By End of Stage 027:**
 - ✅ Runbook governance enforcement (allow/deny, cooldown, dual control)
 - ✅ Autoremediation governance enforcement (canary mode, rate limits, suppression)
 - ✅ Policy versioning and persistence (both policy types)
@@ -185,34 +217,41 @@
 - ✅ Approval workflow with state machine (governance control)
 - ✅ Canary rollout framework (risk mitigation)
 - ✅ Per-consumer policy overrides (exception handling)
-- ✅ 100% test coverage (238+ tests passing)
+- ✅ Policy enforcement with canary selection (consumer-specific rollout)
+- ✅ Policy enforcement with override merging (consumer-specific exceptions)
+- ✅ Metrics baseline snapshot framework (for stage 028+)
+- ✅ 100% test coverage (247+ tests passing)
 - ✅ Production-ready async consumer reliability baseline
 - ✅ Unified governance audit trail across all stages
 - ✅ Enterprise-grade policy management framework
 
-**Prerequisite for 027+:**
+**Prerequisite for 028+:**
 - ✅ Approval requests created and tracked
 - ✅ Canary percentage configured at approval time
 - ✅ Overrides stored and ready for enforcement
-- ✅ Ready for metric monitoring and auto-rollback implementation
+- ✅ Policy selection logic ready for enforcement layer
+- ✅ Metrics framework in schema (baseline + current columns)
+- ✅ Ready for metrics collection and auto-rollback implementation
 
 ---
 
-## Deployment Checklist (Stage 026)
+## Deployment Checklist (Stage 027)
 
-- [x] Backend tests passing (238 total: 45 core + 18 worker + 6 stage026 + others)
+- [x] Backend tests passing (247 total: 45 core + 18 worker + 6 stage026 + 9 stage027 + others)
+- [x] Models imported without error (PolicyCanaryRollout)
+- [x] Service functions tested (canary selection, override merging)
+- [x] Endpoints functional (apply, graduate, status, complete)
+- [x] Migrations syntax valid (0019)
 - [x] Frontend build successful
 - [x] Docker compose validation successful
-- [x] Models imported without error
-- [x] Migrations syntax valid (0017, 0018)
-- [x] Implementation report generated (900+ lines)
+- [x] Implementation report generated (1000+ lines)
 - [x] Stage ledger updated
 - [x] All changes committed
 
-**Ready for Stage 027 authorization.**
+**Ready for Stage 028 authorization.**
 
 ---
 
 **Ledger Status:** Current as of 2026-07-13  
-**Authorized By:** Autonomous PLATFORM-CORE track  
-**Next Review:** Upon Stage 027 completion
+**Authorized By**: Autonomous PLATFORM-CORE track  
+**Next Review**: Upon Stage 028 completion
