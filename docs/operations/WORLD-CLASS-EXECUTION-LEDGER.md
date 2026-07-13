@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-OBSERVABILITY-CONSUMERS-012`
-- Latest stage implementation commit: `PENDING_COMMIT`
+- Latest stage implementation commit: `1a58564`
 
 ## Stage Log (Newest First)
 
-- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-OBSERVABILITY-CONSUMERS-012
+- `1a58564` PLATFORM-CORE-ASYNC-OBSERVABILITY-CONSUMERS-012
   - Added `/jobs/event-consumers-diagnostics` with side-by-side per-consumer health, lag, retry, failure-rate, and stale-offset indicators.
   - Added operator-focused remediation recommendations and overall status rollup.
   - Added diagnostics thresholds in settings for lag and stale offset detection.
