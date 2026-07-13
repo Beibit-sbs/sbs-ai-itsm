@@ -5,7 +5,7 @@ import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, status, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -97,6 +97,10 @@ from app.services.jobs.dashboard_service import (
     get_rollout_comparison,
     get_anomaly_timeline,
     get_metric_correlation_matrix,
+)
+from app.services.jobs.dashboard_websocket_service import (
+    ws_manager,
+    managed_websocket,
 )
 from app.services.rbac import has_permission, is_saas_root
 
@@ -4789,5 +4793,86 @@ def get_correlation_dashboard(
         time_window_minutes=correlation_data.get("time_window_minutes", 0),
         timestamp=correlation_data.get("timestamp"),
     )
+
+
+# Stage 037: WebSocket Real-Time Dashboard Updates
+
+
+@router.websocket("/dashboard/ws")
+async def websocket_dashboard(
+    websocket: WebSocket,
+    token: str = Query(...),
+):
+    """WebSocket endpoint for real-time dashboard updates.
+    
+    Streams dashboard data in real-time instead of using polling.
+    Supports subscription to multiple data streams:
+    - summary: Dashboard health overview (30s updates)
+    - metrics: Metrics timeline (30s updates)
+    - alerts: Active alerts (30s updates)
+    - comparison: Rollout comparison (60s updates)
+    - anomalies: Anomaly timeline (60s updates)
+    - correlation: Correlation matrix (120s updates)
+    
+    Client can subscribe/unsubscribe dynamically.
+    """
+    # Authenticate the WebSocket connection using JWT token
+    try:
+        from app.core.config import get_settings
+        from jose import jwt, JWTError
+        
+        settings = get_settings()
+        try:
+            payload = jwt.decode(
+                token,
+                settings.SECRET_KEY,
+                algorithms=["HS256"]
+            )
+            user_id: str = payload.get("sub")
+            tenant_id: str = payload.get("tenant_id")
+            
+            if not user_id or not tenant_id:
+                await websocket.close(code=4001, reason="Invalid token claims")
+                return
+        except JWTError:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+    except Exception as e:
+        await websocket.close(code=4000, reason=f"Authentication error: {str(e)}")
+        return
+
+    async with managed_websocket(websocket, tenant_id):
+        try:
+            while True:
+                # Receive message from client
+                data = await websocket.receive_json()
+                message_type = data.get("type")
+                
+                if message_type == "subscribe":
+                    # Client wants to subscribe to specific streams
+                    streams = data.get("streams", [])
+                    await ws_manager.subscribe(websocket, streams)
+                
+                elif message_type == "unsubscribe":
+                    # Client wants to unsubscribe from specific streams
+                    streams = data.get("streams", [])
+                    await ws_manager.unsubscribe(websocket, streams)
+                
+                elif message_type == "ping":
+                    # Keep-alive ping from client
+                    await websocket.send_json({
+                        "type": "pong",
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    })
+                
+                else:
+                    # Unknown message type
+                    await ws_manager.send_error(
+                        websocket,
+                        f"Unknown message type: {message_type}"
+                    )
+        
+        except WebSocketDisconnect:
+            ws_manager.disconnect(websocket, tenant_id)
 
 
