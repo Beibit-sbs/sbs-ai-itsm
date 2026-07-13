@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-PERSISTENCE-023`
-- Latest stage implementation commit: `TBD`
+- Latest stage implementation commit: `8727942`
 
 ## Stage Log (Newest First)
 
-- `TBD` PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-PERSISTENCE-023
+- `8727942` PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-PERSISTENCE-023
   - Added versioned DB persistence for runbook governance policy with startup/runtime reload into settings.
   - Added runbook policy runtime API (`GET/POST /jobs/event-consumer-runbook-policy`) with optimistic concurrency token `expected_version` and `409` stale-write handling.
   - Extended diagnostics with runbook policy version/hash/rollout history metadata.
