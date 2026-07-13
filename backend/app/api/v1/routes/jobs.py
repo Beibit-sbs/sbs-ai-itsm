@@ -361,6 +361,53 @@ class JobEventConsumerAutoremediationPolicyRollbackResponse(BaseModel):
     last_policy_change_actor_email: str | None
 
 
+class PolicyApprovalRequestResponse(BaseModel):
+    approval_request_id: str
+    policy_type: str
+    status: str
+    requested_by_email: str
+    requested_at: datetime
+    current_version: int
+    requested_version: int
+    canary_percentage: int
+    approved_by_email: str | None
+    approved_at: datetime | None
+    rejection_reason: str | None
+
+
+class PolicyApprovalApproveRequest(BaseModel):
+    approval_request_id: str
+    canary_percentage: int = Field(default=5, ge=5, le=100)  # Start with 5%, allow up to 100%
+
+
+class PolicyApprovalRejectRequest(BaseModel):
+    approval_request_id: str
+    rejection_reason: str = Field(..., min_length=10, max_length=500)
+
+
+class PolicyCanaryRolloutRequest(BaseModel):
+    approval_request_id: str
+    new_canary_percentage: int = Field(..., ge=5, le=100)
+
+
+class ConsumerPolicyOverrideRequest(BaseModel):
+    consumer_name: str = Field(..., min_length=1, max_length=80)
+    policy_type: str = Field(..., min_length=1, max_length=32)  # "autoremediation", "runbook"
+    overrides_json: dict[str, object] = Field(..., description="Partial policy to override global settings")
+    reason: str = Field(..., min_length=10, max_length=255)
+
+
+class ConsumerPolicyOverrideResponse(BaseModel):
+    override_id: str
+    consumer_name: str
+    policy_type: str
+    policy_version: int
+    overrides_json: dict[str, object]
+    reason: str
+    created_by_email: str
+    created_at: datetime
+
+
 class JobEventConsumerRunbookRequest(BaseModel):
     consumer_name: str = Field(default="notifications-consumer", min_length=1, max_length=80)
     runbook_code: str = Field(..., min_length=3, max_length=120)
@@ -1625,6 +1672,262 @@ def reset_job_event_consumer_autoremediation_brake(
         effective_policy_hash=_policy_hash(effective_policy),
         last_policy_change_at=saved_state.get("updated_at"),
         last_policy_change_actor_email=current_user.email,
+    )
+
+
+# ==================== POLICY APPROVAL WORKFLOW (STAGE 026) ====================
+
+
+@router.post(
+    "/policy/request-approval",
+    response_model=PolicyApprovalRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def request_policy_approval(
+    approval_request: PolicyApprovalRequestResponse,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PolicyApprovalRequestResponse:
+    """Request approval for a policy change (autoremediation or runbook)."""
+    from app.models.policy_approval_request import PolicyApprovalRequest
+    import json
+    import secrets
+
+    _require_enqueue(current_user)
+    settings = get_settings()
+
+    if approval_request.policy_type not in ("autoremediation", "runbook"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="policy_type must be 'autoremediation' or 'runbook'",
+        )
+
+    # Get current policy version
+    if approval_request.policy_type == "runbook":
+        policy_state = _runbook_policy_state(settings, db)
+        current_version = int(policy_state.get("version", 1) or 1)
+    else:
+        policy_state = _policy_state(settings, db)
+        current_version = int(policy_state.get("version", 1) or 1)
+
+    approval_id = f"apr-{secrets.token_hex(16)}"
+    approval_req = PolicyApprovalRequest(
+        id=approval_id,
+        policy_type=approval_request.policy_type,
+        requested_by_email=current_user.email,
+        current_version=current_version,
+        requested_version=current_version + 1,
+        payload_json=json.dumps(approval_request.requested_version),
+        status="pending",
+        canary_percentage=0,
+    )
+    db.add(approval_req)
+    log_audit(
+        db,
+        action="policy.approval.requested",
+        entity_type="policy_approval_request",
+        entity_id=approval_id,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "approval_id": approval_id,
+            "policy_type": approval_request.policy_type,
+            "current_version": current_version,
+            "requested_version": current_version + 1,
+        },
+    )
+    db.commit()
+    db.refresh(approval_req)
+    return PolicyApprovalRequestResponse(
+        approval_request_id=approval_req.id,
+        policy_type=approval_req.policy_type,
+        status=approval_req.status,
+        requested_by_email=approval_req.requested_by_email,
+        requested_at=approval_req.requested_at,
+        current_version=approval_req.current_version,
+        requested_version=approval_req.requested_version,
+        canary_percentage=approval_req.canary_percentage,
+        approved_by_email=approval_req.approved_by_email,
+        approved_at=approval_req.approved_at,
+        rejection_reason=approval_req.rejection_reason,
+    )
+
+
+@router.post(
+    "/policy/{approval_request_id}/approve",
+    response_model=PolicyApprovalRequestResponse,
+)
+def approve_policy_change(
+    approval_request_id: str,
+    request: PolicyApprovalApproveRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PolicyApprovalRequestResponse:
+    """Approve a pending policy change and optionally start canary rollout."""
+    from app.models.policy_approval_request import PolicyApprovalRequest
+
+    _require_enqueue(current_user)
+    approval_req = db.query(PolicyApprovalRequest).filter_by(id=approval_request_id).first()
+    if not approval_req:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval request not found")
+    if approval_req.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Approval request is {approval_req.status}, cannot approve",
+        )
+
+    approval_req.status = "approved"
+    approval_req.approved_by_email = current_user.email
+    approval_req.approved_at = datetime.now(UTC)
+    approval_req.canary_percentage = request.canary_percentage
+
+    log_audit(
+        db,
+        action="policy.approval.approved",
+        entity_type="policy_approval_request",
+        entity_id=approval_request_id,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "approval_id": approval_request_id,
+            "policy_type": approval_req.policy_type,
+            "canary_percentage": request.canary_percentage,
+        },
+    )
+    db.commit()
+    db.refresh(approval_req)
+    return PolicyApprovalRequestResponse(
+        approval_request_id=approval_req.id,
+        policy_type=approval_req.policy_type,
+        status=approval_req.status,
+        requested_by_email=approval_req.requested_by_email,
+        requested_at=approval_req.requested_at,
+        current_version=approval_req.current_version,
+        requested_version=approval_req.requested_version,
+        canary_percentage=approval_req.canary_percentage,
+        approved_by_email=approval_req.approved_by_email,
+        approved_at=approval_req.approved_at,
+        rejection_reason=approval_req.rejection_reason,
+    )
+
+
+@router.post(
+    "/policy/{approval_request_id}/reject",
+    response_model=PolicyApprovalRequestResponse,
+)
+def reject_policy_change(
+    approval_request_id: str,
+    request: PolicyApprovalRejectRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PolicyApprovalRequestResponse:
+    """Reject a pending policy change."""
+    from app.models.policy_approval_request import PolicyApprovalRequest
+
+    _require_enqueue(current_user)
+    approval_req = db.query(PolicyApprovalRequest).filter_by(id=approval_request_id).first()
+    if not approval_req:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval request not found")
+    if approval_req.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Approval request is {approval_req.status}, cannot reject",
+        )
+
+    approval_req.status = "rejected"
+    approval_req.rejection_reason = request.rejection_reason
+
+    log_audit(
+        db,
+        action="policy.approval.rejected",
+        entity_type="policy_approval_request",
+        entity_id=approval_request_id,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "approval_id": approval_request_id,
+            "policy_type": approval_req.policy_type,
+            "rejection_reason": request.rejection_reason,
+        },
+    )
+    db.commit()
+    db.refresh(approval_req)
+    return PolicyApprovalRequestResponse(
+        approval_request_id=approval_req.id,
+        policy_type=approval_req.policy_type,
+        status=approval_req.status,
+        requested_by_email=approval_req.requested_by_email,
+        requested_at=approval_req.requested_at,
+        current_version=approval_req.current_version,
+        requested_version=approval_req.requested_version,
+        canary_percentage=approval_req.canary_percentage,
+        approved_by_email=None,
+        approved_at=None,
+        rejection_reason=approval_req.rejection_reason,
+    )
+
+
+@router.post(
+    "/policy/{approval_request_id}/create-override",
+    response_model=ConsumerPolicyOverrideResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_consumer_policy_override(
+    approval_request_id: str,
+    request: ConsumerPolicyOverrideRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ConsumerPolicyOverrideResponse:
+    """Create a per-consumer policy override (exception to global policy)."""
+    from app.models.consumer_policy_override import ConsumerPolicyOverride
+    import json
+    import secrets
+
+    _require_enqueue(current_user)
+
+    # Verify approval request exists and is approved
+    from app.models.policy_approval_request import PolicyApprovalRequest
+
+    approval_req = db.query(PolicyApprovalRequest).filter_by(id=approval_request_id).first()
+    if not approval_req:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval request not found")
+
+    override_id = f"ovr-{secrets.token_hex(16)}"
+    override = ConsumerPolicyOverride(
+        id=override_id,
+        consumer_name=request.consumer_name,
+        policy_type=request.policy_type,
+        policy_version=approval_req.requested_version,
+        overrides_json=json.dumps(request.overrides_json),
+        reason=request.reason,
+        created_by_email=current_user.email,
+    )
+    db.add(override)
+    log_audit(
+        db,
+        action="policy.override.created",
+        entity_type="consumer_policy_override",
+        entity_id=override_id,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "override_id": override_id,
+            "consumer_name": request.consumer_name,
+            "policy_type": request.policy_type,
+            "reason": request.reason,
+        },
+    )
+    db.commit()
+    db.refresh(override)
+    return ConsumerPolicyOverrideResponse(
+        override_id=override.id,
+        consumer_name=override.consumer_name,
+        policy_type=override.policy_type,
+        policy_version=override.policy_version,
+        overrides_json=json.loads(override.overrides_json),
+        reason=override.reason,
+        created_by_email=override.created_by_email,
+        created_at=override.created_at,
     )
 
 

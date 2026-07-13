@@ -11,6 +11,7 @@ from app.models.audit_log import AuditLog
 from app.models.automation_action_log import AutomationActionLog
 from app.models.automation_rule import AutomationRule
 from app.models.automation_run import AutomationRun
+from app.models.consumer_policy_override import ConsumerPolicyOverride
 from app.models.email_message_log import EmailMessageLog
 from app.models.external_system import ExternalSystem
 from app.models.import_job import ImportJob
@@ -39,6 +40,7 @@ from app.models.ticket_priority import TicketPriority
 from app.models.ticket_status import TicketStatus
 from app.models.user_role import UserRole
 from app.models.permission import Permission
+from app.models.policy_approval_request import PolicyApprovalRequest
 from app.models.report_snapshot import ReportSnapshot
 from app.models.role import Role
 from app.models.runbook import Runbook
