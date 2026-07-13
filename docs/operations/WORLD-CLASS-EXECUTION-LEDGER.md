@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-EVENT-BUS-009`
-- Latest stage implementation commit: `pending_local_commit_for_event_bus_009`
+- Latest stage implementation commit: `e2e5dff`
 
 ## Stage Log (Newest First)
 
-- `pending_local_commit_for_event_bus_009` PLATFORM-CORE-ASYNC-EVENT-BUS-009
+- `e2e5dff` PLATFORM-CORE-ASYNC-EVENT-BUS-009
   - Added Redis Stream relay for durable lifecycle events with DB lock + Redis dedup protection.
   - Added relay delivery-state metadata, retry handling, and event-bus summary endpoint.
   - Consumer-safe event payload contract now published to `jobs:lifecycle`.
