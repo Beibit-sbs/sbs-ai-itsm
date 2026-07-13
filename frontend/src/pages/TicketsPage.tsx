@@ -52,6 +52,15 @@ type BulkActionResult = {
   errors: string[]
 }
 
+type RequesterTemplate = {
+  id: string
+  label: string
+  category: string
+  priority: string
+  title: string
+  description: string
+}
+
 type TicketFormState = {
   title: string
   description: string
@@ -132,6 +141,41 @@ const emptyTicketForm: TicketFormState = {
   assignee_id: '',
   asset_id: '',
 }
+
+const requesterTemplates: RequesterTemplate[] = [
+  {
+    id: 'internet',
+    label: 'Интернет / Wi-Fi',
+    category: 'NETWORK_WIFI',
+    priority: 'HIGH',
+    title: 'Нет доступа к интернету',
+    description: 'Опишите, где и когда пропал доступ: корпус, кабинет/зона, устройство, вид ошибки.',
+  },
+  {
+    id: 'account',
+    label: 'Доступ / Пароль',
+    category: 'ACCOUNT_PASSWORD',
+    priority: 'HIGH',
+    title: 'Проблема с доступом к учетной записи',
+    description: 'Укажите систему, логин и текст ошибки. Если была смена устройства или телефона, добавьте это в описание.',
+  },
+  {
+    id: 'mail',
+    label: 'Почта',
+    category: 'MAIL',
+    priority: 'MEDIUM',
+    title: 'Не работает корпоративная почта',
+    description: 'Опишите проблему: отправка, получение, синхронизация или авторизация.',
+  },
+  {
+    id: 'software',
+    label: 'Установка ПО',
+    category: 'SOFTWARE_INSTALL',
+    priority: 'LOW',
+    title: 'Запрос на установку программного обеспечения',
+    description: 'Укажите название ПО, версию, цель использования и срок, когда доступ должен быть предоставлен.',
+  },
+]
 
 function formatDateTime(value: string | null | undefined) {
   if (!value) return '—'
@@ -248,6 +292,16 @@ export default function TicketsPage() {
   useEffect(() => {
     setPage(1)
   }, [queue, statusFilter, priorityFilter, categoryFilter, assigneeFilter, sortBy, sortDir, pageSize])
+
+  useEffect(() => {
+    if (!isRequester) return
+    setQueue((current) => {
+      if (current === 'all' || current === 'mine' || current === 'unassigned' || current === 'critical' || current === 'sla_breached' || current === 'due_today') {
+        return 'created_by_me'
+      }
+      return current
+    })
+  }, [isRequester])
 
   useEffect(() => {
     setSelectedTicketIds([])
@@ -580,6 +634,28 @@ export default function TicketsPage() {
     return { overdue, dueToday, unassigned, critical }
   }, [tickets])
 
+  const requesterStats = useMemo(() => {
+    const isClosed = (status: string) => ['RESOLVED', 'CLOSED', 'CANCELLED'].includes(status)
+    const open = tickets.filter((ticket) => !isClosed(ticket.status)).length
+    const waitingUser = tickets.filter((ticket) => ticket.status === 'WAITING_USER').length
+    const resolved = tickets.filter((ticket) => ticket.status === 'RESOLVED').length
+    const overdue = tickets.filter((ticket) => ticket.sla_badge === 'BREACHED' && !isClosed(ticket.status)).length
+    return { open, waitingUser, resolved, overdue }
+  }, [tickets])
+
+  const applyRequesterTemplate = (template: RequesterTemplate) => {
+    setCreateForm((state) => ({
+      ...state,
+      category: template.category,
+      priority: template.priority,
+      title: template.title,
+      description: template.description,
+      department: state.department || 'Service Desk',
+      requester_contact: state.requester_contact,
+    }))
+    setIsCreateOpen(true)
+  }
+
   const toggleTicketSelection = (ticketId: string) => {
     setSelectedTicketIds((current) =>
       current.includes(ticketId) ? current.filter((id) => id !== ticketId) : [...current, ticketId]
@@ -662,13 +738,34 @@ export default function TicketsPage() {
       <section className="foundation-card">
         <div>
           <p className="eyebrow">SERVICE DESK</p>
-          <h2>Рабочий центр ИТ-службы</h2>
-          <p>Очереди, управление статусами, назначение исполнителей, комментарии и аудит действий в одном экране.</p>
+          <h2>{isRequester ? 'Мои обращения в ИТ-службу' : 'Рабочий центр ИТ-службы'}</h2>
+          <p>
+            {isRequester
+              ? 'Создавайте обращения по шаблонам, отслеживайте статусы и отвечайте в комментариях по своим заявкам.'
+              : 'Очереди, управление статусами, назначение исполнителей, комментарии и аудит действий в одном экране.'}
+          </p>
         </div>
         <button type="button" className="ghost-button" onClick={() => setIsCreateOpen(true)}>
-          Создать заявку
+          {isRequester ? 'Создать обращение' : 'Создать заявку'}
         </button>
       </section>
+
+      {isRequester ? (
+        <section className="foundation-card" style={{ marginTop: 12 }}>
+          <div>
+            <p className="eyebrow">REQUESTER QUICK START</p>
+            <h3 style={{ margin: '6px 0 8px' }}>Быстрые шаблоны обращения</h3>
+            <p className="muted" style={{ margin: 0 }}>Выберите тип проблемы, и форма создания откроется уже заполненной.</p>
+          </div>
+          <div className="analytics-actions" style={{ marginTop: 12, justifyContent: 'flex-start', flexWrap: 'wrap' }}>
+            {requesterTemplates.map((template) => (
+              <button key={template.id} type="button" className="ghost-button" onClick={() => applyRequesterTemplate(template)}>
+                {template.label}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {actionFeedback ? (
         <section
@@ -682,7 +779,7 @@ export default function TicketsPage() {
       ) : null}
 
       <section className="module-subnav" style={{ marginTop: 18 }}>
-        {queueOptions.map((item) => (
+        {(isRequester ? queueOptions.filter((item) => ['created_by_me', 'closed'].includes(item.value)) : queueOptions).map((item) => (
           <button
             key={item.value}
             type="button"
@@ -695,7 +792,7 @@ export default function TicketsPage() {
       </section>
 
       <section className="foundation-card tickets-toolbar" style={{ marginTop: 14 }}>
-        <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(8, minmax(0, 1fr))' }}>
+        <div className="tickets-toolbar-group" style={{ gridTemplateColumns: isRequester ? 'repeat(6, minmax(0, 1fr))' : 'repeat(8, minmax(0, 1fr))' }}>
           <label className="inline-field">
             <span>Поиск</span>
             <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Номер, тема, заявитель" />
@@ -724,15 +821,17 @@ export default function TicketsPage() {
               ))}
             </select>
           </label>
-          <label className="inline-field">
-            <span>Исполнитель</span>
-            <select value={assigneeFilter} onChange={(event) => setAssigneeFilter(event.target.value)}>
-              <option value="ALL">Все</option>
-              {assigneeOptions.map((value) => (
-                <option key={value} value={value}>{value}</option>
-              ))}
-            </select>
-          </label>
+          {!isRequester ? (
+            <label className="inline-field">
+              <span>Исполнитель</span>
+              <select value={assigneeFilter} onChange={(event) => setAssigneeFilter(event.target.value)}>
+                <option value="ALL">Все</option>
+                {assigneeOptions.map((value) => (
+                  <option key={value} value={value}>{value}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <label className="inline-field">
             <span>Сортировать по</span>
             <select value={sortBy} onChange={(event) => setSortBy(event.target.value as TicketSortBy)}>
@@ -762,35 +861,37 @@ export default function TicketsPage() {
         </div>
       </section>
 
-      <section className="foundation-card tickets-toolbar" style={{ marginTop: 12 }}>
-        <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
-          <label className="inline-field">
-            <span>Пресет</span>
-            <select value={activePresetId} onChange={(event) => applyPreset(event.target.value)}>
-              <option value="">Без пресета</option>
-              {presets.map((preset) => (
-                <option key={preset.id} value={preset.id}>{preset.name}</option>
-              ))}
-            </select>
-          </label>
-          <label className="inline-field">
-            <span>Сохранить пресет</span>
-            <input value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder="Например: Ночные SLA" />
-          </label>
-          <div className="analytics-actions" style={{ alignItems: 'end' }}>
-            <button type="button" className="ghost-button" onClick={savePreset} disabled={!presetName.trim()}>
-              Сохранить
-            </button>
-            <button type="button" className="ghost-button" onClick={removeActivePreset} disabled={!activePresetId}>
-              Удалить
-            </button>
+      {!isRequester ? (
+        <section className="foundation-card tickets-toolbar" style={{ marginTop: 12 }}>
+          <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+            <label className="inline-field">
+              <span>Пресет</span>
+              <select value={activePresetId} onChange={(event) => applyPreset(event.target.value)}>
+                <option value="">Без пресета</option>
+                {presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>{preset.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="inline-field">
+              <span>Сохранить пресет</span>
+              <input value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder="Например: Ночные SLA" />
+            </label>
+            <div className="analytics-actions" style={{ alignItems: 'end' }}>
+              <button type="button" className="ghost-button" onClick={savePreset} disabled={!presetName.trim()}>
+                Сохранить
+              </button>
+              <button type="button" className="ghost-button" onClick={removeActivePreset} disabled={!activePresetId}>
+                Удалить
+              </button>
+            </div>
+            <div className="inline-field">
+              <span>Выбрано заявок</span>
+              <strong>{selectedTicketIds.length}</strong>
+            </div>
           </div>
-          <div className="inline-field">
-            <span>Выбрано заявок</span>
-            <strong>{selectedTicketIds.length}</strong>
-          </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
       {isStaff ? (
         <section className="foundation-card tickets-toolbar" style={{ marginTop: 12 }}>
@@ -902,24 +1003,45 @@ export default function TicketsPage() {
       ) : null}
 
       <section className="foundation-card" style={{ marginTop: 12 }}>
-        <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
-          <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('overdue')}>
-            <span>SLA просрочено</span>
-            <strong style={{ color: triageStats.overdue > 0 ? '#b42318' : undefined }}>{triageStats.overdue}</strong>
-          </button>
-          <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('dueToday')}>
-            <span>На сегодня</span>
-            <strong style={{ color: triageStats.dueToday > 0 ? '#b54708' : undefined }}>{triageStats.dueToday}</strong>
-          </button>
-          <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('unassigned')}>
-            <span>Неназначенные</span>
-            <strong>{triageStats.unassigned}</strong>
-          </button>
-          <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('critical')}>
-            <span>Критичные</span>
-            <strong style={{ color: triageStats.critical > 0 ? '#b42318' : undefined }}>{triageStats.critical}</strong>
-          </button>
-        </div>
+        {isRequester ? (
+          <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+            <div className="inline-field" style={{ minHeight: 82 }}>
+              <span>Открытые</span>
+              <strong>{requesterStats.open}</strong>
+            </div>
+            <div className="inline-field" style={{ minHeight: 82 }}>
+              <span>Ожидают моего ответа</span>
+              <strong style={{ color: requesterStats.waitingUser > 0 ? '#b54708' : undefined }}>{requesterStats.waitingUser}</strong>
+            </div>
+            <div className="inline-field" style={{ minHeight: 82 }}>
+              <span>Решенные</span>
+              <strong>{requesterStats.resolved}</strong>
+            </div>
+            <div className="inline-field" style={{ minHeight: 82 }}>
+              <span>Просроченные</span>
+              <strong style={{ color: requesterStats.overdue > 0 ? '#b42318' : undefined }}>{requesterStats.overdue}</strong>
+            </div>
+          </div>
+        ) : (
+          <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+            <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('overdue')}>
+              <span>SLA просрочено</span>
+              <strong style={{ color: triageStats.overdue > 0 ? '#b42318' : undefined }}>{triageStats.overdue}</strong>
+            </button>
+            <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('dueToday')}>
+              <span>На сегодня</span>
+              <strong style={{ color: triageStats.dueToday > 0 ? '#b54708' : undefined }}>{triageStats.dueToday}</strong>
+            </button>
+            <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('unassigned')}>
+              <span>Неназначенные</span>
+              <strong>{triageStats.unassigned}</strong>
+            </button>
+            <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('critical')}>
+              <span>Критичные</span>
+              <strong style={{ color: triageStats.critical > 0 ? '#b42318' : undefined }}>{triageStats.critical}</strong>
+            </button>
+          </div>
+        )}
       </section>
 
       <section className="ticket-table-shell">
@@ -931,9 +1053,11 @@ export default function TicketsPage() {
               <table className="ticket-table">
                 <thead>
                   <tr>
-                    <th>
-                      <input type="checkbox" checked={allPageSelected} onChange={toggleSelectPage} aria-label="Выбрать все на странице" />
-                    </th>
+                    {!isRequester ? (
+                      <th>
+                        <input type="checkbox" checked={allPageSelected} onChange={toggleSelectPage} aria-label="Выбрать все на странице" />
+                      </th>
+                    ) : null}
                     <th>Номер</th>
                     <th>Тема</th>
                     <th>Статус</th>
@@ -949,14 +1073,16 @@ export default function TicketsPage() {
                 <tbody>
                   {tickets.map((ticket) => (
                     <tr key={ticket.id} className={ticket.sla_badge === 'BREACHED' ? 'row-overdue' : ''}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={selectedTicketIds.includes(ticket.id)}
-                          onChange={() => toggleTicketSelection(ticket.id)}
-                          aria-label={`Выбрать заявку ${ticket.ticket_number ?? ticket.id}`}
-                        />
-                      </td>
+                      {!isRequester ? (
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selectedTicketIds.includes(ticket.id)}
+                            onChange={() => toggleTicketSelection(ticket.id)}
+                            aria-label={`Выбрать заявку ${ticket.ticket_number ?? ticket.id}`}
+                          />
+                        </td>
+                      ) : null}
                       <td>{ticket.ticket_number ?? '—'}</td>
                       <td>
                         <strong>{ticket.title}</strong>
@@ -979,7 +1105,7 @@ export default function TicketsPage() {
                       <td>{formatDateTime(ticket.updated_at)}</td>
                       <td>
                         <div className="analytics-actions" style={{ justifyContent: 'flex-start', flexWrap: 'wrap' }}>
-                          {canQuickAssignToMe(role, ticket.assignee_id, ticket.assignee_name) ? (
+                          {!isRequester && canQuickAssignToMe(role, ticket.assignee_id, ticket.assignee_name) ? (
                             <button
                               type="button"
                               className="ghost-button row-action"
@@ -989,7 +1115,7 @@ export default function TicketsPage() {
                               Взять
                             </button>
                           ) : null}
-                          {canQuickStart(role, ticket.status, ticket.assignee_id, ticket.assignee_name, session?.user.id, session?.user.full_name) ? (
+                          {!isRequester && canQuickStart(role, ticket.status, ticket.assignee_id, ticket.assignee_name, session?.user.id, session?.user.full_name) ? (
                             <button
                               type="button"
                               className="ghost-button row-action"
@@ -999,7 +1125,7 @@ export default function TicketsPage() {
                               Старт
                             </button>
                           ) : null}
-                          {canQuickResolve(role, ticket.status, ticket.assignee_id, ticket.assignee_name, session?.user.id, session?.user.full_name) ? (
+                          {!isRequester && canQuickResolve(role, ticket.status, ticket.assignee_id, ticket.assignee_name, session?.user.id, session?.user.full_name) ? (
                             <button
                               type="button"
                               className="ghost-button row-action"
@@ -1167,7 +1293,7 @@ export default function TicketsPage() {
                     <span className="inline-pill">SLA: {slaBadgeLabel(detail.sla_badge)}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    {canTakeTicket(role) ? (
+                    {!isRequester && canTakeTicket(role) ? (
                       <button
                         type="button"
                         className="ghost-button"
@@ -1177,7 +1303,7 @@ export default function TicketsPage() {
                         Взять в работу
                       </button>
                     ) : null}
-                    {canManageAssignments(role) ? (
+                    {!isRequester && canManageAssignments(role) ? (
                       <button
                         type="button"
                         className="ghost-button"
@@ -1187,30 +1313,34 @@ export default function TicketsPage() {
                         Назначить
                       </button>
                     ) : null}
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={() => transitionMutation.mutate({ ticketId: detail.id, status: transitionStatus, comment: transitionComment, is_internal: isStaff })}
-                      disabled={transitionMutation.isPending}
-                    >
-                      Сменить статус
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={() => transitionMutation.mutate({ ticketId: detail.id, status: 'CLOSED', comment: 'Закрыто оператором' })}
-                      disabled={transitionMutation.isPending}
-                    >
-                      Закрыть
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={() => transitionMutation.mutate({ ticketId: detail.id, status: 'REOPENED', comment: 'Переоткрытие по запросу' })}
-                      disabled={transitionMutation.isPending}
-                    >
-                      Переоткрыть
-                    </button>
+                    {!isRequester ? (
+                      <>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => transitionMutation.mutate({ ticketId: detail.id, status: transitionStatus, comment: transitionComment, is_internal: isStaff })}
+                          disabled={transitionMutation.isPending}
+                        >
+                          Сменить статус
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => transitionMutation.mutate({ ticketId: detail.id, status: 'CLOSED', comment: 'Закрыто оператором' })}
+                          disabled={transitionMutation.isPending}
+                        >
+                          Закрыть
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => transitionMutation.mutate({ ticketId: detail.id, status: 'REOPENED', comment: 'Переоткрытие по запросу' })}
+                          disabled={transitionMutation.isPending}
+                        >
+                          Переоткрыть
+                        </button>
+                      </>
+                    ) : null}
                   </div>
                 </section>
 
@@ -1392,38 +1522,40 @@ export default function TicketsPage() {
                   ) : null}
                 </section>
 
-                <section className="ticket-detail-panel" style={{ marginTop: 12 }}>
-                  <h3>Операции</h3>
-                  <div className="form-grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
-                    <label>
-                      <span>Новый статус</span>
-                      <select value={transitionStatus} onChange={(event) => setTransitionStatus(event.target.value)}>
-                        {transitionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                      </select>
-                    </label>
-                    {canManageAssignments(role) ? (
+                {!isRequester ? (
+                  <section className="ticket-detail-panel" style={{ marginTop: 12 }}>
+                    <h3>Операции</h3>
+                    <div className="form-grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
                       <label>
-                        <span>Назначить на</span>
-                        <select value={assignUserId} onChange={(event) => setAssignUserId(event.target.value)}>
-                          <option value="">Выбрать исполнителя</option>
-                          {users.map((user) => (
-                            <option key={user.id} value={user.id}>{user.full_name} · {user.email}</option>
-                          ))}
+                        <span>Новый статус</span>
+                        <select value={transitionStatus} onChange={(event) => setTransitionStatus(event.target.value)}>
+                          {transitionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                         </select>
                       </label>
-                    ) : (
-                      <div />
-                    )}
+                      {canManageAssignments(role) ? (
+                        <label>
+                          <span>Назначить на</span>
+                          <select value={assignUserId} onChange={(event) => setAssignUserId(event.target.value)}>
+                            <option value="">Выбрать исполнителя</option>
+                            {users.map((user) => (
+                              <option key={user.id} value={user.id}>{user.full_name} · {user.email}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : (
+                        <div />
+                      )}
+                      <label>
+                        <span>Комментарий к действию</span>
+                        <input value={assignComment} onChange={(event) => setAssignComment(event.target.value)} />
+                      </label>
+                    </div>
                     <label>
-                      <span>Комментарий к действию</span>
-                      <input value={assignComment} onChange={(event) => setAssignComment(event.target.value)} />
+                      <span>Комментарий к смене статуса</span>
+                      <textarea value={transitionComment} onChange={(event) => setTransitionComment(event.target.value)} rows={3} />
                     </label>
-                  </div>
-                  <label>
-                    <span>Комментарий к смене статуса</span>
-                    <textarea value={transitionComment} onChange={(event) => setTransitionComment(event.target.value)} rows={3} />
-                  </label>
-                </section>
+                  </section>
+                ) : null}
               </>
             ) : null}
           </div>
