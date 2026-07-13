@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-EVENTS-008`
-- Latest stage implementation commit: `pending_local_commit_for_events_008`
+- Latest stage implementation commit: `51d6781`
 
 ## Stage Log (Newest First)
 
-- `pending_local_commit_for_events_008` PLATFORM-CORE-ASYNC-EVENTS-008
+- `51d6781` PLATFORM-CORE-ASYNC-EVENTS-008
   - Added durable `job_lifecycle_events` storage and additive migration.
   - Emitted lifecycle events for queued, running, success, failed, retry_scheduled, dead_letter, and replayed transitions.
   - Added `GET /jobs/{job_id}/events` for ordered lifecycle event inspection.
