@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     jobs_event_consumer_name: str = "notifications-consumer"
     jobs_event_automation_consumer_name: str = "automation-consumer"
     jobs_event_consumer_max_attempts: int = 3
+    jobs_event_consumer_lag_alert_threshold: int = 25
+    jobs_event_consumer_stale_offset_seconds: int = 300
     jobs_retry_base_seconds: float = 0.5
     jobs_retry_max_seconds: float = 15.0
 

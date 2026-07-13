@@ -371,6 +371,40 @@ def test_job_event_consumer_summary_rejects_unknown_consumer(app) -> None:
     assert response.status_code == 400
 
 
+def test_job_event_consumers_diagnostics_shape(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        response = client.get("/api/v1/jobs/event-consumers-diagnostics", headers=_auth_headers(token))
+
+    assert response.status_code == 200
+    data = response.json()
+    for key in ("stream_name", "total_events", "consumer_count", "overall_status", "consumers"):
+        assert key in data
+    assert isinstance(data["consumers"], list)
+    assert len(data["consumers"]) == 2
+    first = data["consumers"][0]
+    for key in (
+        "consumer_name",
+        "stream_name",
+        "total_events",
+        "delivery_rows",
+        "delivered",
+        "pending",
+        "failed",
+        "retryable_failed",
+        "exhausted_failed",
+        "unseen_events",
+        "lag_events",
+        "failure_rate_pct",
+        "oldest_undelivered_age_seconds",
+        "offset_updated_at",
+        "stale_offset",
+        "status",
+        "recommended_actions",
+    ):
+        assert key in first
+
+
 def test_create_outbox_entry_is_idempotent_by_job_and_queue(app) -> None:
     from app.db.session import SessionLocal
     from app.services.jobs import create_outbox_entry

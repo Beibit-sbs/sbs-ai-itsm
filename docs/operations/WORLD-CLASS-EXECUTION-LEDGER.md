@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-AUTOMATION-HOOKS-011`
-- Latest stage implementation commit: `983bd85`
+- Last completed stage: `PLATFORM-CORE-ASYNC-OBSERVABILITY-CONSUMERS-012`
+- Latest stage implementation commit: `PENDING_COMMIT`
 
 ## Stage Log (Newest First)
+
+- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-OBSERVABILITY-CONSUMERS-012
+  - Added `/jobs/event-consumers-diagnostics` with side-by-side per-consumer health, lag, retry, failure-rate, and stale-offset indicators.
+  - Added operator-focused remediation recommendations and overall status rollup.
+  - Added diagnostics thresholds in settings for lag and stale offset detection.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-OBSERVABILITY-CONSUMERS-012-REPORT.md`
 
 - `983bd85` PLATFORM-CORE-ASYNC-AUTOMATION-HOOKS-011
   - Added dual downstream consumers over lifecycle stream with isolated delivery/retry state per consumer.
@@ -122,17 +128,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-OBSERVABILITY-CONSUMERS-012`
+- `PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-013`
 
 Scope proposal:
-- Add consumer-level observability surfaces (per-consumer lag, retry pressure, failure rates, stale offsets).
-- Expose diagnostics that compare consumers side-by-side on the same stream.
-- Add operator-ready remediation guidance when one consumer degrades while others stay healthy.
+- Add targeted recovery tooling for consumers with persistent failures (bounded replay by consumer/event filters).
+- Keep replay idempotent and isolated per consumer without mutating durable lifecycle source records.
+- Provide dry-run preview and protected execution path for operator-triggered recovery.
 
 Exit criteria:
-- API diagnostics expose per-consumer health and lag indicators.
-- Tests cover degraded consumer scenarios without cross-consumer impact.
-- Runtime smoke validates diagnostics endpoint and non-regression of existing consumers.
+- Replay tooling can re-drive failed/pending deliveries for a selected consumer safely.
+- Tests prove no cross-consumer interference and idempotent outcomes under repeated replay.
+- Runtime smoke validates replay path plus diagnostics non-regression.
 
 ## Stage Execution Template
 

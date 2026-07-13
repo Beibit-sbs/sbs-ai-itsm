@@ -26,6 +26,7 @@ from app.core.context import get_correlation_id
 from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_event_consumer_delivery import JobEventConsumerDelivery
+from app.models.job_event_consumer_offset import JobEventConsumerOffset
 from app.models.job_run import JobRun
 
 logger = logging.getLogger("app.jobs")
@@ -196,6 +197,148 @@ def job_event_consumer_summary(db: Session, *, consumer_name: str, stream_name: 
         "pending": int(pending or 0),
         "delivered": int(delivered or 0),
         "failed": int(failed or 0),
+    }
+
+
+def job_event_consumers_diagnostics(
+    db: Session,
+    *,
+    stream_name: str,
+    consumer_names: list[str],
+    max_attempts: int,
+    lag_alert_threshold: int,
+    stale_offset_seconds: int,
+) -> dict[str, object]:
+    now = _now()
+    total_events = int(
+        db.scalar(select(func.count(JobLifecycleEvent.id)).where(JobLifecycleEvent.relay_stream_name == stream_name)) or 0
+    )
+    last_event_created_at = db.scalar(
+        select(func.max(JobLifecycleEvent.created_at)).where(JobLifecycleEvent.relay_stream_name == stream_name)
+    )
+
+    consumers: list[dict[str, object]] = []
+    for consumer_name in consumer_names:
+        count_stmt = select(
+            func.count(JobEventConsumerDelivery.id),
+            func.sum(case((JobEventConsumerDelivery.status == "pending", 1), else_=0)),
+            func.sum(case((JobEventConsumerDelivery.status == "delivered", 1), else_=0)),
+            func.sum(case((JobEventConsumerDelivery.status == "failed", 1), else_=0)),
+            func.sum(
+                case(
+                    (
+                        (JobEventConsumerDelivery.status == "failed")
+                        & (JobEventConsumerDelivery.attempts < max_attempts),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            func.sum(
+                case(
+                    (
+                        (JobEventConsumerDelivery.status == "failed")
+                        & (JobEventConsumerDelivery.attempts >= max_attempts),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+        ).where(
+            JobEventConsumerDelivery.consumer_name == consumer_name,
+            JobEventConsumerDelivery.stream_name == stream_name,
+        )
+        total_rows, pending, delivered, failed, retryable_failed, exhausted_failed = db.execute(count_stmt).one()
+        total_rows = int(total_rows or 0)
+        pending = int(pending or 0)
+        delivered = int(delivered or 0)
+        failed = int(failed or 0)
+        retryable_failed = int(retryable_failed or 0)
+        exhausted_failed = int(exhausted_failed or 0)
+
+        oldest_undelivered = db.scalar(
+            select(func.min(JobEventConsumerDelivery.created_at)).where(
+                JobEventConsumerDelivery.consumer_name == consumer_name,
+                JobEventConsumerDelivery.stream_name == stream_name,
+                JobEventConsumerDelivery.status != "delivered",
+            )
+        )
+        oldest_undelivered_age_seconds = (
+            int((now - oldest_undelivered).total_seconds()) if oldest_undelivered is not None else 0
+        )
+
+        offset = db.scalar(
+            select(JobEventConsumerOffset).where(
+                JobEventConsumerOffset.consumer_name == consumer_name,
+                JobEventConsumerOffset.stream_name == stream_name,
+            )
+        )
+        offset_updated_at = offset.updated_at if offset is not None else None
+        stale_offset = False
+        if offset_updated_at is not None and last_event_created_at is not None:
+            stale_offset = (
+                (now - offset_updated_at).total_seconds() >= stale_offset_seconds
+                and offset_updated_at < last_event_created_at
+            )
+
+        unseen_events = max(0, total_events - total_rows)
+        lag_events = max(0, total_events - delivered)
+        failure_rate_pct = round((failed / total_rows) * 100, 2) if total_rows else 0.0
+
+        recommended_actions: list[str] = []
+        if exhausted_failed > 0:
+            recommended_actions.append("Inspect failed deliveries at max attempts and replay affected events manually")
+        if retryable_failed > 0:
+            recommended_actions.append("Keep worker running and monitor retry queue until failed deliveries recover")
+        if stale_offset:
+            recommended_actions.append("Consumer offset is stale against stream activity; verify worker health and DB writes")
+        if lag_events >= lag_alert_threshold:
+            recommended_actions.append("Consumer lag exceeded threshold; consider scaling workers or reducing downstream latency")
+        if not recommended_actions and lag_events > 0:
+            recommended_actions.append("Lag is present but within threshold; continue monitoring")
+        if not recommended_actions:
+            recommended_actions.append("Healthy")
+
+        status = "healthy"
+        if exhausted_failed > 0 or stale_offset:
+            status = "critical"
+        elif failed > 0 or lag_events > 0:
+            status = "warning"
+
+        consumers.append(
+            {
+                "consumer_name": consumer_name,
+                "stream_name": stream_name,
+                "total_events": total_events,
+                "delivery_rows": total_rows,
+                "delivered": delivered,
+                "pending": pending,
+                "failed": failed,
+                "retryable_failed": retryable_failed,
+                "exhausted_failed": exhausted_failed,
+                "unseen_events": unseen_events,
+                "lag_events": lag_events,
+                "failure_rate_pct": failure_rate_pct,
+                "oldest_undelivered_age_seconds": oldest_undelivered_age_seconds,
+                "offset_updated_at": offset_updated_at,
+                "stale_offset": stale_offset,
+                "status": status,
+                "recommended_actions": recommended_actions,
+            }
+        )
+
+    overall_status = "healthy"
+    if any(item["status"] == "critical" for item in consumers):
+        overall_status = "critical"
+    elif any(item["status"] == "warning" for item in consumers):
+        overall_status = "warning"
+
+    return {
+        "stream_name": stream_name,
+        "total_events": total_events,
+        "consumer_count": len(consumers),
+        "overall_status": overall_status,
+        "consumers": consumers,
     }
 
 
@@ -605,6 +748,7 @@ __all__ = [
     "list_jobs",
     "job_event_bus_summary",
     "job_event_consumer_summary",
+    "job_event_consumers_diagnostics",
     "list_job_events",
     "outbox_diagnostics",
     "outbox_summary",

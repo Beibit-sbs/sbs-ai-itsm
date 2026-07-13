@@ -20,6 +20,7 @@ from app.services.jobs import (
     execute_job,
     get_job as service_get_job,
     job_event_bus_summary,
+    job_event_consumers_diagnostics,
     job_event_consumer_summary,
     job_summary,
     list_job_events,
@@ -160,6 +161,34 @@ class JobEventConsumerSummaryResponse(BaseModel):
     failed: int
 
 
+class JobEventConsumerDiagnosticsItemResponse(BaseModel):
+    consumer_name: str
+    stream_name: str
+    total_events: int
+    delivery_rows: int
+    delivered: int
+    pending: int
+    failed: int
+    retryable_failed: int
+    exhausted_failed: int
+    unseen_events: int
+    lag_events: int
+    failure_rate_pct: float
+    oldest_undelivered_age_seconds: int
+    offset_updated_at: datetime | None
+    stale_offset: bool
+    status: str
+    recommended_actions: list[str]
+
+
+class JobEventConsumersDiagnosticsResponse(BaseModel):
+    stream_name: str
+    total_events: int
+    consumer_count: int
+    overall_status: str
+    consumers: list[JobEventConsumerDiagnosticsItemResponse]
+
+
 class EnqueueJobRequest(BaseModel):
     task_name: str = Field(..., min_length=1, max_length=120)
     payload: dict[str, object] | None = None
@@ -294,6 +323,27 @@ def get_job_event_consumer_summary(
         stream_name=settings.jobs_event_stream_name,
     )
     return JobEventConsumerSummaryResponse(**data)
+
+
+@router.get("/event-consumers-diagnostics", response_model=JobEventConsumersDiagnosticsResponse)
+def get_job_event_consumers_diagnostics(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobEventConsumersDiagnosticsResponse:
+    _require_read(current_user)
+    settings = get_settings()
+    data = job_event_consumers_diagnostics(
+        db,
+        stream_name=settings.jobs_event_stream_name,
+        consumer_names=[
+            settings.jobs_event_consumer_name,
+            settings.jobs_event_automation_consumer_name,
+        ],
+        max_attempts=settings.jobs_event_consumer_max_attempts,
+        lag_alert_threshold=settings.jobs_event_consumer_lag_alert_threshold,
+        stale_offset_seconds=settings.jobs_event_consumer_stale_offset_seconds,
+    )
+    return JobEventConsumersDiagnosticsResponse(**data)
 
 
 @router.get("/outbox-summary", response_model=JobOutboxSummaryResponse)
