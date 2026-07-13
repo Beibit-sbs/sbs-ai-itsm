@@ -336,6 +336,17 @@ def test_job_event_bus_summary_shape(app) -> None:
         assert key in data
 
 
+def test_job_event_consumer_summary_shape(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        response = client.get("/api/v1/jobs/event-consumer-summary", headers=_auth_headers(token))
+
+    assert response.status_code == 200
+    data = response.json()
+    for key in ("consumer_name", "stream_name", "total", "pending", "delivered", "failed"):
+        assert key in data
+
+
 def test_create_outbox_entry_is_idempotent_by_job_and_queue(app) -> None:
     from app.db.session import SessionLocal
     from app.services.jobs import create_outbox_entry

@@ -4,12 +4,16 @@ import time
 
 from fastapi.testclient import TestClient
 
+from app.models.job_event_consumer_delivery import JobEventConsumerDelivery
 from app.models.job_lifecycle_event import JobLifecycleEvent
+from app.models.notification import Notification
 from app.services.jobs import create_job_run
 from app.workers import jobs_worker
 from app.workers.jobs_worker import (
+    _consume_event_stream_batch,
     _drain_scheduled_jobs,
     _relay_job_events_batch,
+    _retry_failed_event_consumers_batch,
     _retry_delay_seconds,
     _run_single_job,
     _schedule_retry,
@@ -22,7 +26,7 @@ class FakeRedis:
         self.left: list[tuple[str, str]] = []
         self.right: list[tuple[str, str]] = []
         self.zset: dict[str, dict[str, float]] = {}
-        self.streams: dict[str, list[dict[str, str]]] = {}
+        self.streams: dict[str, list[tuple[str, dict[str, str]]]] = {}
         self.set_keys: dict[str, str] = {}
         self.fail_xadd_once = False
 
@@ -72,8 +76,27 @@ class FakeRedis:
             self.fail_xadd_once = False
             raise RuntimeError("simulated stream failure")
         bucket = self.streams.setdefault(stream_name, [])
-        bucket.append(payload)
-        return f"{len(bucket)}-0"
+        stream_id = f"{len(bucket) + 1}-0"
+        bucket.append((stream_id, payload))
+        return stream_id
+
+    def xread(self, streams: dict[str, str], *, count: int = 100, block: int | None = None):
+        del block
+        result = []
+        for stream_name, last_stream_id in streams.items():
+            bucket = self.streams.get(stream_name, [])
+            items = [(sid, payload) for sid, payload in bucket if self._stream_id_gt(sid, last_stream_id)]
+            if items:
+                result.append((stream_name, items[:count]))
+        return result
+
+    @staticmethod
+    def _stream_id_gt(left: str, right: str) -> bool:
+        left_main, left_seq = left.split("-", 1)
+        right_main, right_seq = right.split("-", 1)
+        if int(left_main) != int(right_main):
+            return int(left_main) > int(right_main)
+        return int(left_seq) > int(right_seq)
 
 
 def test_retry_delay_seconds_is_exponential_with_cap() -> None:
@@ -198,7 +221,7 @@ def test_relay_job_events_batch_publishes_pending_events(app, monkeypatch) -> No
 
     assert relayed == 1
     assert "jobs:lifecycle" in redis.streams
-    assert redis.streams["jobs:lifecycle"][0]["event_type"] == "queued"
+    assert redis.streams["jobs:lifecycle"][0][1]["event_type"] == "queued"
     assert events[0].relay_published_at is not None
     assert events[0].relay_failed_attempts == 0
 
@@ -250,4 +273,76 @@ def test_relay_job_events_batch_marks_event_published_when_dedup_key_exists(app,
     assert redis.streams == {}
     assert refreshed.relay_published_at is not None
     assert refreshed.relay_last_error == "relay_dedup_skip_already_published"
+
+
+def test_consume_event_stream_batch_creates_notifications(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    redis = FakeRedis()
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            baseline = int(db.query(Notification).filter(Notification.event_type.in_(["jobs.failed", "jobs.dead_letter"])).count())
+            job = create_job_run(db, task_name="system.fail", payload={"reason": "boom"}, max_attempts=1)
+            db.commit()
+
+        _run_single_job(job.id, redis_client=redis, queue_name="jobs:queue")
+        _relay_job_events_batch(redis, batch_size=100)
+        consumed = _consume_event_stream_batch(redis, batch_size=100)
+
+        with SessionLocal() as db:
+            delivered = (
+                db.query(JobEventConsumerDelivery)
+                .filter(JobEventConsumerDelivery.status == "delivered")
+                .count()
+            )
+            current = int(db.query(Notification).filter(Notification.event_type.in_(["jobs.failed", "jobs.dead_letter"])).count())
+
+    assert consumed >= 4
+    assert delivered >= 4
+    assert current >= baseline + 2
+
+
+def test_retry_failed_event_consumers_batch_recovers_deliveries(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    redis = FakeRedis()
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"k": "v"}, max_attempts=1)
+            db.commit()
+
+        _relay_job_events_batch(redis, batch_size=100)
+
+        original = jobs_worker._create_notification_for_event
+
+        def failing_create_notification(db, event):
+            raise RuntimeError("simulated consumer failure")
+
+        monkeypatch.setattr(jobs_worker, "_create_notification_for_event", failing_create_notification)
+        _consume_event_stream_batch(redis, batch_size=100)
+
+        with SessionLocal() as db:
+            failed_before = (
+                db.query(JobEventConsumerDelivery)
+                .filter(JobEventConsumerDelivery.status == "failed")
+                .count()
+            )
+        assert failed_before >= 1
+
+        monkeypatch.setattr(jobs_worker, "_create_notification_for_event", original)
+        retried = _retry_failed_event_consumers_batch(batch_size=100)
+
+        with SessionLocal() as db:
+            failed_after = (
+                db.query(JobEventConsumerDelivery)
+                .filter(JobEventConsumerDelivery.status == "failed")
+                .count()
+            )
+
+    assert retried >= 1
+    assert failed_after == 0
 

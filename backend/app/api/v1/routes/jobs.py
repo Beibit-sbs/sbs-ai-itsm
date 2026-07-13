@@ -20,6 +20,7 @@ from app.services.jobs import (
     execute_job,
     get_job as service_get_job,
     job_event_bus_summary,
+    job_event_consumer_summary,
     job_summary,
     list_job_events,
     list_jobs,
@@ -150,6 +151,15 @@ class JobEventBusSummaryResponse(BaseModel):
     failure_rate_pct: float
 
 
+class JobEventConsumerSummaryResponse(BaseModel):
+    consumer_name: str
+    stream_name: str
+    total: int
+    pending: int
+    delivered: int
+    failed: int
+
+
 class EnqueueJobRequest(BaseModel):
     task_name: str = Field(..., min_length=1, max_length=120)
     payload: dict[str, object] | None = None
@@ -261,6 +271,21 @@ def get_job_event_bus_summary(
     settings = get_settings()
     data = job_event_bus_summary(db, stream_name=settings.jobs_event_stream_name)
     return JobEventBusSummaryResponse(**data)
+
+
+@router.get("/event-consumer-summary", response_model=JobEventConsumerSummaryResponse)
+def get_job_event_consumer_summary(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobEventConsumerSummaryResponse:
+    _require_read(current_user)
+    settings = get_settings()
+    data = job_event_consumer_summary(
+        db,
+        consumer_name=settings.jobs_event_consumer_name,
+        stream_name=settings.jobs_event_stream_name,
+    )
+    return JobEventConsumerSummaryResponse(**data)
 
 
 @router.get("/outbox-summary", response_model=JobOutboxSummaryResponse)

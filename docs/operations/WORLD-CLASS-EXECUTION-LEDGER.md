@@ -41,10 +41,17 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-EVENT-BUS-009`
-- Latest stage implementation commit: `e2e5dff`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMERS-010`
+- Latest stage implementation commit: `PENDING_COMMIT`
 
 ## Stage Log (Newest First)
+
+- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-CONSUMERS-010
+  - Added first downstream consumer pipeline over relayed lifecycle events with per-consumer offsets and idempotent delivery state.
+  - Added isolated consumer retry loop and notification side-effects for `failed`/`dead_letter` job events.
+  - Added `GET /jobs/event-consumer-summary` for runtime visibility of consumer throughput/failures.
+  - Added additive migration `20261120_0014_job_event_consumers`.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMERS-010-REPORT.md`
 
 - `e2e5dff` PLATFORM-CORE-ASYNC-EVENT-BUS-009
   - Added Redis Stream relay for durable lifecycle events with DB lock + Redis dedup protection.
@@ -109,17 +116,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMERS-010`
+- `PLATFORM-CORE-ASYNC-AUTOMATION-HOOKS-011`
 
 Scope proposal:
-- Add first downstream consumers for lifecycle events (notifications, automation hooks, observability counters).
-- Keep consumer processing idempotent and independently retryable from the durable source.
-- Define minimal subscription boundaries so later tracks can attach safely.
+- Add the second downstream consumer path for automation hooks with the same idempotent delivery contract.
+- Reuse delivery/offset model from 010 and keep retries isolated per consumer.
+- Define minimal rule matching and bounded payload contract for automation follow-up actions.
 
 Exit criteria:
-- At least one downstream consumer reacts to relayed lifecycle events without breaking source durability.
-- Consumer retries remain isolated from event-source truth and relay semantics.
-- Tests cover consumer side-effects and idempotent reprocessing.
+- Automation consumer reacts to lifecycle events and records delivery status with retries.
+- Existing notifications consumer behavior remains stable and idempotent.
+- Tests cover consumer coexistence and isolated retry semantics.
 
 ## Stage Execution Template
 

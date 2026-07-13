@@ -12,12 +12,20 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
+from app.models.job_event_consumer_delivery import JobEventConsumerDelivery
+from app.models.job_event_consumer_offset import JobEventConsumerOffset
 from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_queue_outbox import JobQueueOutbox
+from app.models.user import User
+from app.services.notifications import create_domain_event_notification
 from app.services.jobs import create_job_lifecycle_event, execute_job, get_job
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 
 logger = logging.getLogger("app.jobs.worker")
+
+
+def _uuid() -> str:
+    return str(uuid.uuid4())
 
 
 def _event_stream_payload(event: JobLifecycleEvent) -> dict[str, str]:
@@ -89,6 +97,188 @@ def _relay_job_events_batch(redis_client: Redis, *, batch_size: int = 100) -> in
         db.rollback()
         logger.exception("job_event_bus_relay_failed")
         return relayed
+    finally:
+        db.close()
+
+
+def _get_or_create_consumer_offset(db, *, consumer_name: str, stream_name: str) -> JobEventConsumerOffset:
+    row = db.scalar(
+        select(JobEventConsumerOffset).where(
+            JobEventConsumerOffset.consumer_name == consumer_name,
+            JobEventConsumerOffset.stream_name == stream_name,
+        )
+    )
+    if row is not None:
+        return row
+    row = JobEventConsumerOffset(
+        id=_uuid(),
+        consumer_name=consumer_name,
+        stream_name=stream_name,
+        last_stream_id="0-0",
+        updated_at=datetime.now(UTC),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _should_create_notification(event_type: str) -> bool:
+    return event_type in {"failed", "dead_letter"}
+
+
+def _create_notification_for_event(db, event: JobLifecycleEvent) -> None:
+    if not _should_create_notification(event.event_type):
+        return
+    root_user = db.scalar(select(User).where(User.is_root.is_(True)).order_by(User.created_at.asc()).limit(1))
+    if root_user is None:
+        return
+
+    severity = "critical" if event.event_type == "dead_letter" else "warning"
+    title = "Job moved to dead letter" if event.event_type == "dead_letter" else "Job execution failed"
+    message = (
+        f"Task {event.task_name} for job {event.job_id} ended with event {event.event_type}."
+        " Review job details and retry/replay if needed."
+    )
+    create_domain_event_notification(
+        db,
+        tenant_id=event.tenant_id,
+        event_type=f"jobs.{event.event_type}",
+        title=title,
+        message=message,
+        recipient_name=root_user.full_name,
+        recipient_email=root_user.email,
+        recipient_user_id=root_user.id,
+        channel="in_app",
+        severity=severity,
+        entity_type="job",
+        entity_id=event.job_id,
+        action_url=f"/admin/system?job_id={event.job_id}",
+        metadata={
+            "event_id": event.id,
+            "correlation_id": event.correlation_id,
+            "event_type": event.event_type,
+            "task_name": event.task_name,
+        },
+    )
+
+
+def _consume_event_stream_batch(redis_client: Redis, *, batch_size: int = 100) -> int:
+    settings = get_settings()
+    db = SessionLocal()
+    processed = 0
+    now = datetime.now(UTC)
+    try:
+        offset = _get_or_create_consumer_offset(
+            db,
+            consumer_name=settings.jobs_event_consumer_name,
+            stream_name=settings.jobs_event_stream_name,
+        )
+        rows = redis_client.xread({settings.jobs_event_stream_name: offset.last_stream_id}, count=batch_size)
+        if not rows:
+            db.commit()
+            return 0
+
+        _, stream_rows = rows[0]
+        for stream_entry_id, payload in stream_rows:
+            event_id = str(payload.get("event_id") or "")
+            if not event_id:
+                offset.last_stream_id = stream_entry_id
+                offset.updated_at = now
+                continue
+
+            event = db.get(JobLifecycleEvent, event_id)
+            if event is None:
+                offset.last_stream_id = stream_entry_id
+                offset.updated_at = now
+                continue
+
+            delivery = db.scalar(
+                select(JobEventConsumerDelivery).where(
+                    JobEventConsumerDelivery.consumer_name == settings.jobs_event_consumer_name,
+                    JobEventConsumerDelivery.event_id == event_id,
+                )
+            )
+            if delivery is None:
+                delivery = JobEventConsumerDelivery(
+                    id=_uuid(),
+                    consumer_name=settings.jobs_event_consumer_name,
+                    event_id=event_id,
+                    stream_name=settings.jobs_event_stream_name,
+                    stream_entry_id=stream_entry_id,
+                    status="pending",
+                    attempts=0,
+                    last_error=None,
+                    delivered_at=None,
+                )
+                db.add(delivery)
+                db.flush()
+
+            if delivery.status != "delivered":
+                try:
+                    _create_notification_for_event(db, event)
+                    delivery.attempts += 1
+                    delivery.status = "delivered"
+                    delivery.delivered_at = now
+                    delivery.last_error = None
+                except Exception as exc:
+                    delivery.attempts += 1
+                    delivery.status = "failed"
+                    delivery.last_error = f"{exc.__class__.__name__}: {exc}"[:2000]
+
+            offset.last_stream_id = stream_entry_id
+            offset.updated_at = now
+            processed += 1
+
+        db.commit()
+        return processed
+    except Exception:
+        db.rollback()
+        logger.exception("job_event_consumer_batch_failed")
+        return processed
+    finally:
+        db.close()
+
+
+def _retry_failed_event_consumers_batch(*, batch_size: int = 50) -> int:
+    settings = get_settings()
+    db = SessionLocal()
+    retried = 0
+    now = datetime.now(UTC)
+    try:
+        stmt = (
+            select(JobEventConsumerDelivery)
+            .where(JobEventConsumerDelivery.consumer_name == settings.jobs_event_consumer_name)
+            .where(JobEventConsumerDelivery.status == "failed")
+            .where(JobEventConsumerDelivery.attempts < settings.jobs_event_consumer_max_attempts)
+            .order_by(JobEventConsumerDelivery.updated_at.asc())
+            .limit(batch_size)
+        )
+        deliveries = list(db.scalars(stmt).all())
+        for delivery in deliveries:
+            event = db.get(JobLifecycleEvent, delivery.event_id)
+            if event is None:
+                delivery.status = "delivered"
+                delivery.last_error = "event_not_found_skipped"
+                delivery.delivered_at = now
+                retried += 1
+                continue
+            try:
+                _create_notification_for_event(db, event)
+                delivery.attempts += 1
+                delivery.status = "delivered"
+                delivery.delivered_at = now
+                delivery.last_error = None
+                retried += 1
+            except Exception as exc:
+                delivery.attempts += 1
+                delivery.status = "failed"
+                delivery.last_error = f"{exc.__class__.__name__}: {exc}"[:2000]
+        db.commit()
+        return retried
+    except Exception:
+        db.rollback()
+        logger.exception("job_event_consumer_retry_failed")
+        return retried
     finally:
         db.close()
 
@@ -277,6 +467,8 @@ def run_worker_forever() -> None:
     try:
         while True:
             _relay_job_events_batch(redis_client)
+            _consume_event_stream_batch(redis_client)
+            _retry_failed_event_consumers_batch()
             _publish_outbox_batch(redis_client)
             _drain_scheduled_jobs(redis_client, settings.jobs_queue_name)
             try:

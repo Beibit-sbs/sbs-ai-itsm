@@ -25,6 +25,7 @@ from app.core.config import get_settings
 from app.core.context import get_correlation_id
 from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.job_lifecycle_event import JobLifecycleEvent
+from app.models.job_event_consumer_delivery import JobEventConsumerDelivery
 from app.models.job_run import JobRun
 
 logger = logging.getLogger("app.jobs")
@@ -174,6 +175,27 @@ def job_event_bus_summary(db: Session, stream_name: str | None = None) -> dict[s
         "locked": int(locked or 0),
         "stale_locks": int(stale_locks or 0),
         "failure_rate_pct": failure_rate,
+    }
+
+
+def job_event_consumer_summary(db: Session, *, consumer_name: str, stream_name: str) -> dict[str, int | str]:
+    stmt = select(
+        func.count(JobEventConsumerDelivery.id),
+        func.sum(case((JobEventConsumerDelivery.status == "pending", 1), else_=0)),
+        func.sum(case((JobEventConsumerDelivery.status == "delivered", 1), else_=0)),
+        func.sum(case((JobEventConsumerDelivery.status == "failed", 1), else_=0)),
+    ).where(
+        JobEventConsumerDelivery.consumer_name == consumer_name,
+        JobEventConsumerDelivery.stream_name == stream_name,
+    )
+    total, pending, delivered, failed = db.execute(stmt).one()
+    return {
+        "consumer_name": consumer_name,
+        "stream_name": stream_name,
+        "total": int(total or 0),
+        "pending": int(pending or 0),
+        "delivered": int(delivered or 0),
+        "failed": int(failed or 0),
     }
 
 
@@ -582,6 +604,7 @@ __all__ = [
     "job_summary",
     "list_jobs",
     "job_event_bus_summary",
+    "job_event_consumer_summary",
     "list_job_events",
     "outbox_diagnostics",
     "outbox_summary",
