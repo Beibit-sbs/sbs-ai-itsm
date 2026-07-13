@@ -28,6 +28,19 @@ type TicketTab = 'overview' | 'comments' | 'history' | 'sla' | 'asset' | 'ai'
 type TicketSortBy = 'updated_at' | 'created_at' | 'priority' | 'status' | 'sla_due_at' | 'ticket_number'
 type TicketSortDir = 'asc' | 'desc'
 
+type TicketFilterPreset = {
+  id: string
+  name: string
+  queue: QueueKey
+  statusFilter: string
+  priorityFilter: string
+  categoryFilter: string
+  assigneeFilter: string
+  sortBy: TicketSortBy
+  sortDir: TicketSortDir
+  pageSize: number
+}
+
 type TicketFormState = {
   title: string
   description: string
@@ -156,6 +169,7 @@ export default function TicketsPage() {
   const role = session?.user.role ?? 'guest'
   const isRequester = role === 'requester'
   const isStaff = role !== 'requester'
+  const presetStorageKey = `tickets-presets:${session?.user.id ?? 'anonymous'}`
 
   const [queue, setQueue] = useState<QueueKey>('all')
   const [search, setSearch] = useState('')
@@ -164,10 +178,17 @@ export default function TicketsPage() {
   const [priorityFilter, setPriorityFilter] = useState('ALL')
   const [categoryFilter, setCategoryFilter] = useState('ALL')
   const [assigneeFilter, setAssigneeFilter] = useState('ALL')
-  const [sortBy, setSortBy] = useState<TicketSortBy>('updated_at')
-  const [sortDir, setSortDir] = useState<TicketSortDir>('desc')
+  const [sortBy, setSortBy] = useState<TicketSortBy>('sla_due_at')
+  const [sortDir, setSortDir] = useState<TicketSortDir>('asc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+  const [selectedTicketIds, setSelectedTicketIds] = useState<string[]>([])
+  const [bulkStatus, setBulkStatus] = useState('IN_PROGRESS')
+  const [bulkAssigneeId, setBulkAssigneeId] = useState('')
+  const [bulkComment, setBulkComment] = useState('Массовая операция оператора')
+  const [presets, setPresets] = useState<TicketFilterPreset[]>([])
+  const [presetName, setPresetName] = useState('')
+  const [activePresetId, setActivePresetId] = useState('')
 
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [createForm, setCreateForm] = useState<TicketFormState>(emptyTicketForm)
@@ -192,6 +213,33 @@ export default function TicketsPage() {
   useEffect(() => {
     setPage(1)
   }, [queue, statusFilter, priorityFilter, categoryFilter, assigneeFilter, sortBy, sortDir, pageSize])
+
+  useEffect(() => {
+    setSelectedTicketIds([])
+  }, [queue, debouncedSearch, statusFilter, priorityFilter, categoryFilter, assigneeFilter, sortBy, sortDir, page, pageSize])
+
+  useEffect(() => {
+    if (!session?.user?.id) {
+      setPresets([])
+      return
+    }
+    const raw = window.localStorage.getItem(presetStorageKey)
+    if (!raw) {
+      setPresets([])
+      return
+    }
+    try {
+      const parsed = JSON.parse(raw) as TicketFilterPreset[]
+      setPresets(Array.isArray(parsed) ? parsed : [])
+    } catch {
+      setPresets([])
+    }
+  }, [presetStorageKey, session?.user?.id])
+
+  useEffect(() => {
+    if (!session?.user?.id) return
+    window.localStorage.setItem(presetStorageKey, JSON.stringify(presets))
+  }, [presetStorageKey, presets, session?.user?.id])
 
   useEffect(() => {
     if (!selectedTicketId && !isCreateOpen) return
@@ -345,6 +393,32 @@ export default function TicketsPage() {
     },
   })
 
+  const bulkMutation = useMutation({
+    mutationFn: async (payload: { ticketIds: string[]; status?: string; assigneeId?: string; comment?: string }) => {
+      const token = session?.access_token ?? ''
+      for (const ticketId of payload.ticketIds) {
+        if (payload.assigneeId) {
+          await assignTicket(token, ticketId, {
+            assignee_id: payload.assigneeId,
+            comment: payload.comment || undefined,
+          })
+        }
+        if (payload.status) {
+          await transitionTicket(token, ticketId, {
+            status: payload.status,
+            comment: payload.comment || undefined,
+            is_internal: isStaff,
+          })
+        }
+      }
+    },
+    onSuccess: async () => {
+      setSelectedTicketIds([])
+      await queryClient.invalidateQueries({ queryKey: ['tickets'] })
+      await queryClient.invalidateQueries({ queryKey: ['notifications-unread-count'] })
+    },
+  })
+
   const aiMutation = useMutation({
     mutationFn: async (payload: { ticketId: string; text: string }) =>
       analyzeTicket(session?.access_token ?? '', { ticket_id: payload.ticketId, input_text: payload.text }),
@@ -379,6 +453,8 @@ export default function TicketsPage() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const assets = assetsQuery.data ?? []
   const users = usersQuery.data ?? []
+  const allPageTicketIds = useMemo(() => tickets.map((ticket) => ticket.id), [tickets])
+  const allPageSelected = allPageTicketIds.length > 0 && allPageTicketIds.every((id) => selectedTicketIds.includes(id))
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages)
@@ -400,6 +476,63 @@ export default function TicketsPage() {
     })
     return Array.from(values).sort((a, b) => a.localeCompare(b, 'ru'))
   }, [tickets])
+
+  const toggleTicketSelection = (ticketId: string) => {
+    setSelectedTicketIds((current) =>
+      current.includes(ticketId) ? current.filter((id) => id !== ticketId) : [...current, ticketId]
+    )
+  }
+
+  const toggleSelectPage = () => {
+    setSelectedTicketIds((current) => {
+      if (allPageSelected) {
+        return current.filter((id) => !allPageTicketIds.includes(id))
+      }
+      const next = new Set([...current, ...allPageTicketIds])
+      return Array.from(next)
+    })
+  }
+
+  const savePreset = () => {
+    const name = presetName.trim()
+    if (!name) return
+    const preset: TicketFilterPreset = {
+      id: String(Date.now()),
+      name,
+      queue,
+      statusFilter,
+      priorityFilter,
+      categoryFilter,
+      assigneeFilter,
+      sortBy,
+      sortDir,
+      pageSize,
+    }
+    setPresets((current) => [...current, preset])
+    setPresetName('')
+    setActivePresetId(preset.id)
+  }
+
+  const applyPreset = (presetId: string) => {
+    setActivePresetId(presetId)
+    const preset = presets.find((item) => item.id === presetId)
+    if (!preset) return
+    setQueue(preset.queue)
+    setStatusFilter(preset.statusFilter)
+    setPriorityFilter(preset.priorityFilter)
+    setCategoryFilter(preset.categoryFilter)
+    setAssigneeFilter(preset.assigneeFilter)
+    setSortBy(preset.sortBy)
+    setSortDir(preset.sortDir)
+    setPageSize(preset.pageSize)
+    setPage(1)
+  }
+
+  const removeActivePreset = () => {
+    if (!activePresetId) return
+    setPresets((current) => current.filter((item) => item.id !== activePresetId))
+    setActivePresetId('')
+  }
 
   return (
     <AppShell
@@ -498,6 +631,83 @@ export default function TicketsPage() {
         </div>
       </section>
 
+      <section className="foundation-card tickets-toolbar" style={{ marginTop: 12 }}>
+        <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+          <label className="inline-field">
+            <span>Пресет</span>
+            <select value={activePresetId} onChange={(event) => applyPreset(event.target.value)}>
+              <option value="">Без пресета</option>
+              {presets.map((preset) => (
+                <option key={preset.id} value={preset.id}>{preset.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="inline-field">
+            <span>Сохранить пресет</span>
+            <input value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder="Например: Ночные SLA" />
+          </label>
+          <div className="analytics-actions" style={{ alignItems: 'end' }}>
+            <button type="button" className="ghost-button" onClick={savePreset} disabled={!presetName.trim()}>
+              Сохранить
+            </button>
+            <button type="button" className="ghost-button" onClick={removeActivePreset} disabled={!activePresetId}>
+              Удалить
+            </button>
+          </div>
+          <div className="inline-field">
+            <span>Выбрано заявок</span>
+            <strong>{selectedTicketIds.length}</strong>
+          </div>
+        </div>
+      </section>
+
+      {isStaff ? (
+        <section className="foundation-card tickets-toolbar" style={{ marginTop: 12 }}>
+          <div className="tickets-toolbar-group" style={{ gridTemplateColumns: canManageAssignments(role) ? 'repeat(4, minmax(0, 1fr))' : 'repeat(3, minmax(0, 1fr))' }}>
+            <label className="inline-field">
+              <span>Массовый статус</span>
+              <select value={bulkStatus} onChange={(event) => setBulkStatus(event.target.value)}>
+                {transitionOptions.filter((item) => item.value !== 'ALL').map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            {canManageAssignments(role) ? (
+              <label className="inline-field">
+                <span>Массовое назначение</span>
+                <select value={bulkAssigneeId} onChange={(event) => setBulkAssigneeId(event.target.value)}>
+                  <option value="">Без назначения</option>
+                  {users.map((user) => (
+                    <option key={user.id} value={user.id}>{user.full_name}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <label className="inline-field">
+              <span>Комментарий операции</span>
+              <input value={bulkComment} onChange={(event) => setBulkComment(event.target.value)} />
+            </label>
+            <div className="analytics-actions" style={{ alignItems: 'end' }}>
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={selectedTicketIds.length === 0 || bulkMutation.isPending}
+                onClick={() =>
+                  bulkMutation.mutate({
+                    ticketIds: selectedTicketIds,
+                    status: bulkStatus,
+                    assigneeId: canManageAssignments(role) ? bulkAssigneeId || undefined : undefined,
+                    comment: bulkComment || undefined,
+                  })
+                }
+              >
+                {bulkMutation.isPending ? 'Применение...' : 'Применить к выбранным'}
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       <section className="ticket-table-shell">
         {ticketsQuery.isPending ? <p className="muted">Загрузка заявок...</p> : null}
         {ticketsQuery.isError ? <p className="error-message">Не удалось загрузить список заявок.</p> : null}
@@ -507,6 +717,9 @@ export default function TicketsPage() {
               <table className="ticket-table">
                 <thead>
                   <tr>
+                    <th>
+                      <input type="checkbox" checked={allPageSelected} onChange={toggleSelectPage} aria-label="Выбрать все на странице" />
+                    </th>
                     <th>Номер</th>
                     <th>Тема</th>
                     <th>Статус</th>
@@ -522,6 +735,14 @@ export default function TicketsPage() {
                 <tbody>
                   {tickets.map((ticket) => (
                     <tr key={ticket.id} className={ticket.sla_badge === 'BREACHED' ? 'row-overdue' : ''}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={selectedTicketIds.includes(ticket.id)}
+                          onChange={() => toggleTicketSelection(ticket.id)}
+                          aria-label={`Выбрать заявку ${ticket.ticket_number ?? ticket.id}`}
+                        />
+                      </td>
                       <td>{ticket.ticket_number ?? '—'}</td>
                       <td>
                         <strong>{ticket.title}</strong>
