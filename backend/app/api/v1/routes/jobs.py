@@ -225,6 +225,7 @@ class JobEventConsumerDiagnosticsItemResponse(BaseModel):
     last_runbook_execution_at: datetime | None
     last_policy_change_at: datetime | None
     last_policy_change_actor_email: str | None
+    runbook_policy_decision_trace: str
     status: str
     recommended_actions: list[str]
 
@@ -373,6 +374,7 @@ class JobEventConsumerRunbookPolicyResponse(BaseModel):
     dual_control_required: bool
     last_policy_change_at: datetime | None
     last_policy_change_actor_email: str | None
+    validation_result: dict[str, object] | None = None
 
 
 class JobEventConsumerRunbookPolicyUpdateRequest(BaseModel):
@@ -383,6 +385,20 @@ class JobEventConsumerRunbookPolicyUpdateRequest(BaseModel):
     cooldown_seconds_map: dict[str, int] | None = None
     require_change_ticket: bool | None = None
     dual_control_required: bool | None = None
+    validate_only: bool = False
+
+
+class JobEventConsumerRunbookPolicyRollbackRequest(BaseModel):
+    previous_version: int = Field(..., ge=1)
+
+
+class JobEventConsumerRunbookPolicyRollbackResponse(BaseModel):
+    policy_version: int
+    policy_hash: str
+    rolled_back_from_version: int
+    rolled_back_to_version: int
+    last_policy_change_at: datetime | None
+    last_policy_change_actor_email: str | None
 
 
 class EnqueueJobRequest(BaseModel):
@@ -547,6 +563,7 @@ def get_job_event_consumers_diagnostics(
     rollouts_24h, recent_rollouts = _recent_policy_rollouts(db)
     runbook_policy_rollouts_24h, recent_runbook_policy_rollouts, _ = _recent_runbook_policy_rollouts(db)
     runbook_policy_payload = _runbook_policy_payload(settings)
+    runbook_policy_trace = _runbook_policy_decision_trace(runbook_policy_payload)
     (
         runbook_execs_24h,
         runbook_failures_24h,
@@ -585,6 +602,7 @@ def get_job_event_consumers_diagnostics(
         policy_change = policy_changes.get(consumer_name, {})
         item["last_policy_change_at"] = policy_change.get("created_at")
         item["last_policy_change_actor_email"] = policy_change.get("actor_email")
+        item["runbook_policy_decision_trace"] = runbook_policy_trace
     data["policy_version"] = int(policy_state.get("version", 1) or 1)
     data["policy_rollouts_24h"] = int(rollouts_24h)
     data["emergency_brake_consumers"] = [
@@ -1076,6 +1094,71 @@ def _runbook_policy_payload(settings) -> dict[str, object]:
     }
 
 
+def _runbook_policy_decision_trace(payload: dict[str, object]) -> str:
+    allowed = payload.get("allowed_codes", [])
+    denied = payload.get("denied_codes", [])
+    high_impact = payload.get("high_impact_codes", [])
+    require_change = payload.get("require_change_ticket", True)
+    require_dual = payload.get("dual_control_required", False)
+
+    parts: list[str] = []
+    if allowed:
+        parts.append(f"allowlist[{','.join(sorted(set(str(x) for x in allowed)))}]")
+    if denied:
+        parts.append(f"denylist[{','.join(sorted(set(str(x) for x in denied)))}]")
+    if high_impact:
+        parts.append(f"high-impact[{','.join(sorted(set(str(x) for x in high_impact)))}]")
+    if require_change:
+        parts.append("require-change-ticket")
+    if require_dual:
+        parts.append("require-dual-control")
+
+    return ";".join(parts) if parts else "default"
+
+
+def _runbook_policy_history_lookup(db: Session, *, target_version: int) -> dict[str, object]:
+    rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "jobs.event_consumer_runbook_policy.update")
+            .order_by(AuditLog.created_at.desc())
+            .limit(500)
+        ).all()
+    )
+
+    if target_version == 1:
+        for row in rows:
+            metadata = _decode(row.metadata_json)
+            metadata_map = metadata if isinstance(metadata, dict) else {}
+            new_version = int(metadata_map.get("new_version", 0) or 0)
+            if new_version == 2:
+                return {
+                    "found": True,
+                    "version": 1,
+                    "payload": metadata_map.get("old_payload_snapshot", {}),
+                    "actor_email": row.actor_email,
+                    "created_at": row.created_at,
+                }
+        return {"found": False, "version": 1}
+
+    for row in rows:
+        metadata = _decode(row.metadata_json)
+        metadata_map = metadata if isinstance(metadata, dict) else {}
+        new_version = int(metadata_map.get("new_version", 0) or 0)
+        if new_version == target_version:
+            return {
+                "found": True,
+                "version": target_version,
+                "payload": metadata_map.get("new_payload_snapshot", {}),
+                "actor_email": row.actor_email,
+                "created_at": row.created_at,
+            }
+    return {
+        "found": False,
+        "version": target_version,
+    }
+
+
 @router.get(
     "/event-consumer-autoremediation-preview",
     response_model=JobEventConsumerAutoremediationPreviewResponse,
@@ -1426,6 +1509,40 @@ def update_job_event_consumer_runbook_policy(
         ),
     }
 
+    old_hash = _policy_hash(old_payload)
+    new_hash = _policy_hash(new_payload)
+    validation_result = None
+
+    if bool(request.validate_only):
+        validation_result = {
+            "valid": True,
+            "old_hash": old_hash,
+            "new_hash": new_hash,
+            "changes": {
+                "allowed_codes_changed": old_payload.get("allowed_codes") != new_payload.get("allowed_codes"),
+                "denied_codes_changed": old_payload.get("denied_codes") != new_payload.get("denied_codes"),
+                "high_impact_codes_changed": old_payload.get("high_impact_codes") != new_payload.get("high_impact_codes"),
+            },
+            "message": "Validation successful; call with validate_only=false to apply changes.",
+        }
+        db.rollback()
+        return JobEventConsumerRunbookPolicyResponse(
+            policy_version=int(policy_state.get("version", 1) or 1),
+            policy_hash=old_hash,
+            allowed_codes=[str(item) for item in old_payload.get("allowed_codes", [])],
+            denied_codes=[str(item) for item in old_payload.get("denied_codes", [])],
+            high_impact_codes=[str(item) for item in old_payload.get("high_impact_codes", [])],
+            cooldown_seconds_map={
+                str(key): int(value)
+                for key, value in dict(old_payload.get("cooldown_seconds_map", {})).items()
+            },
+            require_change_ticket=bool(old_payload.get("require_change_ticket", True)),
+            dual_control_required=bool(old_payload.get("dual_control_required", False)),
+            last_policy_change_at=policy_state.get("updated_at"),
+            last_policy_change_actor_email=policy_state.get("updated_by_email"),
+            validation_result=validation_result,
+        )
+
     try:
         saved_state = save_runbook_policy(
             db,
@@ -1438,8 +1555,6 @@ def update_job_event_consumer_runbook_policy(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
-    old_hash = _policy_hash(old_payload)
-    new_hash = _policy_hash(new_payload)
     log_audit(
         db,
         action="jobs.event_consumer_runbook_policy.update",
@@ -1450,6 +1565,8 @@ def update_job_event_consumer_runbook_policy(
         metadata={
             "old_policy_hash": old_hash,
             "new_policy_hash": new_hash,
+            "old_payload_snapshot": old_payload,
+            "new_payload_snapshot": new_payload,
             "previous_version": int(policy_state.get("version", 1) or 1),
             "new_version": int(saved_state.get("version", 1) or 1),
         },
@@ -1468,6 +1585,82 @@ def update_job_event_consumer_runbook_policy(
         },
         require_change_ticket=bool(new_payload.get("require_change_ticket", True)),
         dual_control_required=bool(new_payload.get("dual_control_required", False)),
+        last_policy_change_at=saved_state.get("updated_at"),
+        last_policy_change_actor_email=current_user.email,
+    )
+
+
+@router.post(
+    "/event-consumer-runbook-policy/rollback",
+    response_model=JobEventConsumerRunbookPolicyRollbackResponse,
+)
+def rollback_job_event_consumer_runbook_policy(
+    request: JobEventConsumerRunbookPolicyRollbackRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobEventConsumerRunbookPolicyRollbackResponse:
+    _require_enqueue(current_user)
+    settings = get_settings()
+    policy_state = _runbook_policy_state(settings, db)
+    current_version = int(policy_state.get("version", 1) or 1)
+
+    if request.previous_version >= current_version:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot rollback to version {request.previous_version}; current version is {current_version}",
+        )
+
+    history = _runbook_policy_history_lookup(db, target_version=request.previous_version)
+    if not bool(history.get("found")):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Policy version {request.previous_version} not found in audit history",
+        )
+
+    rollback_payload = history.get("payload", {})
+    if not isinstance(rollback_payload, dict) or not rollback_payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot restore payload from version {request.previous_version}",
+        )
+
+    try:
+        saved_state = save_runbook_policy(
+            db,
+            settings,
+            payload=rollback_payload,
+            expected_version=current_version,
+            actor_email=current_user.email,
+        )
+    except RunbookPolicyVersionConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    old_payload = _runbook_policy_payload(settings)
+    old_hash = _policy_hash(old_payload)
+    new_hash = _policy_hash(rollback_payload)
+
+    log_audit(
+        db,
+        action="jobs.event_consumer_runbook_policy.rollback",
+        entity_type="job_event_consumer_runbook_policy",
+        entity_id="runbook-governance",
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "rolled_back_from_version": current_version,
+            "rolled_back_to_version": request.previous_version,
+            "old_policy_hash": old_hash,
+            "new_policy_hash": new_hash,
+        },
+    )
+    db.commit()
+
+    return JobEventConsumerRunbookPolicyRollbackResponse(
+        policy_version=int(saved_state.get("version", 1) or 1),
+        policy_hash=new_hash,
+        rolled_back_from_version=current_version,
+        rolled_back_to_version=request.previous_version,
         last_policy_change_at=saved_state.get("updated_at"),
         last_policy_change_actor_email=current_user.email,
     )

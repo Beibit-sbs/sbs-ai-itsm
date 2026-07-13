@@ -1026,6 +1026,178 @@ def test_job_event_consumer_runbook_policy_deny_and_cooldown(app) -> None:
         assert cooldown_blocked.status_code == 429, cooldown_blocked.text
 
 
+def test_job_event_consumer_runbook_policy_validate_only_does_not_persist(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        current_policy = client.get("/api/v1/jobs/event-consumer-runbook-policy", headers=_auth_headers(token))
+        assert current_policy.status_code == 200, current_policy.text
+        current_version = int(current_policy.json()["policy_version"])
+        current_hash = current_policy.json()["policy_hash"]
+
+        validate = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": current_version,
+                "allowed_codes": ["jobs.consumer.emergency_brake_reset"],
+                "validate_only": True,
+            },
+        )
+        assert validate.status_code == 200, validate.text
+        result = validate.json()
+        assert result["validation_result"] is not None
+        assert result["validation_result"]["valid"] is True
+        assert result["validation_result"]["message"]
+        assert result["policy_version"] == current_version
+        assert result["policy_hash"] == current_hash
+
+        check_still_old = client.get(
+            "/api/v1/jobs/event-consumer-runbook-policy", headers=_auth_headers(token)
+        )
+        assert check_still_old.status_code == 200, check_still_old.text
+        assert check_still_old.json()["policy_version"] == current_version
+        assert check_still_old.json()["policy_hash"] == current_hash
+
+
+def test_job_event_consumer_runbook_policy_rollback_restores_previous_version(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+
+        current = client.get(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+        )
+        assert current.status_code == 200, current.text
+        v1_policy = current.json()
+        v1_version = v1_policy["policy_version"]
+
+        update1 = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": v1_version,
+                "allowed_codes": ["jobs.consumer.repeated_failures_requeue"],
+                "denied_codes": ["jobs.consumer.lag_spike_triage"],
+            },
+        )
+        assert update1.status_code == 200, update1.text
+        v2_policy = update1.json()
+        v2_version = v2_policy["policy_version"]
+        assert v2_version == v1_version + 1
+
+        update2 = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": v2_version,
+                "allowed_codes": ["jobs.consumer.stale_offset_triage"],
+                "denied_codes": [],
+            },
+        )
+        assert update2.status_code == 200, update2.text
+        v3_policy = update2.json()
+        v3_version = v3_policy["policy_version"]
+        assert v3_version == v2_version + 1
+
+        rollback = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy/rollback",
+            headers=_auth_headers(token),
+            json={"previous_version": v1_version},
+        )
+        assert rollback.status_code == 200, rollback.text
+        rollback_result = rollback.json()
+        assert rollback_result["rolled_back_from_version"] == v3_version
+        assert rollback_result["rolled_back_to_version"] == v1_version
+        assert rollback_result["policy_version"] == v3_version + 1
+
+        verify = client.get(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+        )
+        assert verify.status_code == 200, verify.text
+        restored = verify.json()
+        assert restored["policy_version"] == v3_version + 1
+        assert restored["allowed_codes"] == v1_policy["allowed_codes"]
+        assert restored["denied_codes"] == v1_policy["denied_codes"]
+
+
+def test_job_event_consumer_runbook_policy_rollback_rejects_invalid_version(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+
+        current = client.get(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+        )
+        assert current.status_code == 200, current.text
+        current_version = int(current.json()["policy_version"])
+
+        update_v2 = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": current_version,
+                "allowed_codes": ["jobs.consumer.repeated_failures_requeue"],
+            },
+        )
+        assert update_v2.status_code == 200, update_v2.text
+        v2_version = int(update_v2.json()["policy_version"])
+
+        update_v3 = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": v2_version,
+                "allowed_codes": ["jobs.consumer.lag_spike_triage"],
+            },
+        )
+        assert update_v3.status_code == 200, update_v3.text
+        v3_version = int(update_v3.json()["policy_version"])
+
+        future_version = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy/rollback",
+            headers=_auth_headers(token),
+            json={"previous_version": v3_version + 100},
+        )
+        assert future_version.status_code == 400, future_version.text
+
+
+def test_job_event_consumers_diagnostics_includes_runbook_policy_decision_trace(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+
+        set_policy = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": 1,
+                "allowed_codes": ["jobs.consumer.repeated_failures_requeue"],
+                "high_impact_codes": ["jobs.consumer.repeated_failures_requeue"],
+                "require_change_ticket": True,
+                "dual_control_required": True,
+            },
+        )
+        assert set_policy.status_code == 200, set_policy.text
+
+        diag = client.get(
+            "/api/v1/jobs/event-consumers-diagnostics",
+            headers=_auth_headers(token),
+        )
+        assert diag.status_code == 200, diag.text
+        data = diag.json()
+
+        consumer_diagnostics = [c for c in data["consumers"] if c["consumer_name"] == "notifications-consumer"]
+        assert len(consumer_diagnostics) > 0
+        consumer = consumer_diagnostics[0]
+        assert consumer.get("runbook_policy_decision_trace") is not None
+        trace = consumer["runbook_policy_decision_trace"]
+        assert "allowlist" in trace
+        assert "jobs.consumer.repeated_failures_requeue" in trace
+        assert "high-impact" in trace
+        assert "require-change-ticket" in trace
+        assert "require-dual-control" in trace
+
+
 def test_job_event_consumer_runbook_guardrail_blocked_when_no_lag(app) -> None:
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
