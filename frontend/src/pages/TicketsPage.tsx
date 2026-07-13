@@ -61,6 +61,14 @@ type RequesterTemplate = {
   description: string
 }
 
+type TicketTimelineItem = {
+  id: string
+  title: string
+  timestamp: string | null
+  note: string
+  tone: 'info' | 'success' | 'warning' | 'danger'
+}
+
 type TicketFormState = {
   title: string
   description: string
@@ -246,6 +254,14 @@ function canRequesterAccept(status: string) {
 
 function canRequesterReopen(status: string) {
   return status === 'RESOLVED' || status === 'CLOSED'
+}
+
+function formatMinutes(value: number | null | undefined) {
+  if (value == null) return '—'
+  if (value < 60) return `${value} мин`
+  const hours = Math.floor(value / 60)
+  const minutes = value % 60
+  return minutes > 0 ? `${hours} ч ${minutes} мин` : `${hours} ч`
 }
 
 export default function TicketsPage() {
@@ -604,6 +620,114 @@ export default function TicketsPage() {
 
   const selectedTableTicket = selectedTicketId ? tickets.find((item) => item.id === selectedTicketId) ?? null : null
   const detail = selectedTicketQuery.data ?? (selectedTableTicket ? toDetailFallback(selectedTableTicket) : null)
+
+  const timelineItems = useMemo<TicketTimelineItem[]>(() => {
+    if (!detail) return []
+
+    const items: TicketTimelineItem[] = [
+      {
+        id: 'created',
+        title: 'Заявка создана',
+        timestamp: detail.created_at,
+        note: `Создана пользователем ${detail.requester_name}`,
+        tone: 'info',
+      },
+    ]
+
+    if (detail.response_due_at) {
+      let note = `Дедлайн первой реакции: ${formatDateTime(detail.response_due_at)}`
+      let tone: TicketTimelineItem['tone'] = 'info'
+      if (detail.is_response_breached) {
+        note = `SLA первой реакции нарушен. Фактическое время реакции: ${formatMinutes(detail.response_minutes)}`
+        tone = 'danger'
+      } else if (detail.response_minutes != null) {
+        note = `Первая реакция выполнена за ${formatMinutes(detail.response_minutes)}`
+        tone = 'success'
+      }
+      items.push({
+        id: 'response-sla',
+        title: 'SLA первой реакции',
+        timestamp: detail.response_due_at,
+        note,
+        tone,
+      })
+    }
+
+    if (detail.resolution_due_at) {
+      const resolutionDone = detail.resolved_at || detail.closed_at
+      let note = `Дедлайн решения: ${formatDateTime(detail.resolution_due_at)}`
+      let tone: TicketTimelineItem['tone'] = 'info'
+      if (detail.is_resolution_breached && !resolutionDone) {
+        note = 'SLA решения нарушен. Требуется срочное действие команды.'
+        tone = 'danger'
+      } else if (resolutionDone) {
+        note = `Решение зафиксировано: ${formatDateTime(detail.resolved_at ?? detail.closed_at)}`
+        tone = detail.is_resolution_breached ? 'warning' : 'success'
+      }
+      items.push({
+        id: 'resolution-sla',
+        title: 'SLA решения',
+        timestamp: detail.resolution_due_at,
+        note,
+        tone,
+      })
+    }
+
+    if (detail.resolved_at) {
+      items.push({
+        id: 'resolved',
+        title: 'Решение предложено',
+        timestamp: detail.resolved_at,
+        note: 'Заявка переведена в статус Решена.',
+        tone: 'success',
+      })
+    }
+
+    if (detail.closed_at) {
+      items.push({
+        id: 'closed',
+        title: 'Заявка закрыта',
+        timestamp: detail.closed_at,
+        note: 'Решение подтверждено и обращение закрыто.',
+        tone: 'success',
+      })
+    }
+
+    if (detail.reopened_at) {
+      items.push({
+        id: 'reopened',
+        title: 'Заявка переоткрыта',
+        timestamp: detail.reopened_at,
+        note: 'Проблема не устранена полностью, заявка возвращена в работу.',
+        tone: 'warning',
+      })
+    }
+
+    let waitingUserAt: string | null = null
+    const history = historyQuery.data ?? []
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const item = history[index]
+      if (item.event_type !== 'status_changed') continue
+      if ((item.new_value ?? '').toUpperCase() !== 'WAITING_USER') continue
+      waitingUserAt = item.created_at
+      break
+    }
+    if (detail.status === 'WAITING_USER' || waitingUserAt) {
+      items.push({
+        id: 'waiting-user',
+        title: 'Ожидается ответ пользователя',
+        timestamp: waitingUserAt,
+        note: 'Нужно подтвердить результат или уточнить детали в комментариях.',
+        tone: 'warning',
+      })
+    }
+
+    return items.sort((a, b) => {
+      const left = a.timestamp ? new Date(a.timestamp).getTime() : 0
+      const right = b.timestamp ? new Date(b.timestamp).getTime() : 0
+      return right - left
+    })
+  }, [detail, historyQuery.data])
 
   useEffect(() => {
     if (!detail) return
@@ -1361,6 +1485,51 @@ export default function TicketsPage() {
                   <button type="button" className={`module-subnav-tab ${activeTab === 'sla' ? 'active' : ''}`} onClick={() => setActiveTab('sla')}>SLA</button>
                   <button type="button" className={`module-subnav-tab ${activeTab === 'asset' ? 'active' : ''}`} onClick={() => setActiveTab('asset')}>Актив</button>
                   <button type="button" className={`module-subnav-tab ${activeTab === 'ai' ? 'active' : ''}`} onClick={() => setActiveTab('ai')}>AI</button>
+                </section>
+
+                <section className="ticket-detail-panel" style={{ marginTop: 12 }}>
+                  <h3>Таймлайн SLA и статусов</h3>
+                  {isRequester && detail.status === 'WAITING_USER' ? (
+                    <div
+                      style={{
+                        border: '1px solid #b54708',
+                        background: '#2f210c',
+                        borderRadius: 12,
+                        padding: 12,
+                        marginBottom: 12,
+                      }}
+                    >
+                      <p style={{ margin: 0, color: '#fbcf93', fontWeight: 700 }}>Требуется ваш ответ по заявке</p>
+                      <p style={{ margin: '6px 0 10px', color: '#f4d8b5' }}>Подтвердите результат или уточните детали в комментариях, чтобы команда продолжила работу.</p>
+                      <button type="button" className="ghost-button" onClick={() => setActiveTab('comments')}>
+                        Перейти к комментариям
+                      </button>
+                    </div>
+                  ) : null}
+                  <div className="activity-list">
+                    {timelineItems.map((item) => (
+                      <article
+                        className="activity-item"
+                        key={item.id}
+                        style={{
+                          borderColor:
+                            item.tone === 'danger'
+                              ? '#b42318'
+                              : item.tone === 'warning'
+                                ? '#b54708'
+                                : item.tone === 'success'
+                                  ? '#15803d'
+                                  : '#2a445f',
+                        }}
+                      >
+                        <header>
+                          <strong>{item.title}</strong>
+                          <span>{formatDateTime(item.timestamp)}</span>
+                        </header>
+                        <p>{item.note}</p>
+                      </article>
+                    ))}
+                  </div>
                 </section>
 
                 <section className="ticket-detail-panel" style={{ marginTop: 12 }}>
