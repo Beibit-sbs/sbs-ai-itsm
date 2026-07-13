@@ -386,10 +386,12 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "consumer_count",
         "overall_status",
         "recovery_actions_24h",
+        "autoremediation_actions_24h",
         "governance_execute_actions_24h",
         "governance_compliant_actions_24h",
         "governance_compliance_rate_pct",
         "recent_recovery_actions",
+        "recent_autoremediation_actions",
         "consumers",
     ):
         assert key in data
@@ -414,6 +416,7 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "stale_offset",
         "recovery_preview_24h",
         "recovery_execute_24h",
+        "autoremediation_24h",
         "governance_compliant_execute_24h",
         "governance_missing_execute_24h",
         "last_recovery_execute_at",

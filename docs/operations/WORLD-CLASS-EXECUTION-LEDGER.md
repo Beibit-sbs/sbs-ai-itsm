@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-GOVERNANCE-015`
-- Latest stage implementation commit: `5d19068`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-AUTOREMEDIATION-016`
+- Latest stage implementation commit: `pending`
 
 ## Stage Log (Newest First)
+
+- `pending` PLATFORM-CORE-ASYNC-CONSUMER-AUTOREMEDIATION-016
+  - Added guarded worker-side auto-remediation cycle for exhausted failed consumer deliveries with per-consumer allowlist and policy limits.
+  - Added dedicated auto-remediation safety checks (cooldown + hourly rate cap) and audit action `jobs.event_consumer_recovery.auto`.
+  - Extended consumer diagnostics to separate auto-remediation counters/actions from manual recovery/governance signals.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-AUTOREMEDIATION-016-REPORT.md`
 
 - `5d19068` PLATFORM-CORE-ASYNC-CONSUMER-GOVERNANCE-015
   - Added governance validation for execute recovery: reason code, change ticket linkage, and optional dual-control approver.
@@ -146,17 +152,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-AUTOREMEDIATION-016`
+- `PLATFORM-CORE-ASYNC-CONSUMER-POLICY-TUNING-017`
 
 Scope proposal:
-- Add guarded auto-remediation mode for selected consumer failure classes with strict limits.
-- Drive remediation decisions from diagnostics thresholds while preserving explicit opt-in and audit visibility.
-- Keep manual governance controls as override path with clear operator precedence.
+- Add policy tuning controls for per-consumer auto-remediation profiles (limits and event scopes by consumer).
+- Add dry-run diagnostics preview for prospective auto-remediation impact before policy enable/changes.
+- Add explicit suppression windows and operator-maintained denylist for noisy event signatures.
 
 Exit criteria:
-- Auto-remediation can re-drive narrowly scoped failures without operator request when enabled.
-- Diagnostics expose auto-remediation activity separately from manual recovery.
-- Tests cover safety boundaries and audit traces for automatic actions.
+- Policy profiles can be adjusted safely without code changes and are reflected in diagnostics.
+- Dry-run preview estimates selected/requeued counts by policy constraints.
+- Tests validate policy precedence and suppression behavior.
 
 ## Stage Execution Template
 

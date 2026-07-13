@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     jobs_event_recovery_max_exec_per_hour: int = 6
     jobs_event_recovery_require_change_ticket: bool = True
     jobs_event_recovery_dual_control_required: bool = False
+    jobs_event_autoremediation_enabled: bool = False
+    jobs_event_autoremediation_consumers: list[str] | str = ["notifications-consumer"]
+    jobs_event_autoremediation_allowed_event_types: list[str] | str = ["failed", "dead_letter"]
+    jobs_event_autoremediation_min_failed_age_seconds: int = 120
+    jobs_event_autoremediation_max_requeued_per_cycle: int = 5
+    jobs_event_autoremediation_cooldown_seconds: int = 300
+    jobs_event_autoremediation_max_per_hour: int = 20
     jobs_retry_base_seconds: float = 0.5
     jobs_retry_max_seconds: float = 15.0
 
@@ -56,6 +63,17 @@ class Settings(BaseSettings):
     @field_validator("backend_cors_origins", mode="before")
     @classmethod
     def parse_cors(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator(
+        "jobs_event_autoremediation_consumers",
+        "jobs_event_autoremediation_allowed_event_types",
+        mode="before",
+    )
+    @classmethod
+    def parse_csv_lists(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
@@ -87,6 +105,10 @@ class Settings(BaseSettings):
         "jobs_event_consumer_stale_offset_seconds",
         "jobs_event_recovery_cooldown_seconds",
         "jobs_event_recovery_max_exec_per_hour",
+        "jobs_event_autoremediation_min_failed_age_seconds",
+        "jobs_event_autoremediation_max_requeued_per_cycle",
+        "jobs_event_autoremediation_cooldown_seconds",
+        "jobs_event_autoremediation_max_per_hour",
     )
     @classmethod
     def jobs_event_limits_must_be_non_negative(cls, value: int) -> int:

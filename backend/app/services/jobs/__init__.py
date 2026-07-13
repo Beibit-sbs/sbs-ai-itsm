@@ -236,10 +236,20 @@ def job_event_consumers_diagnostics(
             .limit(50)
         ).all()
     )
+    recent_autoremediation_rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "jobs.event_consumer_recovery.auto")
+            .where(AuditLog.created_at >= audit_window_start)
+            .order_by(AuditLog.created_at.desc())
+            .limit(50)
+        ).all()
+    )
     recovery_agg: dict[str, dict[str, object]] = {
         name: {
             "preview_24h": 0,
             "execute_24h": 0,
+            "autoremediation_24h": 0,
             "governance_compliant_execute_24h": 0,
             "governance_missing_execute_24h": 0,
             "last_execute_at": None,
@@ -248,6 +258,7 @@ def job_event_consumers_diagnostics(
         for name in consumer_names
     }
     recent_recovery_actions: list[dict[str, object]] = []
+    recent_autoremediation_actions: list[dict[str, object]] = []
     for row in recent_recovery_rows:
         metadata = _deserialize(row.metadata_json) if row.metadata_json else {}
         if not isinstance(metadata, dict):
@@ -285,6 +296,26 @@ def job_event_consumers_diagnostics(
                     "change_ticket_ref": str(metadata.get("change_ticket_ref") or ""),
                     "approved_by_email": str(metadata.get("approved_by_email") or ""),
                     "governance_compliant": bool(metadata.get("reason_code")) and bool(metadata.get("change_ticket_ref")),
+                }
+            )
+
+    for row in recent_autoremediation_rows:
+        metadata = _deserialize(row.metadata_json) if row.metadata_json else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        consumer = str(metadata.get("consumer_name") or "")
+        if consumer in recovery_agg:
+            recovery_agg[consumer]["autoremediation_24h"] = int(recovery_agg[consumer]["autoremediation_24h"] or 0) + 1
+        if len(recent_autoremediation_actions) < 12:
+            recent_autoremediation_actions.append(
+                {
+                    "action": row.action,
+                    "consumer_name": consumer,
+                    "actor_email": row.actor_email,
+                    "created_at": _as_utc(row.created_at),
+                    "selected": int(metadata.get("selected", 0) or 0),
+                    "requeued": int(metadata.get("requeued", 0) or 0),
+                    "auto_remediation": True,
                 }
             )
 
@@ -398,6 +429,7 @@ def job_event_consumers_diagnostics(
                 "stale_offset": stale_offset,
                 "recovery_preview_24h": int(recovery_data.get("preview_24h", 0) or 0),
                 "recovery_execute_24h": int(recovery_data.get("execute_24h", 0) or 0),
+                "autoremediation_24h": int(recovery_data.get("autoremediation_24h", 0) or 0),
                 "governance_compliant_execute_24h": int(recovery_data.get("governance_compliant_execute_24h", 0) or 0),
                 "governance_missing_execute_24h": int(recovery_data.get("governance_missing_execute_24h", 0) or 0),
                 "last_recovery_execute_at": recovery_data.get("last_execute_at"),
@@ -429,11 +461,121 @@ def job_event_consumers_diagnostics(
         "consumer_count": len(consumers),
         "overall_status": overall_status,
         "recovery_actions_24h": len(recent_recovery_rows),
+        "autoremediation_actions_24h": len(recent_autoremediation_rows),
         "governance_execute_actions_24h": governance_execute_actions_24h,
         "governance_compliant_actions_24h": governance_compliant_actions_24h,
         "governance_compliance_rate_pct": governance_compliance_rate_pct,
         "recent_recovery_actions": recent_recovery_actions,
+        "recent_autoremediation_actions": recent_autoremediation_actions,
         "consumers": consumers,
+    }
+
+
+def job_event_consumer_autoremediation_safety_state(
+    db: Session,
+    *,
+    consumer_name: str,
+    cooldown_seconds: int,
+    max_per_hour: int,
+) -> dict[str, object]:
+    now = _now()
+    window_start = now - timedelta(hours=1)
+    rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "jobs.event_consumer_recovery.auto")
+            .where(AuditLog.created_at >= window_start)
+            .order_by(AuditLog.created_at.desc())
+            .limit(200)
+        ).all()
+    )
+    consumer_rows: list[AuditLog] = []
+    for row in rows:
+        metadata = _deserialize(row.metadata_json) if row.metadata_json else {}
+        if isinstance(metadata, dict) and str(metadata.get("consumer_name") or "") == consumer_name:
+            consumer_rows.append(row)
+
+    executed_last_hour = len(consumer_rows)
+    last_executed_at = _as_utc(consumer_rows[0].created_at) if consumer_rows else None
+    cooldown_active = False
+    retry_after_seconds = 0
+    if cooldown_seconds > 0 and last_executed_at is not None:
+        elapsed = int((now - last_executed_at).total_seconds())
+        remaining = cooldown_seconds - elapsed
+        if remaining > 0:
+            cooldown_active = True
+            retry_after_seconds = remaining
+    rate_limit_exceeded = max_per_hour > 0 and executed_last_hour >= max_per_hour
+    return {
+        "consumer_name": consumer_name,
+        "executed_last_hour": executed_last_hour,
+        "max_per_hour": max_per_hour,
+        "rate_limit_exceeded": rate_limit_exceeded,
+        "cooldown_seconds": cooldown_seconds,
+        "cooldown_active": cooldown_active,
+        "retry_after_seconds": retry_after_seconds,
+        "last_executed_at": last_executed_at,
+    }
+
+
+def job_event_consumer_autoremediate(
+    db: Session,
+    *,
+    consumer_name: str,
+    stream_name: str,
+    max_attempts: int,
+    min_failed_age_seconds: int,
+    allowed_event_types: list[str],
+    limit: int,
+) -> dict[str, object]:
+    effective_limit = max(1, min(200, int(limit)))
+    cutoff = _now() - timedelta(seconds=max(0, int(min_failed_age_seconds)))
+    event_types = [item.strip() for item in allowed_event_types if item and item.strip()]
+
+    stmt = (
+        select(JobEventConsumerDelivery, JobLifecycleEvent.event_type)
+        .join(JobLifecycleEvent, JobLifecycleEvent.id == JobEventConsumerDelivery.event_id)
+        .where(JobEventConsumerDelivery.consumer_name == consumer_name)
+        .where(JobEventConsumerDelivery.stream_name == stream_name)
+        .where(JobEventConsumerDelivery.status == "failed")
+        .where(JobEventConsumerDelivery.attempts >= max_attempts)
+        .where(JobEventConsumerDelivery.updated_at <= cutoff)
+        .order_by(JobEventConsumerDelivery.updated_at.asc())
+        .limit(effective_limit)
+    )
+    if event_types:
+        stmt = stmt.where(JobLifecycleEvent.event_type.in_(event_types))
+
+    rows = list(db.execute(stmt).all())
+    requeued = 0
+    items: list[dict[str, object]] = []
+    now = _now()
+    for delivery, event_type in rows:
+        items.append(
+            {
+                "delivery_id": delivery.id,
+                "event_id": delivery.event_id,
+                "event_type": str(event_type),
+                "attempts_before": int(delivery.attempts or 0),
+                "status_before": delivery.status,
+            }
+        )
+        delivery.status = "failed"
+        delivery.attempts = 0
+        delivery.last_error = "auto_remediation_requeued_by_policy"
+        delivery.delivered_at = None
+        delivery.updated_at = now
+        requeued += 1
+
+    if rows:
+        db.flush()
+
+    return {
+        "consumer_name": consumer_name,
+        "stream_name": stream_name,
+        "selected": len(rows),
+        "requeued": requeued,
+        "items": items,
     }
 
 
@@ -958,6 +1100,8 @@ __all__ = [
     "job_event_consumer_summary",
     "job_event_consumers_diagnostics",
     "job_event_consumer_recovery_safety_state",
+    "job_event_consumer_autoremediation_safety_state",
+    "job_event_consumer_autoremediate",
     "recover_job_event_consumer_deliveries",
     "list_job_events",
     "outbox_diagnostics",

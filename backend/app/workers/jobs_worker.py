@@ -20,8 +20,15 @@ from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.user import User
 from app.services.automation import trigger_automation_event
+from app.services.audit import log_audit
 from app.services.notifications import create_domain_event_notification
-from app.services.jobs import create_job_lifecycle_event, execute_job, get_job
+from app.services.jobs import (
+    create_job_lifecycle_event,
+    execute_job,
+    get_job,
+    job_event_consumer_autoremediate,
+    job_event_consumer_autoremediation_safety_state,
+)
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 
 logger = logging.getLogger("app.jobs.worker")
@@ -347,6 +354,69 @@ def _retry_failed_event_consumers_batch(
         db.close()
 
 
+def _run_auto_remediation_cycle(*, max_per_consumer: int | None = None) -> int:
+    settings = get_settings()
+    if not settings.jobs_event_autoremediation_enabled:
+        return 0
+
+    allowed = {
+        settings.jobs_event_consumer_name,
+        settings.jobs_event_automation_consumer_name,
+    }
+    configured_consumers = [item for item in settings.jobs_event_autoremediation_consumers if item in allowed]
+    if not configured_consumers:
+        return 0
+
+    allowed_event_types = [item for item in settings.jobs_event_autoremediation_allowed_event_types if item]
+    requeued_total = 0
+    for consumer_name in configured_consumers:
+        db = SessionLocal()
+        try:
+            safety = job_event_consumer_autoremediation_safety_state(
+                db,
+                consumer_name=consumer_name,
+                cooldown_seconds=settings.jobs_event_autoremediation_cooldown_seconds,
+                max_per_hour=settings.jobs_event_autoremediation_max_per_hour,
+            )
+            if bool(safety.get("cooldown_active")) or bool(safety.get("rate_limit_exceeded")):
+                db.rollback()
+                continue
+
+            effective_limit = max_per_consumer or settings.jobs_event_autoremediation_max_requeued_per_cycle
+            result = job_event_consumer_autoremediate(
+                db,
+                consumer_name=consumer_name,
+                stream_name=settings.jobs_event_stream_name,
+                max_attempts=settings.jobs_event_consumer_max_attempts,
+                min_failed_age_seconds=settings.jobs_event_autoremediation_min_failed_age_seconds,
+                allowed_event_types=allowed_event_types,
+                limit=effective_limit,
+            )
+            if int(result.get("requeued", 0) or 0) > 0:
+                log_audit(
+                    db,
+                    action="jobs.event_consumer_recovery.auto",
+                    entity_type="job_event_consumer_delivery",
+                    entity_id=consumer_name,
+                    actor_email="jobs-worker@sbs.local",
+                    metadata={
+                        "consumer_name": consumer_name,
+                        "selected": int(result.get("selected", 0) or 0),
+                        "requeued": int(result.get("requeued", 0) or 0),
+                        "event_types": allowed_event_types,
+                        "auto_remediation": True,
+                    },
+                )
+            db.commit()
+            requeued_total += int(result.get("requeued", 0) or 0)
+        except Exception:
+            db.rollback()
+            logger.exception("job_event_consumer_autoremediation_failed", extra={"consumer_name": consumer_name})
+        finally:
+            db.close()
+    return requeued_total
+
+
 def _retry_delay_seconds(attempts: int, *, base_seconds: float, max_seconds: float) -> float:
     """Exponential backoff based on already-used attempts."""
 
@@ -549,6 +619,7 @@ def run_worker_forever() -> None:
                 consumer_name=settings.jobs_event_automation_consumer_name,
                 handler=_process_automation_consumer,
             )
+            _run_auto_remediation_cycle()
             _publish_outbox_batch(redis_client)
             _drain_scheduled_jobs(redis_client, settings.jobs_queue_name)
             try:

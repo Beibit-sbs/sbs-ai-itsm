@@ -7,12 +7,14 @@ from fastapi.testclient import TestClient
 from app.models.job_event_consumer_delivery import JobEventConsumerDelivery
 from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.notification import Notification
+from app.models.audit_log import AuditLog
 from app.services.jobs import create_job_run
 from app.workers import jobs_worker
 from app.workers.jobs_worker import (
     _consume_event_stream_batch,
     _drain_scheduled_jobs,
     _relay_job_events_batch,
+    _run_auto_remediation_cycle,
     _retry_failed_event_consumers_batch,
     _retry_delay_seconds,
     _run_single_job,
@@ -393,4 +395,124 @@ def test_dual_consumers_process_same_event_stream_independently(app, monkeypatch
     assert notif_deliveries >= 1
     assert auto_deliveries >= 1
     assert all(item.startswith("job_lifecycle.") for item in calls)
+
+
+def test_auto_remediation_requeues_exhausted_failed_deliveries(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_event_consumer_name = "notifications-consumer"
+    settings.jobs_event_autoremediation_enabled = True
+    settings.jobs_event_autoremediation_consumers = ["notifications-consumer"]
+    settings.jobs_event_autoremediation_allowed_event_types = ["failed", "dead_letter"]
+    settings.jobs_event_consumer_max_attempts = 3
+    settings.jobs_event_autoremediation_min_failed_age_seconds = 0
+    settings.jobs_event_autoremediation_max_requeued_per_cycle = 10
+    settings.jobs_event_autoremediation_cooldown_seconds = 0
+    settings.jobs_event_autoremediation_max_per_hour = 100
+
+    called: list[str] = []
+
+    def _fake_safety(*args, **kwargs):
+        return {
+            "consumer_name": kwargs["consumer_name"],
+            "executed_last_hour": 0,
+            "max_per_hour": 100,
+            "rate_limit_exceeded": False,
+            "cooldown_seconds": 0,
+            "cooldown_active": False,
+            "retry_after_seconds": 0,
+            "last_executed_at": None,
+        }
+
+    def _fake_autoremediate(db, **kwargs):
+        called.append(str(kwargs["consumer_name"]))
+        return {
+            "consumer_name": kwargs["consumer_name"],
+            "stream_name": kwargs["stream_name"],
+            "selected": 1,
+            "requeued": 1,
+            "items": [
+                {
+                    "delivery_id": "auto-remediate-delivery",
+                    "event_id": "event-1",
+                    "event_type": "failed",
+                    "attempts_before": 3,
+                    "status_before": "failed",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(jobs_worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediation_safety_state", _fake_safety)
+    monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediate", _fake_autoremediate)
+
+    with TestClient(app):
+        requeued = _run_auto_remediation_cycle(max_per_consumer=10)
+
+        with SessionLocal() as db:
+            audit_rows = db.query(AuditLog).filter(AuditLog.action == "jobs.event_consumer_recovery.auto").all()
+
+    assert requeued == 1
+    assert called == ["notifications-consumer"]
+    assert len(audit_rows) >= 1
+
+
+def test_auto_remediation_respects_cooldown_guard(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+    from app.core.config import get_settings
+    from app.services.audit import log_audit
+
+    settings = get_settings()
+    settings.jobs_event_consumer_name = "notifications-consumer"
+    settings.jobs_event_autoremediation_enabled = True
+    settings.jobs_event_autoremediation_consumers = ["notifications-consumer"]
+    settings.jobs_event_autoremediation_allowed_event_types = ["failed"]
+    settings.jobs_event_consumer_max_attempts = 3
+    settings.jobs_event_autoremediation_min_failed_age_seconds = 0
+    settings.jobs_event_autoremediation_max_requeued_per_cycle = 10
+    settings.jobs_event_autoremediation_cooldown_seconds = 3600
+    settings.jobs_event_autoremediation_max_per_hour = 100
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(jobs_worker, "get_settings", lambda: settings)
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"auto": "cooldown"}, max_attempts=1)
+            db.commit()
+            event = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == job.id).one()
+            db.add(
+                JobEventConsumerDelivery(
+                    id="auto-remediate-cooldown",
+                    consumer_name="notifications-consumer",
+                    event_id=event.id,
+                        stream_name=settings.jobs_event_stream_name,
+                    stream_entry_id="14-0",
+                    status="failed",
+                    attempts=3,
+                    last_error="exhausted",
+                    delivered_at=None,
+                )
+            )
+            log_audit(
+                db,
+                action="jobs.event_consumer_recovery.auto",
+                entity_type="job_event_consumer_delivery",
+                entity_id="notifications-consumer",
+                actor_email="jobs-worker@sbs.local",
+                metadata={"consumer_name": "notifications-consumer", "requeued": 1},
+            )
+            db.commit()
+
+        requeued = _run_auto_remediation_cycle(max_per_consumer=10)
+
+        with SessionLocal() as db:
+            delivery = db.get(JobEventConsumerDelivery, "auto-remediate-cooldown")
+
+    assert requeued == 0
+    assert delivery is not None
+    assert delivery.attempts == 3
 

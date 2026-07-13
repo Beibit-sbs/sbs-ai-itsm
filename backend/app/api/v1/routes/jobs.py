@@ -190,6 +190,7 @@ class JobEventConsumerDiagnosticsItemResponse(BaseModel):
     stale_offset: bool
     recovery_preview_24h: int
     recovery_execute_24h: int
+    autoremediation_24h: int
     governance_compliant_execute_24h: int
     governance_missing_execute_24h: int
     last_recovery_execute_at: datetime | None
@@ -204,10 +205,12 @@ class JobEventConsumersDiagnosticsResponse(BaseModel):
     consumer_count: int
     overall_status: str
     recovery_actions_24h: int
+    autoremediation_actions_24h: int
     governance_execute_actions_24h: int
     governance_compliant_actions_24h: int
     governance_compliance_rate_pct: float
     recent_recovery_actions: list[dict[str, object]]
+    recent_autoremediation_actions: list[dict[str, object]]
     consumers: list[JobEventConsumerDiagnosticsItemResponse]
 
 
