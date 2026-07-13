@@ -518,6 +518,51 @@ def job_event_consumer_autoremediation_safety_state(
     }
 
 
+def job_event_consumer_rate_shape_state(
+    db: Session,
+    *,
+    consumer_name: str,
+    burst_limit_per_10m: int,
+    steady_limit_per_hour: int,
+) -> dict[str, object]:
+    now = _now()
+    window_10m = now - timedelta(minutes=10)
+    window_1h = now - timedelta(hours=1)
+    rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "jobs.event_consumer_recovery.auto")
+            .where(AuditLog.created_at >= window_1h)
+            .order_by(AuditLog.created_at.desc())
+            .limit(500)
+        ).all()
+    )
+    executed_10m = 0
+    executed_1h = 0
+    for row in rows:
+        metadata = _deserialize(row.metadata_json) if row.metadata_json else {}
+        if not isinstance(metadata, dict):
+            continue
+        if str(metadata.get("consumer_name") or "") != consumer_name:
+            continue
+        if row.created_at >= window_1h:
+            executed_1h += 1
+        if row.created_at >= window_10m:
+            executed_10m += 1
+
+    burst_exceeded = burst_limit_per_10m > 0 and executed_10m >= burst_limit_per_10m
+    steady_exceeded = steady_limit_per_hour > 0 and executed_1h >= steady_limit_per_hour
+    return {
+        "consumer_name": consumer_name,
+        "executed_10m": executed_10m,
+        "executed_1h": executed_1h,
+        "burst_limit_per_10m": burst_limit_per_10m,
+        "steady_limit_per_hour": steady_limit_per_hour,
+        "burst_exceeded": burst_exceeded,
+        "steady_exceeded": steady_exceeded,
+    }
+
+
 def _parse_window(value: str) -> tuple[int, int] | None:
     raw = value.strip()
     if not raw or "-" not in raw:
@@ -1213,6 +1258,7 @@ __all__ = [
     "job_event_consumers_diagnostics",
     "job_event_consumer_recovery_safety_state",
     "job_event_consumer_autoremediation_safety_state",
+    "job_event_consumer_rate_shape_state",
     "job_event_consumer_autoremediation_preview",
     "is_autoremediation_suppressed_now",
     "job_event_consumer_autoremediate",

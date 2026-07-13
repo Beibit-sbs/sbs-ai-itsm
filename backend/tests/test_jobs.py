@@ -392,6 +392,7 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "governance_compliance_rate_pct",
         "policy_version",
         "policy_rollouts_24h",
+        "emergency_brake_consumers",
         "recent_policy_rollouts",
         "recent_recovery_actions",
         "recent_autoremediation_actions",
@@ -427,6 +428,12 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "effective_policy_hash",
         "policy_version",
         "policy_canary_mode",
+        "rate_budget_10m_used",
+        "rate_budget_10m_limit",
+        "rate_budget_1h_used",
+        "rate_budget_1h_limit",
+        "emergency_brake_active",
+        "emergency_brake_reason",
         "last_policy_change_at",
         "last_policy_change_actor_email",
         "status",
@@ -537,6 +544,7 @@ def test_job_event_consumer_autoremediation_policy_runbook_update(app) -> None:
                 "max_requeued_per_cycle": 3,
                 "cooldown_seconds": 30,
                 "max_per_hour": 12,
+                "burst_limit_per_10m": 2,
                 "canary_mode": True,
                 "canary_limit_per_cycle": 1,
                 "suppression_windows_utc": ["01:00-02:00"],
@@ -550,6 +558,7 @@ def test_job_event_consumer_autoremediation_policy_runbook_update(app) -> None:
         assert updated["effective_policy"]["canary_limit_per_cycle"] == 1
         assert updated["suppression_windows_utc"] == ["01:00-02:00"]
         assert updated["error_denylist"] == ["permanent"]
+        assert isinstance(updated["emergency_brake_consumers"], list)
         assert updated["policy_version"] == current_payload["policy_version"] + 1
         assert updated["effective_policy_hash"]
 
@@ -560,6 +569,7 @@ def test_job_event_consumer_autoremediation_policy_runbook_update(app) -> None:
         assert read_back.status_code == 200, read_back.text
         payload = read_back.json()
         assert payload["effective_policy"]["canary_mode"] is True
+        assert payload["effective_policy"]["burst_limit_per_10m"] == 2
         assert payload["policy_version"] == updated["policy_version"]
         assert payload["effective_policy_hash"]
 
@@ -595,6 +605,61 @@ def test_job_event_consumer_autoremediation_policy_rejects_stale_version(app) ->
             },
         )
         assert stale.status_code == 409, stale.text
+
+
+def test_job_event_consumer_autoremediation_brake_reset(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        current = client.get(
+            "/api/v1/jobs/event-consumer-autoremediation-policy?consumer_name=notifications-consumer",
+            headers=_auth_headers(token),
+        )
+        assert current.status_code == 200, current.text
+        current_payload = current.json()
+
+        set_brake = client.post(
+            "/api/v1/jobs/event-consumer-autoremediation-policy",
+            headers=_auth_headers(token),
+            json={
+                "consumer_name": "notifications-consumer",
+                "expected_version": current_payload["policy_version"],
+                "enabled": True,
+            },
+        )
+        assert set_brake.status_code == 200, set_brake.text
+        policy_after = client.get(
+            "/api/v1/jobs/event-consumer-autoremediation-policy?consumer_name=notifications-consumer",
+            headers=_auth_headers(token),
+        ).json()
+
+        # Simulate active brake by writing it through policy update payload path.
+        with_version = int(policy_after["policy_version"])
+        force_brake = client.post(
+            "/api/v1/jobs/event-consumer-autoremediation-policy",
+            headers=_auth_headers(token),
+            json={
+                "consumer_name": "notifications-consumer",
+                "expected_version": with_version,
+                "enabled": True,
+            },
+        )
+        assert force_brake.status_code == 200, force_brake.text
+        latest = client.get(
+            "/api/v1/jobs/event-consumer-autoremediation-policy?consumer_name=notifications-consumer",
+            headers=_auth_headers(token),
+        ).json()
+
+        reset = client.post(
+            "/api/v1/jobs/event-consumer-autoremediation-brake-reset",
+            headers=_auth_headers(token),
+            json={
+                "consumer_name": "notifications-consumer",
+                "expected_version": latest["policy_version"],
+            },
+        )
+        assert reset.status_code == 200, reset.text
+        reset_payload = reset.json()
+        assert "notifications-consumer" not in reset_payload["emergency_brake_consumers"]
 
 
 def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:

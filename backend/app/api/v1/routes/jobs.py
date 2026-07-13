@@ -25,6 +25,7 @@ from app.services.jobs import (
     job_event_bus_summary,
     job_event_consumers_diagnostics,
     job_event_consumer_autoremediation_preview,
+    job_event_consumer_rate_shape_state,
     is_autoremediation_suppressed_now,
     job_event_consumer_recovery_safety_state,
     job_event_consumer_summary,
@@ -204,6 +205,12 @@ class JobEventConsumerDiagnosticsItemResponse(BaseModel):
     effective_policy_hash: str
     policy_version: int
     policy_canary_mode: bool
+    rate_budget_10m_used: int
+    rate_budget_10m_limit: int
+    rate_budget_1h_used: int
+    rate_budget_1h_limit: int
+    emergency_brake_active: bool
+    emergency_brake_reason: str
     last_policy_change_at: datetime | None
     last_policy_change_actor_email: str | None
     status: str
@@ -222,6 +229,7 @@ class JobEventConsumersDiagnosticsResponse(BaseModel):
     governance_compliance_rate_pct: float
     policy_version: int
     policy_rollouts_24h: int
+    emergency_brake_consumers: list[str]
     recent_policy_rollouts: list[dict[str, object]]
     recent_recovery_actions: list[dict[str, object]]
     recent_autoremediation_actions: list[dict[str, object]]
@@ -285,6 +293,7 @@ class JobEventConsumerAutoremediationPolicyResponse(BaseModel):
     effective_policy: dict[str, object]
     suppression_windows_utc: list[str]
     error_denylist: list[str]
+    emergency_brake_consumers: list[str]
     effective_policy_hash: str
     last_policy_change_at: datetime | None
     last_policy_change_actor_email: str | None
@@ -299,10 +308,16 @@ class JobEventConsumerAutoremediationPolicyUpdateRequest(BaseModel):
     max_requeued_per_cycle: int | None = Field(default=None, ge=1, le=200)
     cooldown_seconds: int | None = Field(default=None, ge=0)
     max_per_hour: int | None = Field(default=None, ge=0)
+    burst_limit_per_10m: int | None = Field(default=None, ge=0)
     canary_mode: bool | None = None
     canary_limit_per_cycle: int | None = Field(default=None, ge=1, le=200)
     suppression_windows_utc: list[str] | None = None
     error_denylist: list[str] | None = None
+
+
+class JobEventConsumerAutoremediationBrakeResetRequest(BaseModel):
+    consumer_name: str = Field(default="notifications-consumer", min_length=1, max_length=80)
+    expected_version: int = Field(..., ge=1)
 
 
 class EnqueueJobRequest(BaseModel):
@@ -469,14 +484,30 @@ def get_job_event_consumers_diagnostics(
             continue
         consumer_name = str(item.get("consumer_name") or "")
         effective_policy = _effective_autoremediation_policy(settings, consumer_name)
+        rate_shape = job_event_consumer_rate_shape_state(
+            db,
+            consumer_name=consumer_name,
+            burst_limit_per_10m=int(effective_policy.get("burst_limit_per_10m", 0) or 0),
+            steady_limit_per_hour=int(effective_policy.get("max_per_hour", 0) or 0),
+        )
         item["effective_policy_hash"] = _policy_hash(effective_policy)
         item["policy_version"] = int(policy_state.get("version", 1) or 1)
         item["policy_canary_mode"] = bool(effective_policy.get("canary_mode", False))
+        item["rate_budget_10m_used"] = int(rate_shape.get("executed_10m", 0) or 0)
+        item["rate_budget_10m_limit"] = int(rate_shape.get("burst_limit_per_10m", 0) or 0)
+        item["rate_budget_1h_used"] = int(rate_shape.get("executed_1h", 0) or 0)
+        item["rate_budget_1h_limit"] = int(rate_shape.get("steady_limit_per_hour", 0) or 0)
+        brake_active = consumer_name in settings.jobs_event_autoremediation_braked_consumers
+        item["emergency_brake_active"] = brake_active
+        item["emergency_brake_reason"] = "error_threshold_exceeded_15m" if brake_active else ""
         policy_change = policy_changes.get(consumer_name, {})
         item["last_policy_change_at"] = policy_change.get("created_at")
         item["last_policy_change_actor_email"] = policy_change.get("actor_email")
     data["policy_version"] = int(policy_state.get("version", 1) or 1)
     data["policy_rollouts_24h"] = int(rollouts_24h)
+    data["emergency_brake_consumers"] = [
+        str(item) for item in settings.jobs_event_autoremediation_braked_consumers if str(item).strip()
+    ]
     data["recent_policy_rollouts"] = recent_rollouts
     return JobEventConsumersDiagnosticsResponse(**data)
 
@@ -502,6 +533,9 @@ def _effective_autoremediation_policy(settings, consumer_name: str) -> dict[str,
         "canary_mode": bool(profile.get("canary_mode", settings.jobs_event_autoremediation_canary_mode)),
         "canary_limit_per_cycle": int(
             profile.get("canary_limit_per_cycle", settings.jobs_event_autoremediation_canary_limit_per_cycle)
+        ),
+        "burst_limit_per_10m": int(
+            profile.get("burst_limit_per_10m", settings.jobs_event_autoremediation_burst_max_per_10m)
         ),
         "allowed_event_types": [str(item) for item in allowed_event_types if str(item).strip()],
     }
@@ -641,6 +675,9 @@ def get_job_event_consumer_autoremediation_policy(
         effective_policy=effective_policy,
         suppression_windows_utc=[str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item],
         error_denylist=[str(item) for item in settings.jobs_event_autoremediation_error_denylist if item],
+        emergency_brake_consumers=[
+            str(item) for item in settings.jobs_event_autoremediation_braked_consumers if str(item).strip()
+        ],
         effective_policy_hash=_policy_hash(effective_policy),
         last_policy_change_at=policy_change.get("created_at"),
         last_policy_change_actor_email=policy_change.get("actor_email"),
@@ -679,6 +716,7 @@ def update_job_event_consumer_autoremediation_policy(
         "max_requeued_per_cycle": request.max_requeued_per_cycle,
         "cooldown_seconds": request.cooldown_seconds,
         "max_per_hour": request.max_per_hour,
+        "burst_limit_per_10m": request.burst_limit_per_10m,
         "canary_mode": request.canary_mode,
         "canary_limit_per_cycle": request.canary_limit_per_cycle,
     }
@@ -705,6 +743,9 @@ def update_job_event_consumer_autoremediation_policy(
         "error_denylist": error_denylist,
         "canary_mode": bool(settings.jobs_event_autoremediation_canary_mode),
         "canary_limit_per_cycle": int(settings.jobs_event_autoremediation_canary_limit_per_cycle),
+        "burst_max_per_10m": int(settings.jobs_event_autoremediation_burst_max_per_10m),
+        "brake_error_threshold": int(settings.jobs_event_autoremediation_brake_error_threshold),
+        "braked_consumers": [str(item) for item in settings.jobs_event_autoremediation_braked_consumers if item],
     }
 
     try:
@@ -746,7 +787,83 @@ def update_job_event_consumer_autoremediation_policy(
         effective_policy=new_effective,
         suppression_windows_utc=suppression_windows,
         error_denylist=error_denylist,
+        emergency_brake_consumers=[
+            str(item) for item in settings.jobs_event_autoremediation_braked_consumers if str(item).strip()
+        ],
         effective_policy_hash=new_hash,
+        last_policy_change_at=saved_state.get("updated_at"),
+        last_policy_change_actor_email=current_user.email,
+    )
+
+
+@router.post(
+    "/event-consumer-autoremediation-brake-reset",
+    response_model=JobEventConsumerAutoremediationPolicyResponse,
+)
+def reset_job_event_consumer_autoremediation_brake(
+    request: JobEventConsumerAutoremediationBrakeResetRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobEventConsumerAutoremediationPolicyResponse:
+    _require_enqueue(current_user)
+    settings = get_settings()
+    policy_state = _policy_state(settings, db)
+    allowed = {settings.jobs_event_consumer_name, settings.jobs_event_automation_consumer_name}
+    if request.consumer_name not in allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown consumer_name")
+
+    remaining = [
+        str(item) for item in settings.jobs_event_autoremediation_braked_consumers if str(item) != request.consumer_name
+    ]
+    payload = {
+        "policy_profiles": (
+            settings.jobs_event_autoremediation_policy_profiles
+            if isinstance(settings.jobs_event_autoremediation_policy_profiles, dict)
+            else {}
+        ),
+        "suppression_windows_utc": [str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item],
+        "error_denylist": [str(item) for item in settings.jobs_event_autoremediation_error_denylist if item],
+        "canary_mode": bool(settings.jobs_event_autoremediation_canary_mode),
+        "canary_limit_per_cycle": int(settings.jobs_event_autoremediation_canary_limit_per_cycle),
+        "burst_max_per_10m": int(settings.jobs_event_autoremediation_burst_max_per_10m),
+        "brake_error_threshold": int(settings.jobs_event_autoremediation_brake_error_threshold),
+        "braked_consumers": remaining,
+    }
+    try:
+        saved_state = save_policy(
+            db,
+            settings,
+            payload=payload,
+            expected_version=request.expected_version,
+            actor_email=current_user.email,
+        )
+    except PolicyVersionConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    effective_policy = _effective_autoremediation_policy(settings, request.consumer_name)
+    log_audit(
+        db,
+        action="jobs.event_consumer_autoremediation_brake.reset",
+        entity_type="job_event_consumer_policy",
+        entity_id=request.consumer_name,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "consumer_name": request.consumer_name,
+            "previous_version": int(policy_state.get("version", 1) or 1),
+            "new_version": int(saved_state.get("version", 1) or 1),
+        },
+    )
+    db.commit()
+    return JobEventConsumerAutoremediationPolicyResponse(
+        consumer_name=request.consumer_name,
+        policy_version=int(saved_state.get("version", 1) or 1),
+        effective_policy=effective_policy,
+        suppression_windows_utc=[str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item],
+        error_denylist=[str(item) for item in settings.jobs_event_autoremediation_error_denylist if item],
+        emergency_brake_consumers=[str(item) for item in remaining if str(item).strip()],
+        effective_policy_hash=_policy_hash(effective_policy),
         last_policy_change_at=saved_state.get("updated_at"),
         last_policy_change_actor_email=current_user.email,
     )

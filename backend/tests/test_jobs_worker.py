@@ -664,3 +664,87 @@ def test_auto_remediation_applies_canary_limit(app, monkeypatch) -> None:
     assert requeued == 1
     assert captured["limit"] == 1
 
+
+def test_auto_remediation_skips_braked_consumer(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_event_consumer_name = "notifications-consumer"
+    settings.jobs_event_autoremediation_enabled = True
+    settings.jobs_event_autoremediation_consumers = ["notifications-consumer"]
+    settings.jobs_event_autoremediation_braked_consumers = ["notifications-consumer"]
+
+    called = {"autoremediate": 0}
+
+    def _fake_autoremediate(db, **kwargs):
+        del db, kwargs
+        called["autoremediate"] += 1
+        return {"requeued": 1, "selected": 1, "items": []}
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(jobs_worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(jobs_worker, "load_policy_into_settings", lambda db, current: {"version": 1})
+    monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediate", _fake_autoremediate)
+
+    with TestClient(app):
+        requeued = _run_auto_remediation_cycle(max_per_consumer=10)
+
+    assert requeued == 0
+    assert called["autoremediate"] == 0
+
+
+def test_auto_remediation_skips_when_burst_budget_exceeded(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_event_consumer_name = "notifications-consumer"
+    settings.jobs_event_autoremediation_enabled = True
+    settings.jobs_event_autoremediation_consumers = ["notifications-consumer"]
+
+    called = {"autoremediate": 0}
+
+    def _fake_safety(db, **kwargs):
+        del db, kwargs
+        return {
+            "consumer_name": "notifications-consumer",
+            "executed_last_hour": 0,
+            "max_per_hour": 100,
+            "rate_limit_exceeded": False,
+            "cooldown_seconds": 0,
+            "cooldown_active": False,
+            "retry_after_seconds": 0,
+            "last_executed_at": None,
+        }
+
+    def _fake_rate_shape(db, **kwargs):
+        del db
+        return {
+            "consumer_name": "notifications-consumer",
+            "executed_10m": 3,
+            "executed_1h": 3,
+            "burst_limit_per_10m": kwargs["burst_limit_per_10m"],
+            "steady_limit_per_hour": kwargs["steady_limit_per_hour"],
+            "burst_exceeded": True,
+            "steady_exceeded": False,
+        }
+
+    def _fake_autoremediate(db, **kwargs):
+        del db, kwargs
+        called["autoremediate"] += 1
+        return {"requeued": 1, "selected": 1, "items": []}
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(jobs_worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(jobs_worker, "load_policy_into_settings", lambda db, current: {"version": 1})
+    monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediation_safety_state", _fake_safety)
+    monkeypatch.setattr(jobs_worker, "job_event_consumer_rate_shape_state", _fake_rate_shape)
+    monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediate", _fake_autoremediate)
+
+    with TestClient(app):
+        requeued = _run_auto_remediation_cycle(max_per_consumer=10)
+
+    assert requeued == 0
+    assert called["autoremediate"] == 0
+

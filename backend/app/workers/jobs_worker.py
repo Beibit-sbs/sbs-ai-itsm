@@ -5,7 +5,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Callable
 
 from redis import Redis
@@ -19,6 +19,7 @@ from app.models.job_event_consumer_offset import JobEventConsumerOffset
 from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.user import User
+from app.models.audit_log import AuditLog
 from app.services.automation import trigger_automation_event
 from app.services.audit import log_audit
 from app.services.notifications import create_domain_event_notification
@@ -28,9 +29,10 @@ from app.services.jobs import (
     get_job,
     job_event_consumer_autoremediate,
     job_event_consumer_autoremediation_safety_state,
+    job_event_consumer_rate_shape_state,
     is_autoremediation_suppressed_now,
 )
-from app.services.jobs.policy_state import load_policy_into_settings
+from app.services.jobs.policy_state import load_policy_into_settings, save_policy
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 
 logger = logging.getLogger("app.jobs.worker")
@@ -398,11 +400,17 @@ def _run_auto_remediation_cycle(*, max_per_consumer: int | None = None) -> int:
             if not bool(profile.get("enabled", True)):
                 db.rollback()
                 continue
+            if consumer_name in settings.jobs_event_autoremediation_braked_consumers:
+                db.rollback()
+                continue
 
             policy_min_failed_age_seconds = int(
                 profile.get("min_failed_age_seconds", settings.jobs_event_autoremediation_min_failed_age_seconds)
             )
             policy_max_per_hour = int(profile.get("max_per_hour", settings.jobs_event_autoremediation_max_per_hour))
+            policy_burst_max_per_10m = int(
+                profile.get("burst_limit_per_10m", settings.jobs_event_autoremediation_burst_max_per_10m)
+            )
             policy_cooldown_seconds = int(profile.get("cooldown_seconds", settings.jobs_event_autoremediation_cooldown_seconds))
             policy_max_requeued_per_cycle = int(
                 profile.get("max_requeued_per_cycle", settings.jobs_event_autoremediation_max_requeued_per_cycle)
@@ -425,6 +433,16 @@ def _run_auto_remediation_cycle(*, max_per_consumer: int | None = None) -> int:
                 max_per_hour=max(0, policy_max_per_hour),
             )
             if bool(safety.get("cooldown_active")) or bool(safety.get("rate_limit_exceeded")):
+                db.rollback()
+                continue
+
+            rate_shape = job_event_consumer_rate_shape_state(
+                db,
+                consumer_name=consumer_name,
+                burst_limit_per_10m=max(0, policy_burst_max_per_10m),
+                steady_limit_per_hour=max(0, policy_max_per_hour),
+            )
+            if bool(rate_shape.get("burst_exceeded")) or bool(rate_shape.get("steady_exceeded")):
                 db.rollback()
                 continue
 
@@ -462,6 +480,70 @@ def _run_auto_remediation_cycle(*, max_per_consumer: int | None = None) -> int:
             requeued_total += int(result.get("requeued", 0) or 0)
         except Exception:
             db.rollback()
+            try:
+                log_audit(
+                    db,
+                    action="jobs.event_consumer_recovery.auto_error",
+                    entity_type="job_event_consumer_delivery",
+                    entity_id=consumer_name,
+                    actor_email="jobs-worker@sbs.local",
+                    metadata={"consumer_name": consumer_name, "auto_remediation": True},
+                )
+
+                threshold = max(0, int(settings.jobs_event_autoremediation_brake_error_threshold))
+                if threshold > 0:
+                    window_start = datetime.now(UTC) - timedelta(minutes=15)
+                    rows = list(
+                        db.scalars(
+                            select(AuditLog)
+                            .where(AuditLog.action == "jobs.event_consumer_recovery.auto_error")
+                            .where(AuditLog.created_at >= window_start)
+                            .order_by(AuditLog.created_at.desc())
+                            .limit(200)
+                        ).all()
+                    )
+                    failures = 0
+                    for row in rows:
+                        try:
+                            metadata = json.loads(row.metadata_json) if row.metadata_json else {}
+                        except (TypeError, ValueError):
+                            metadata = {}
+                        if isinstance(metadata, dict) and str(metadata.get("consumer_name") or "") == consumer_name:
+                            failures += 1
+                    if failures >= threshold and consumer_name not in settings.jobs_event_autoremediation_braked_consumers:
+                        profile_payload = (
+                            settings.jobs_event_autoremediation_policy_profiles
+                            if isinstance(settings.jobs_event_autoremediation_policy_profiles, dict)
+                            else {}
+                        )
+                        payload = {
+                            "policy_profiles": profile_payload,
+                            "suppression_windows_utc": [
+                                str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item
+                            ],
+                            "error_denylist": [
+                                str(item) for item in settings.jobs_event_autoremediation_error_denylist if item
+                            ],
+                            "canary_mode": bool(settings.jobs_event_autoremediation_canary_mode),
+                            "canary_limit_per_cycle": int(settings.jobs_event_autoremediation_canary_limit_per_cycle),
+                            "burst_max_per_10m": int(settings.jobs_event_autoremediation_burst_max_per_10m),
+                            "brake_error_threshold": int(settings.jobs_event_autoremediation_brake_error_threshold),
+                            "braked_consumers": [
+                                *[str(item) for item in settings.jobs_event_autoremediation_braked_consumers if item],
+                                consumer_name,
+                            ],
+                        }
+                        state = load_policy_into_settings(db, settings)
+                        save_policy(
+                            db,
+                            settings,
+                            payload=payload,
+                            expected_version=int(state.get("version", 1) or 1),
+                            actor_email="jobs-worker@sbs.local",
+                        )
+                db.commit()
+            except Exception:
+                db.rollback()
             logger.exception("job_event_consumer_autoremediation_failed", extra={"consumer_name": consumer_name})
         finally:
             db.close()

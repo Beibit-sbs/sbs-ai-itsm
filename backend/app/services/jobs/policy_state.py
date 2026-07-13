@@ -26,6 +26,9 @@ def _default_payload(settings) -> dict[str, Any]:
         "error_denylist": [str(item) for item in settings.jobs_event_autoremediation_error_denylist if str(item).strip()],
         "canary_mode": bool(settings.jobs_event_autoremediation_canary_mode),
         "canary_limit_per_cycle": int(settings.jobs_event_autoremediation_canary_limit_per_cycle),
+        "burst_max_per_10m": int(settings.jobs_event_autoremediation_burst_max_per_10m),
+        "brake_error_threshold": int(settings.jobs_event_autoremediation_brake_error_threshold),
+        "braked_consumers": [str(item) for item in settings.jobs_event_autoremediation_braked_consumers if str(item).strip()],
     }
 
 
@@ -61,6 +64,18 @@ def _apply_payload_to_settings(settings, payload: dict[str, Any]) -> None:
     settings.jobs_event_autoremediation_canary_limit_per_cycle = max(
         0,
         int(payload.get("canary_limit_per_cycle", settings.jobs_event_autoremediation_canary_limit_per_cycle)),
+    )
+    settings.jobs_event_autoremediation_burst_max_per_10m = max(
+        0,
+        int(payload.get("burst_max_per_10m", settings.jobs_event_autoremediation_burst_max_per_10m)),
+    )
+    settings.jobs_event_autoremediation_brake_error_threshold = max(
+        0,
+        int(payload.get("brake_error_threshold", settings.jobs_event_autoremediation_brake_error_threshold)),
+    )
+    braked_consumers = payload.get("braked_consumers", [])
+    settings.jobs_event_autoremediation_braked_consumers = (
+        [str(item) for item in braked_consumers if str(item).strip()] if isinstance(braked_consumers, list) else []
     )
 
 

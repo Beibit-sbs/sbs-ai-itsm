@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-POLICY-PERSISTENCE-019`
-- Latest stage implementation commit: `8cb8a64`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RATE-SHAPING-020`
+- Latest stage implementation commit: `pending`
 
 ## Stage Log (Newest First)
+
+- `pending` PLATFORM-CORE-ASYNC-CONSUMER-RATE-SHAPING-020
+  - Added burst/steady rate-shaping guardrails for per-consumer auto-remediation execution.
+  - Added emergency brake activation path on repeated auto-remediation errors and explicit brake reset endpoint.
+  - Extended diagnostics with budget consumption and brake-state visibility for operator runbooks.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-RATE-SHAPING-020-REPORT.md`
 
 - `8cb8a64` PLATFORM-CORE-ASYNC-CONSUMER-POLICY-PERSISTENCE-019
   - Added versioned DB persistence for auto-remediation policy state with startup/worker reload.
@@ -170,17 +176,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-RATE-SHAPING-020`
+- `PLATFORM-CORE-ASYNC-CONSUMER-DETERMINISTIC-RUNBOOKS-021`
 
 Scope proposal:
-- Add per-consumer rate-shaping guardrails (burst + steady-state budgets) for auto-remediation cycles.
-- Add emergency brake mode with explicit operator reset to halt auto-remediation after repeated unsafe outcomes.
-- Add diagnostics for budget consumption and brake triggers with runbook recommendations.
+- Add deterministic runbook actions for common consumer incident patterns (lag spike, repeated failures, stale offsets).
+- Add runbook execution endpoint with dry-run + execute and explicit confirmation controls.
+- Persist runbook execution records and expose outcome metrics in diagnostics.
 
 Exit criteria:
-- Auto-remediation respects configured burst/steady budgets per consumer.
-- Emergency brake can halt automatic actions and requires explicit operator release.
-- Diagnostics expose budget and brake states clearly with actionable operator guidance.
+- Operators can execute deterministic runbooks through audited endpoint with dry-run safety.
+- Runbook outcomes are persisted and visible in diagnostics/action history.
+- Tests cover runbook success, dry-run, guardrails, and failure handling.
 
 ## Stage Execution Template
 
