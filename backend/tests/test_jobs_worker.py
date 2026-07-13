@@ -609,3 +609,53 @@ def test_auto_remediation_uses_policy_profile_overrides(app, monkeypatch) -> Non
     assert captured["min_failed_age_seconds"] == 999
     assert captured["limit"] == 2
 
+
+def test_auto_remediation_applies_canary_limit(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_event_consumer_name = "notifications-consumer"
+    settings.jobs_event_autoremediation_enabled = True
+    settings.jobs_event_autoremediation_consumers = ["notifications-consumer"]
+    settings.jobs_event_autoremediation_max_requeued_per_cycle = 10
+    settings.jobs_event_autoremediation_canary_mode = True
+    settings.jobs_event_autoremediation_canary_limit_per_cycle = 1
+
+    captured: dict[str, object] = {}
+
+    def _fake_safety(db, **kwargs):
+        del db, kwargs
+        return {
+            "consumer_name": "notifications-consumer",
+            "executed_last_hour": 0,
+            "max_per_hour": 100,
+            "rate_limit_exceeded": False,
+            "cooldown_seconds": 0,
+            "cooldown_active": False,
+            "retry_after_seconds": 0,
+            "last_executed_at": None,
+        }
+
+    def _fake_autoremediate(db, **kwargs):
+        del db
+        captured["limit"] = kwargs["limit"]
+        return {
+            "consumer_name": kwargs["consumer_name"],
+            "stream_name": kwargs["stream_name"],
+            "selected": 1,
+            "requeued": 1,
+            "items": [],
+        }
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(jobs_worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediation_safety_state", _fake_safety)
+    monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediate", _fake_autoremediate)
+
+    with TestClient(app):
+        requeued = _run_auto_remediation_cycle(max_per_consumer=None)
+
+    assert requeued == 1
+    assert captured["limit"] == 1
+

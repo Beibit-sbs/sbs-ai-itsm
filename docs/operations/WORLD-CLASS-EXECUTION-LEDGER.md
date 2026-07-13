@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-POLICY-TUNING-017`
-- Latest stage implementation commit: `9fb54e5`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-AUTOMATION-018`
+- Latest stage implementation commit: `pending`
 
 ## Stage Log (Newest First)
+
+- `pending` PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-AUTOMATION-018
+  - Added runbook API endpoints to inspect/update auto-remediation policy at runtime with audit trail.
+  - Added policy drift metadata into consumer diagnostics (effective policy hash + last policy change context).
+  - Added canary mode controls and execution limits to bound automatic remediation blast radius.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-AUTOMATION-018-REPORT.md`
 
 - `9fb54e5` PLATFORM-CORE-ASYNC-CONSUMER-POLICY-TUNING-017
   - Added per-consumer auto-remediation policy profiles with overrideable limits and allowed event scopes.
@@ -158,17 +164,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-AUTOMATION-018`
+- `PLATFORM-CORE-ASYNC-CONSUMER-POLICY-PERSISTENCE-019`
 
 Scope proposal:
-- Add operator runbook endpoint(s) to safely activate/deactivate suppression windows and profile flags at runtime.
-- Add policy drift diagnostics (effective policy hash + last policy change audit context) in consumer diagnostics.
-- Add optional canary mode that limits auto-remediation to a tiny sample per cycle before full rollout.
+- Persist auto-remediation policy state in DB (versioned row model) with startup reload into runtime settings.
+- Add optimistic concurrency/version token on policy update endpoint to prevent operator overwrite races.
+- Expose policy version and rollout history in diagnostics for post-incident traceability.
 
 Exit criteria:
-- Operators can adjust policy safely through audited API calls without direct env edits.
-- Diagnostics expose policy drift/canary status with clear remediation hints.
-- Tests cover runbook controls and canary safety boundaries.
+- Policy survives service restart and remains consistent across backend/worker processes.
+- Concurrent updates are safely rejected on stale version.
+- Diagnostics show active policy version and recent version transitions.
 
 ## Stage Execution Template
 

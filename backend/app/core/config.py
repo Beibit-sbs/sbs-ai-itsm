@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     jobs_event_autoremediation_max_requeued_per_cycle: int = 5
     jobs_event_autoremediation_cooldown_seconds: int = 300
     jobs_event_autoremediation_max_per_hour: int = 20
+    jobs_event_autoremediation_canary_mode: bool = False
+    jobs_event_autoremediation_canary_limit_per_cycle: int = 1
     jobs_event_autoremediation_policy_profiles: dict[str, object] | str = {}
     jobs_event_autoremediation_suppression_windows_utc: list[str] | str = []
     jobs_event_autoremediation_error_denylist: list[str] | str = []
@@ -131,6 +133,7 @@ class Settings(BaseSettings):
         "jobs_event_autoremediation_max_requeued_per_cycle",
         "jobs_event_autoremediation_cooldown_seconds",
         "jobs_event_autoremediation_max_per_hour",
+        "jobs_event_autoremediation_canary_limit_per_cycle",
     )
     @classmethod
     def jobs_event_limits_must_be_non_negative(cls, value: int) -> int:

@@ -421,6 +421,10 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "governance_missing_execute_24h",
         "last_recovery_execute_at",
         "last_recovery_execute_actor_email",
+        "effective_policy_hash",
+        "policy_canary_mode",
+        "last_policy_change_at",
+        "last_policy_change_actor_email",
         "status",
         "recommended_actions",
     ):
@@ -504,6 +508,46 @@ def test_job_event_consumer_autoremediation_preview_applies_denylist(app) -> Non
     assert data["raw_candidates"] >= 1
     assert data["skipped_by_denylist"] >= 1
     assert data["selected"] == 0
+
+
+def test_job_event_consumer_autoremediation_policy_runbook_update(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+
+        update = client.post(
+            "/api/v1/jobs/event-consumer-autoremediation-policy",
+            headers=_auth_headers(token),
+            json={
+                "consumer_name": "notifications-consumer",
+                "enabled": True,
+                "allowed_event_types": ["failed"],
+                "min_failed_age_seconds": 5,
+                "max_requeued_per_cycle": 3,
+                "cooldown_seconds": 30,
+                "max_per_hour": 12,
+                "canary_mode": True,
+                "canary_limit_per_cycle": 1,
+                "suppression_windows_utc": ["01:00-02:00"],
+                "error_denylist": ["permanent"],
+            },
+        )
+        assert update.status_code == 200, update.text
+        updated = update.json()
+        assert updated["consumer_name"] == "notifications-consumer"
+        assert updated["effective_policy"]["canary_mode"] is True
+        assert updated["effective_policy"]["canary_limit_per_cycle"] == 1
+        assert updated["suppression_windows_utc"] == ["01:00-02:00"]
+        assert updated["error_denylist"] == ["permanent"]
+        assert updated["effective_policy_hash"]
+
+        read_back = client.get(
+            "/api/v1/jobs/event-consumer-autoremediation-policy?consumer_name=notifications-consumer",
+            headers=_auth_headers(token),
+        )
+        assert read_back.status_code == 200, read_back.text
+        payload = read_back.json()
+        assert payload["effective_policy"]["canary_mode"] is True
+        assert payload["effective_policy_hash"]
 
 
 def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:

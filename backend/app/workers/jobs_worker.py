@@ -397,6 +397,10 @@ def _run_auto_remediation_cycle(*, max_per_consumer: int | None = None) -> int:
             policy_max_requeued_per_cycle = int(
                 profile.get("max_requeued_per_cycle", settings.jobs_event_autoremediation_max_requeued_per_cycle)
             )
+            policy_canary_mode = bool(profile.get("canary_mode", settings.jobs_event_autoremediation_canary_mode))
+            policy_canary_limit = int(
+                profile.get("canary_limit_per_cycle", settings.jobs_event_autoremediation_canary_limit_per_cycle)
+            )
             profile_event_types = profile.get("allowed_event_types", global_allowed_event_types)
             allowed_event_types = (
                 [str(item) for item in profile_event_types if str(item).strip()]
@@ -415,6 +419,8 @@ def _run_auto_remediation_cycle(*, max_per_consumer: int | None = None) -> int:
                 continue
 
             effective_limit = max_per_consumer or policy_max_requeued_per_cycle
+            if policy_canary_mode:
+                effective_limit = min(max(1, effective_limit), max(1, policy_canary_limit))
             result = job_event_consumer_autoremediate(
                 db,
                 consumer_name=consumer_name,
@@ -437,6 +443,8 @@ def _run_auto_remediation_cycle(*, max_per_consumer: int | None = None) -> int:
                         "selected": int(result.get("selected", 0) or 0),
                         "requeued": int(result.get("requeued", 0) or 0),
                         "event_types": allowed_event_types,
+                        "canary_mode": policy_canary_mode,
+                        "effective_limit": effective_limit,
                         "auto_remediation": True,
                     },
                 )
