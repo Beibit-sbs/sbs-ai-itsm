@@ -320,3 +320,62 @@ def test_due_today_queue_excludes_closed_tickets(app) -> None:
         due_today = client.get("/api/v1/tickets?queue=due_today", headers=_headers(admin_token))
         assert due_today.status_code == 200
         assert all(item["id"] != ticket["id"] for item in due_today.json()["items"])
+
+
+def test_requester_close_requires_satisfaction_score_and_persists(app) -> None:
+    with TestClient(app) as client:
+        admin_token = _login(client, "admin@sbs.local", "Sbs!2026")
+        requester_token = _login(client, "requester@sbs.local")
+        requester_id = _user_id_by_email(client, admin_token, "requester@sbs.local")
+
+        ticket = _create_ticket(client, admin_token, title="Requester close score", requester_id=requester_id)
+
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(admin_token), json={"status": "assigned"}).status_code == 200
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(admin_token), json={"status": "in_progress"}).status_code == 200
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(admin_token), json={"status": "resolved"}).status_code == 200
+
+        missing_score = client.post(
+            f"/api/v1/tickets/{ticket['id']}/transition",
+            headers=_headers(requester_token),
+            json={"status": "closed", "comment": "Подтверждаю"},
+        )
+        assert missing_score.status_code == 400, missing_score.text
+
+        closed = client.post(
+            f"/api/v1/tickets/{ticket['id']}/transition",
+            headers=_headers(requester_token),
+            json={"status": "closed", "satisfaction_score": 4, "comment": "Решение помогло"},
+        )
+        assert closed.status_code == 200, closed.text
+        assert closed.json()["status"] == "CLOSED"
+        assert closed.json()["satisfaction_score"] == 4
+
+
+def test_requester_reopen_requires_reason_and_persists(app) -> None:
+    with TestClient(app) as client:
+        admin_token = _login(client, "admin@sbs.local", "Sbs!2026")
+        requester_token = _login(client, "requester@sbs.local")
+        requester_id = _user_id_by_email(client, admin_token, "requester@sbs.local")
+
+        ticket = _create_ticket(client, admin_token, title="Requester reopen reason", requester_id=requester_id)
+
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(admin_token), json={"status": "assigned"}).status_code == 200
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(admin_token), json={"status": "in_progress"}).status_code == 200
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(admin_token), json={"status": "resolved"}).status_code == 200
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(requester_token), json={"status": "closed", "satisfaction_score": 5}).status_code == 200
+
+        missing_reason = client.post(
+            f"/api/v1/tickets/{ticket['id']}/transition",
+            headers=_headers(requester_token),
+            json={"status": "reopened"},
+        )
+        assert missing_reason.status_code == 400, missing_reason.text
+
+        reopened = client.post(
+            f"/api/v1/tickets/{ticket['id']}/transition",
+            headers=_headers(requester_token),
+            json={"status": "reopened", "reopen_reason": "Проблема повторилась после закрытия", "comment": "Повторяется при входе"},
+        )
+        assert reopened.status_code == 200, reopened.text
+        assert reopened.json()["status"] == "REOPENED"
+        assert reopened.json()["reopen_reason"] == "Проблема повторилась после закрытия"

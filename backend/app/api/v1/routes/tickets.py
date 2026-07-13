@@ -139,6 +139,8 @@ class TicketListResponse(BaseModel):
     resolved_at: datetime | None = None
     closed_at: datetime | None = None
     reopened_at: datetime | None = None
+    satisfaction_score: int | None = None
+    reopen_reason: str | None = None
     created_at: datetime
     updated_at: datetime
     response_minutes: int | None = None
@@ -197,6 +199,8 @@ class TicketTransitionRequest(BaseModel):
     status: str
     comment: str | None = None
     is_internal: bool = False
+    satisfaction_score: int | None = Field(default=None, ge=1, le=5)
+    reopen_reason: str | None = None
 
 
 class TicketAssignRequest(BaseModel):
@@ -325,6 +329,8 @@ def _serialize_ticket(
     payload["assignee_id"] = ticket.assignee_id
     payload["closed_at"] = ticket.closed_at
     payload["reopened_at"] = ticket.reopened_at
+    payload["satisfaction_score"] = ticket.satisfaction_score
+    payload["reopen_reason"] = ticket.reopen_reason
     sla_state = calculate_sla_state(ticket)
     return TicketListResponse(
         **payload,
@@ -881,7 +887,10 @@ def transition_ticket(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TicketDetailResponse:
-    require_permissions(current_user, "tickets.update")
+    if current_user.role == "requester":
+        require_permissions(current_user, "tickets.comment")
+    else:
+        require_permissions(current_user, "tickets.update")
     _ensure_access(current_user)
     ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id))
     if ticket is None:
@@ -897,6 +906,16 @@ def transition_ticket(
     if not _allowed_transition(ticket.status, target_status):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status transition")
 
+    if current_user.role == "requester" and target_status not in {"CLOSED", "REOPENED"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester can only close or reopen ticket")
+
+    if target_status == "CLOSED" and request.satisfaction_score is None and current_user.role == "requester":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Requester must provide satisfaction_score when closing ticket")
+
+    reopen_reason = (request.reopen_reason or "").strip()
+    if target_status == "REOPENED" and not reopen_reason and current_user.role == "requester":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Requester must provide reopen_reason when reopening ticket")
+
     if current_user.role == "it_agent":
         assigned_to_current = ticket.assignee_id == current_user.id or (ticket.assignee_name and ticket.assignee_name.lower() == current_user.full_name.lower())
         if not assigned_to_current:
@@ -909,9 +928,11 @@ def transition_ticket(
         ticket.resolved_at = now
     if target_status == "CLOSED":
         ticket.closed_at = now
+        ticket.satisfaction_score = request.satisfaction_score if request.satisfaction_score is not None else ticket.satisfaction_score
     if target_status == "REOPENED":
         ticket.reopened_at = now
         ticket.closed_at = None
+        ticket.reopen_reason = reopen_reason or request.comment or ticket.reopen_reason
     ticket.updated_at = now
     ticket.sla_status = calculate_ticket_sla_status(ticket)
 

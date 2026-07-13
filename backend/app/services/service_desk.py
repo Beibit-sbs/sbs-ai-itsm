@@ -133,6 +133,8 @@ def ensure_service_desk_schema(engine: Engine) -> None:
         "resolved_at": "ALTER TABLE tickets ADD COLUMN resolved_at TIMESTAMP",
         "closed_at": "ALTER TABLE tickets ADD COLUMN closed_at TIMESTAMP",
         "reopened_at": "ALTER TABLE tickets ADD COLUMN reopened_at TIMESTAMP",
+        "satisfaction_score": "ALTER TABLE tickets ADD COLUMN satisfaction_score INTEGER",
+        "reopen_reason": "ALTER TABLE tickets ADD COLUMN reopen_reason TEXT",
         "requester_id": "ALTER TABLE tickets ADD COLUMN requester_id VARCHAR(36)",
         "assignee_id": "ALTER TABLE tickets ADD COLUMN assignee_id VARCHAR(36)",
     }
@@ -284,6 +286,8 @@ def build_ticket_summary(ticket: Ticket, category_label: str | None = None, prio
         "resolution_due_at": ticket.resolution_due_at,
         "sla_status": ticket.sla_status,
         "resolved_at": ticket.resolved_at,
+        "satisfaction_score": ticket.satisfaction_score,
+        "reopen_reason": ticket.reopen_reason,
         "created_at": ticket.created_at,
         "updated_at": ticket.updated_at,
         "response_minutes": response_minutes,
