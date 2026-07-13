@@ -318,6 +318,21 @@ function formatMinutes(value: number | null | undefined) {
   return minutes > 0 ? `${hours} ч ${minutes} мин` : `${hours} ч`
 }
 
+function formatDurationSince(value: string | null) {
+  if (!value) return '—'
+  const diffMs = Math.max(0, Date.now() - new Date(value).getTime())
+  const diffMinutes = Math.floor(diffMs / 60000)
+  if (diffMinutes < 60) return `${diffMinutes} мин`
+  const diffHours = Math.floor(diffMinutes / 60)
+  if (diffHours < 24) {
+    const remMinutes = diffMinutes % 60
+    return remMinutes > 0 ? `${diffHours} ч ${remMinutes} мин` : `${diffHours} ч`
+  }
+  const diffDays = Math.floor(diffHours / 24)
+  const remHours = diffHours % 24
+  return remHours > 0 ? `${diffDays} д ${remHours} ч` : `${diffDays} д`
+}
+
 export default function TicketsPage() {
   const { session } = useAuth()
   const queryClient = useQueryClient()
@@ -724,9 +739,31 @@ export default function TicketsPage() {
     return operatorReplyTemplates.filter((template) => template.statuses.includes(detail.status) || template.statuses.includes(detail.category))
   }, [detail, isRequester])
 
+  const waitingUserSince = useMemo(() => {
+    if (!detail) return null
+    const history = historyQuery.data ?? []
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const item = history[index]
+      if (item.event_type !== 'status_changed') continue
+      if ((item.new_value ?? '').toUpperCase() !== 'WAITING_USER') continue
+      return item.created_at
+    }
+    return detail.status === 'WAITING_USER' ? detail.updated_at : null
+  }, [detail, historyQuery.data])
+
+  const waitingUserAgeHours = useMemo(() => {
+    if (!waitingUserSince) return 0
+    return Math.floor((Date.now() - new Date(waitingUserSince).getTime()) / 3600000)
+  }, [waitingUserSince])
+
   const selectedOperatorTemplate = useMemo(
     () => availableOperatorTemplates.find((template) => template.id === selectedOperatorTemplateId) ?? availableOperatorTemplates[0] ?? null,
     [availableOperatorTemplates, selectedOperatorTemplateId]
+  )
+
+  const reminderOperatorTemplate = useMemo(
+    () => availableOperatorTemplates.find((template) => template.id === 'waiting-user-timebox') ?? selectedOperatorTemplate,
+    [availableOperatorTemplates, selectedOperatorTemplate]
   )
 
   useEffect(() => {
@@ -821,20 +858,11 @@ export default function TicketsPage() {
       })
     }
 
-    let waitingUserAt: string | null = null
-    const history = historyQuery.data ?? []
-    for (let index = history.length - 1; index >= 0; index -= 1) {
-      const item = history[index]
-      if (item.event_type !== 'status_changed') continue
-      if ((item.new_value ?? '').toUpperCase() !== 'WAITING_USER') continue
-      waitingUserAt = item.created_at
-      break
-    }
-    if (detail.status === 'WAITING_USER' || waitingUserAt) {
+    if (detail.status === 'WAITING_USER' || waitingUserSince) {
       items.push({
         id: 'waiting-user',
         title: 'Ожидается ответ пользователя',
-        timestamp: waitingUserAt,
+        timestamp: waitingUserSince,
         note: 'Нужно подтвердить результат или уточнить детали в комментариях.',
         tone: 'warning',
       })
@@ -845,7 +873,7 @@ export default function TicketsPage() {
       const right = b.timestamp ? new Date(b.timestamp).getTime() : 0
       return right - left
     })
-  }, [detail, historyQuery.data])
+  }, [detail, waitingUserSince])
 
   useEffect(() => {
     if (!detail) return
@@ -1610,6 +1638,11 @@ export default function TicketsPage() {
                     <span className="inline-pill">{statusLabel(detail.status)}</span>
                     <span className="inline-pill">{priorityLabel(detail.priority)}</span>
                     <span className="inline-pill">SLA: {slaBadgeLabel(detail.sla_badge)}</span>
+                    {!isRequester && detail.status === 'WAITING_USER' ? (
+                      <span className="inline-pill" style={{ borderColor: waitingUserAgeHours >= 24 ? '#b54708' : undefined }}>
+                        Ожидание пользователя: {formatDurationSince(waitingUserSince)}
+                      </span>
+                    ) : null}
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     {!isRequester && canTakeTicket(role) ? (
@@ -1735,6 +1768,26 @@ export default function TicketsPage() {
                     <div className="activity-columns" style={{ gridTemplateColumns: '1fr' }}>
                       <div className="comment-box">
                         <h4>Добавить комментарий</h4>
+                        {!isRequester && detail.status === 'WAITING_USER' ? (
+                          <div
+                            style={{
+                              border: '1px solid #b54708',
+                              background: '#2f210c',
+                              borderRadius: 12,
+                              padding: 10,
+                              marginBottom: 10,
+                            }}
+                          >
+                            <p style={{ margin: 0, color: '#fbcf93', fontWeight: 700 }}>
+                              Ожидание ответа пользователя: {formatDurationSince(waitingUserSince)}
+                            </p>
+                            {waitingUserAgeHours >= 24 ? (
+                              <p style={{ margin: '6px 0 0', color: '#f4d8b5' }}>
+                                Ожидание превышает 24 часа. Рекомендуется отправить напоминание.
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : null}
                         {!isRequester && availableOperatorTemplates.length > 0 ? (
                           <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
                             <p className="muted" style={{ margin: 0 }}>Быстрые шаблоны ответа:</p>
@@ -1786,6 +1839,22 @@ export default function TicketsPage() {
                               }
                             >
                               {handoffToRequesterMutation.isPending ? 'Отправка...' : 'Отправить шаблон'}
+                            </button>
+                          ) : null}
+                          {!isRequester && detail.status === 'WAITING_USER' && waitingUserAgeHours >= 24 && reminderOperatorTemplate ? (
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              disabled={handoffToRequesterMutation.isPending}
+                              onClick={() =>
+                                handoffToRequesterMutation.mutate({
+                                  ticketId: detail.id,
+                                  body: reminderOperatorTemplate.body,
+                                  shouldTransition: false,
+                                })
+                              }
+                            >
+                              {handoffToRequesterMutation.isPending ? 'Отправка...' : 'Напомнить пользователю (24ч+)'}
                             </button>
                           ) : null}
                           {!isRequester && canHandoffToRequester(detail.status) && detail.status !== 'WAITING_USER' && availableOperatorTemplates.length > 0 ? (
