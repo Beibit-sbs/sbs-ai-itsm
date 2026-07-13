@@ -4,9 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
+from app.models.job_event_consumer_delivery import JobEventConsumerDelivery
 from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.job_run import JobRun
+from app.services.jobs import create_job_run
 
 
 def _login(client: TestClient, email: str, password: str) -> str:
@@ -403,6 +405,86 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "recommended_actions",
     ):
         assert key in first
+
+
+def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:
+    from app.db.session import SessionLocal
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"recover": True}, max_attempts=1)
+            db.commit()
+            event = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == job.id).one()
+            delivery_notifications = JobEventConsumerDelivery(
+                id="recovery-delivery-notif",
+                consumer_name="notifications-consumer",
+                event_id=event.id,
+                stream_name="jobs:lifecycle",
+                stream_entry_id="10-0",
+                status="failed",
+                attempts=3,
+                last_error="boom",
+                delivered_at=None,
+            )
+            delivery_automation = JobEventConsumerDelivery(
+                id="recovery-delivery-auto",
+                consumer_name="automation-consumer",
+                event_id=event.id,
+                stream_name="jobs:lifecycle",
+                stream_entry_id="10-0",
+                status="failed",
+                attempts=2,
+                last_error="auto-boom",
+                delivered_at=None,
+            )
+            db.add(delivery_notifications)
+            db.add(delivery_automation)
+            db.commit()
+
+        dry_run = client.post(
+            "/api/v1/jobs/event-consumer-recovery",
+            headers=_auth_headers(token),
+            json={"consumer_name": "notifications-consumer", "dry_run": True, "limit": 10},
+        )
+        assert dry_run.status_code == 200, dry_run.text
+        dry_payload = dry_run.json()
+        assert dry_payload["selected"] >= 1
+        assert dry_payload["requeued"] == 0
+
+        denied = client.post(
+            "/api/v1/jobs/event-consumer-recovery",
+            headers=_auth_headers(token),
+            json={"consumer_name": "notifications-consumer", "dry_run": False, "limit": 10},
+        )
+        assert denied.status_code == 400
+
+        execute = client.post(
+            "/api/v1/jobs/event-consumer-recovery",
+            headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
+            json={"consumer_name": "notifications-consumer", "dry_run": False, "limit": 10},
+        )
+        assert execute.status_code == 200, execute.text
+        payload = execute.json()
+        assert payload["requeued"] >= 1
+
+        execute_repeat = client.post(
+            "/api/v1/jobs/event-consumer-recovery",
+            headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
+            json={"consumer_name": "notifications-consumer", "dry_run": False, "limit": 10},
+        )
+        assert execute_repeat.status_code == 200, execute_repeat.text
+
+        with SessionLocal() as db:
+            notif = db.get(JobEventConsumerDelivery, "recovery-delivery-notif")
+            auto = db.get(JobEventConsumerDelivery, "recovery-delivery-auto")
+            assert notif is not None
+            assert auto is not None
+            assert notif.status == "failed"
+            assert notif.attempts == 0
+            assert notif.last_error == "recovery_requeued_by_operator"
+            assert auto.status == "failed"
+            assert auto.attempts == 2
 
 
 def test_create_outbox_entry_is_idempotent_by_job_and_queue(app) -> None:

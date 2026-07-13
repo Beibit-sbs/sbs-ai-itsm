@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-OBSERVABILITY-CONSUMERS-012`
-- Latest stage implementation commit: `1a58564`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-013`
+- Latest stage implementation commit: `PENDING_COMMIT`
 
 ## Stage Log (Newest First)
+
+- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-013
+  - Added protected replay tooling for consumer deliveries with bounded filters and dry-run preview.
+  - Execution path now requires explicit confirmation header to avoid accidental mass requeue.
+  - Recovery is isolated per consumer and preserves immutable lifecycle source records.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-013-REPORT.md`
 
 - `1a58564` PLATFORM-CORE-ASYNC-OBSERVABILITY-CONSUMERS-012
   - Added `/jobs/event-consumers-diagnostics` with side-by-side per-consumer health, lag, retry, failure-rate, and stale-offset indicators.
@@ -128,17 +134,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-013`
+- `PLATFORM-CORE-ASYNC-CONSUMER-SAFETY-014`
 
 Scope proposal:
-- Add targeted recovery tooling for consumers with persistent failures (bounded replay by consumer/event filters).
-- Keep replay idempotent and isolated per consumer without mutating durable lifecycle source records.
-- Provide dry-run preview and protected execution path for operator-triggered recovery.
+- Add consumer safety controls: replay rate limits, cooldown windows, and operator audit annotations.
+- Introduce guardrails to prevent repeated noisy recovery loops under persistent downstream outage.
+- Extend diagnostics with recovery activity counters and recent operator actions.
 
 Exit criteria:
-- Replay tooling can re-drive failed/pending deliveries for a selected consumer safely.
-- Tests prove no cross-consumer interference and idempotent outcomes under repeated replay.
-- Runtime smoke validates replay path plus diagnostics non-regression.
+- Safety controls enforce bounded replay pressure during incident conditions.
+- Recovery actions are auditable and visible in diagnostics.
+- Tests cover cooldown/rate-limit behavior and operator guardrails.
 
 ## Stage Execution Template
 

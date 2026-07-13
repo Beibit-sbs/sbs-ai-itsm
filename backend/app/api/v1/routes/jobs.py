@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,7 @@ from app.services.jobs import (
     list_jobs,
     outbox_diagnostics,
     outbox_summary,
+    recover_job_event_consumer_deliveries,
     registered_task_names,
     run_task,
 )
@@ -189,6 +190,33 @@ class JobEventConsumersDiagnosticsResponse(BaseModel):
     consumers: list[JobEventConsumerDiagnosticsItemResponse]
 
 
+class JobEventConsumerRecoveryRequest(BaseModel):
+    consumer_name: str = Field(default="notifications-consumer", min_length=1, max_length=80)
+    statuses: list[str] = Field(default_factory=lambda: ["failed", "pending"])
+    event_types: list[str] | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+    dry_run: bool = True
+
+
+class JobEventConsumerRecoveryItemResponse(BaseModel):
+    delivery_id: str
+    event_id: str
+    event_type: str
+    status_before: str
+    attempts_before: int
+    stream_entry_id: str
+
+
+class JobEventConsumerRecoveryResponse(BaseModel):
+    consumer_name: str
+    stream_name: str
+    dry_run: bool
+    requested_limit: int
+    selected: int
+    requeued: int
+    items: list[JobEventConsumerRecoveryItemResponse]
+
+
 class EnqueueJobRequest(BaseModel):
     task_name: str = Field(..., min_length=1, max_length=120)
     payload: dict[str, object] | None = None
@@ -344,6 +372,45 @@ def get_job_event_consumers_diagnostics(
         stale_offset_seconds=settings.jobs_event_consumer_stale_offset_seconds,
     )
     return JobEventConsumersDiagnosticsResponse(**data)
+
+
+@router.post("/event-consumer-recovery", response_model=JobEventConsumerRecoveryResponse)
+def recover_job_event_consumer(
+    request: JobEventConsumerRecoveryRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    recovery_confirm: str | None = Header(default=None, alias="X-Recovery-Confirm"),
+) -> JobEventConsumerRecoveryResponse:
+    _require_enqueue(current_user)
+    settings = get_settings()
+    allowed_consumers = {
+        settings.jobs_event_consumer_name,
+        settings.jobs_event_automation_consumer_name,
+    }
+    if request.consumer_name not in allowed_consumers:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown consumer_name")
+    allowed_statuses = {"failed", "pending"}
+    normalized_statuses = [item.strip().lower() for item in request.statuses if item and item.strip()]
+    if not normalized_statuses or any(item not in allowed_statuses for item in normalized_statuses):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="statuses must be failed and/or pending")
+    if not request.dry_run and recovery_confirm != "CONFIRM":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Execution requires header X-Recovery-Confirm: CONFIRM",
+        )
+
+    data = recover_job_event_consumer_deliveries(
+        db,
+        consumer_name=request.consumer_name,
+        stream_name=settings.jobs_event_stream_name,
+        statuses=normalized_statuses,
+        event_types=request.event_types,
+        limit=request.limit,
+        dry_run=request.dry_run,
+    )
+    if not request.dry_run:
+        db.commit()
+    return JobEventConsumerRecoveryResponse(**data)
 
 
 @router.get("/outbox-summary", response_model=JobOutboxSummaryResponse)

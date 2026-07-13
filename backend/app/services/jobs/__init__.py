@@ -342,6 +342,71 @@ def job_event_consumers_diagnostics(
     }
 
 
+def recover_job_event_consumer_deliveries(
+    db: Session,
+    *,
+    consumer_name: str,
+    stream_name: str,
+    statuses: list[str],
+    event_types: list[str] | None,
+    limit: int,
+    dry_run: bool,
+) -> dict[str, object]:
+    normalized_statuses = [item.strip().lower() for item in statuses if item and item.strip()]
+    normalized_event_types = [item.strip() for item in (event_types or []) if item and item.strip()]
+    effective_limit = max(1, min(200, int(limit)))
+
+    stmt = (
+        select(JobEventConsumerDelivery, JobLifecycleEvent.event_type)
+        .join(JobLifecycleEvent, JobLifecycleEvent.id == JobEventConsumerDelivery.event_id)
+        .where(JobEventConsumerDelivery.consumer_name == consumer_name)
+        .where(JobEventConsumerDelivery.stream_name == stream_name)
+        .where(JobEventConsumerDelivery.status.in_(normalized_statuses))
+        .order_by(JobEventConsumerDelivery.updated_at.asc())
+        .limit(effective_limit)
+    )
+    if normalized_event_types:
+        stmt = stmt.where(JobLifecycleEvent.event_type.in_(normalized_event_types))
+
+    rows = list(db.execute(stmt).all())
+    items: list[dict[str, object]] = []
+    requeued = 0
+    now = _now()
+    for delivery, event_type in rows:
+        items.append(
+            {
+                "delivery_id": delivery.id,
+                "event_id": delivery.event_id,
+                "event_type": str(event_type),
+                "status_before": delivery.status,
+                "attempts_before": int(delivery.attempts or 0),
+                "stream_entry_id": delivery.stream_entry_id,
+            }
+        )
+        if dry_run:
+            continue
+        # Recovery path only re-queues selected consumer deliveries; event source rows are untouched.
+        delivery.status = "failed"
+        delivery.attempts = 0
+        delivery.last_error = "recovery_requeued_by_operator"
+        delivery.delivered_at = None
+        delivery.updated_at = now
+        requeued += 1
+
+    if not dry_run:
+        db.flush()
+
+    return {
+        "consumer_name": consumer_name,
+        "stream_name": stream_name,
+        "dry_run": dry_run,
+        "requested_limit": effective_limit,
+        "selected": len(rows),
+        "requeued": requeued,
+        "items": items,
+    }
+
+
 def create_job_run(
     db: Session,
     *,
@@ -749,6 +814,7 @@ __all__ = [
     "job_event_bus_summary",
     "job_event_consumer_summary",
     "job_event_consumers_diagnostics",
+    "recover_job_event_consumer_deliveries",
     "list_job_events",
     "outbox_diagnostics",
     "outbox_summary",
