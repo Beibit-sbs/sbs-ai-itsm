@@ -240,6 +240,14 @@ function canQuickResolve(role: string, status: string, assigneeId: string | null
   return true
 }
 
+function canRequesterAccept(status: string) {
+  return status === 'RESOLVED'
+}
+
+function canRequesterReopen(status: string) {
+  return status === 'RESOLVED' || status === 'CLOSED'
+}
+
 export default function TicketsPage() {
   const { session } = useAuth()
   const queryClient = useQueryClient()
@@ -276,6 +284,7 @@ export default function TicketsPage() {
   const [activeTab, setActiveTab] = useState<TicketTab>('overview')
   const [transitionStatus, setTransitionStatus] = useState('IN_PROGRESS')
   const [transitionComment, setTransitionComment] = useState('')
+  const [requesterDecisionComment, setRequesterDecisionComment] = useState('')
   const [assignComment, setAssignComment] = useState('')
   const [assignUserId, setAssignUserId] = useState('')
   const [commentBody, setCommentBody] = useState('')
@@ -600,6 +609,7 @@ export default function TicketsPage() {
     if (!detail) return
     setTransitionStatus(detail.status)
     setAssignUserId(detail.assignee_id ?? '')
+    setRequesterDecisionComment('')
   }, [detail?.id, detail?.status, detail?.assignee_id])
 
   const assigneeOptions = useMemo(() => {
@@ -1554,6 +1564,60 @@ export default function TicketsPage() {
                       <span>Комментарий к смене статуса</span>
                       <textarea value={transitionComment} onChange={(event) => setTransitionComment(event.target.value)} rows={3} />
                     </label>
+                  </section>
+                ) : null}
+
+                {isRequester && (canRequesterAccept(detail.status) || canRequesterReopen(detail.status)) ? (
+                  <section className="ticket-detail-panel" style={{ marginTop: 12 }}>
+                    <h3>Подтверждение решения</h3>
+                    <p className="muted" style={{ marginTop: 0 }}>
+                      Если проблема решена, подтвердите закрытие. Если осталась, опишите причину и переоткройте заявку.
+                    </p>
+                    <label>
+                      <span>Комментарий пользователя</span>
+                      <textarea
+                        value={requesterDecisionComment}
+                        onChange={(event) => setRequesterDecisionComment(event.target.value)}
+                        rows={3}
+                        placeholder="Например: проблема воспроизводится при подключении из кабинета 401"
+                      />
+                    </label>
+                    <div className="analytics-actions" style={{ justifyContent: 'flex-start' }}>
+                      {canRequesterAccept(detail.status) ? (
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() =>
+                            transitionMutation.mutate({
+                              ticketId: detail.id,
+                              status: 'CLOSED',
+                              comment: requesterDecisionComment.trim() || 'Пользователь подтвердил решение',
+                              is_internal: false,
+                            })
+                          }
+                          disabled={transitionMutation.isPending}
+                        >
+                          Подтвердить и закрыть
+                        </button>
+                      ) : null}
+                      {canRequesterReopen(detail.status) ? (
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() =>
+                            transitionMutation.mutate({
+                              ticketId: detail.id,
+                              status: 'REOPENED',
+                              comment: requesterDecisionComment.trim(),
+                              is_internal: false,
+                            })
+                          }
+                          disabled={transitionMutation.isPending || !requesterDecisionComment.trim()}
+                        >
+                          Переоткрыть
+                        </button>
+                      ) : null}
+                    </div>
                   </section>
                 ) : null}
               </>
