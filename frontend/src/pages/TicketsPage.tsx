@@ -46,6 +46,12 @@ type ActionFeedback = {
   message: string
 }
 
+type BulkActionResult = {
+  updatedCount: number
+  skippedCount: number
+  errors: string[]
+}
+
 type TicketFormState = {
   title: string
   description: string
@@ -445,28 +451,45 @@ export default function TicketsPage() {
   })
 
   const bulkMutation = useMutation({
-    mutationFn: async (payload: { ticketIds: string[]; status?: string; assigneeId?: string; comment?: string }) => {
+    mutationFn: async (payload: { ticketIds: string[]; status?: string; assigneeId?: string; comment?: string }): Promise<BulkActionResult> => {
       const token = session?.access_token ?? ''
+      let updatedCount = 0
+      let skippedCount = 0
+      const errors: string[] = []
+
       for (const ticketId of payload.ticketIds) {
-        if (payload.assigneeId) {
-          await assignTicket(token, ticketId, {
-            assignee_id: payload.assigneeId,
-            comment: payload.comment || undefined,
-          })
-        }
-        if (payload.status) {
-          await transitionTicket(token, ticketId, {
-            status: payload.status,
-            comment: payload.comment || undefined,
-            is_internal: isStaff,
-          })
+        try {
+          if (payload.assigneeId) {
+            await assignTicket(token, ticketId, {
+              assignee_id: payload.assigneeId,
+              comment: payload.comment || undefined,
+            })
+          }
+          if (payload.status) {
+            await transitionTicket(token, ticketId, {
+              status: payload.status,
+              comment: payload.comment || undefined,
+              is_internal: isStaff,
+            })
+          }
+          updatedCount += 1
+        } catch (error) {
+          skippedCount += 1
+          errors.push(error instanceof Error ? error.message : `Ошибка по заявке ${ticketId}`)
         }
       }
+
+      return { updatedCount, skippedCount, errors }
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setSelectedTicketIds([])
       setIsBulkPreviewOpen(false)
-      setActionFeedback({ kind: 'success', message: 'Массовая операция успешно применена.' })
+      if (result.skippedCount === 0) {
+        setActionFeedback({ kind: 'success', message: `Массовая операция завершена: обновлено ${result.updatedCount}.` })
+      } else {
+        const firstError = result.errors[0] ? ` Первая ошибка: ${result.errors[0]}` : ''
+        setActionFeedback({ kind: 'error', message: `Массовая операция завершена частично: обновлено ${result.updatedCount}, пропущено ${result.skippedCount}.${firstError}` })
+      }
       await queryClient.invalidateQueries({ queryKey: ['tickets'] })
       await queryClient.invalidateQueries({ queryKey: ['notifications-unread-count'] })
     },
