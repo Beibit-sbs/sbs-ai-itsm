@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     jobs_event_recovery_max_exec_per_hour: int = 6
     jobs_event_recovery_require_change_ticket: bool = True
     jobs_event_recovery_dual_control_required: bool = False
+    jobs_event_runbook_allowed_codes: list[str] | str = []
+    jobs_event_runbook_denied_codes: list[str] | str = []
+    jobs_event_runbook_high_impact_codes: list[str] | str = [
+        "jobs.consumer.repeated_failures_requeue",
+        "jobs.consumer.emergency_brake_reset",
+    ]
+    jobs_event_runbook_cooldown_seconds_map: dict[str, object] | str = {}
+    jobs_event_runbook_require_change_ticket: bool = True
+    jobs_event_runbook_dual_control_required: bool = False
     jobs_event_autoremediation_enabled: bool = False
     jobs_event_autoremediation_consumers: list[str] | str = ["notifications-consumer"]
     jobs_event_autoremediation_allowed_event_types: list[str] | str = ["failed", "dead_letter"]
@@ -82,6 +91,9 @@ class Settings(BaseSettings):
         "jobs_event_autoremediation_suppression_windows_utc",
         "jobs_event_autoremediation_error_denylist",
         "jobs_event_autoremediation_braked_consumers",
+        "jobs_event_runbook_allowed_codes",
+        "jobs_event_runbook_denied_codes",
+        "jobs_event_runbook_high_impact_codes",
         mode="before",
     )
     @classmethod
@@ -90,7 +102,7 @@ class Settings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
-    @field_validator("jobs_event_autoremediation_policy_profiles", mode="before")
+    @field_validator("jobs_event_autoremediation_policy_profiles", "jobs_event_runbook_cooldown_seconds_map", mode="before")
     @classmethod
     def parse_json_object(cls, value: object) -> object:
         if isinstance(value, str):
@@ -152,6 +164,20 @@ class Settings(BaseSettings):
     def jobs_event_policy_profiles_must_be_object(cls, value: object) -> object:
         if not isinstance(value, dict):
             raise ValueError("JOBS_EVENT_AUTOREMEDIATION_POLICY_PROFILES must be an object")
+        return value
+
+    @field_validator("jobs_event_runbook_cooldown_seconds_map")
+    @classmethod
+    def jobs_event_runbook_cooldowns_must_be_non_negative(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            raise ValueError("JOBS_EVENT_RUNBOOK_COOLDOWN_SECONDS_MAP must be an object")
+        for key, raw in value.items():
+            try:
+                seconds = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Cooldown for runbook '{key}' must be an integer") from exc
+            if seconds < 0:
+                raise ValueError(f"Cooldown for runbook '{key}' must be >= 0")
         return value
 
 

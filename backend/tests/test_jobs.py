@@ -395,7 +395,10 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "emergency_brake_consumers",
         "runbook_executions_24h",
         "runbook_failures_24h",
+        "runbook_governance_compliant_actions_24h",
+        "runbook_governance_denied_actions_24h",
         "recent_runbook_executions",
+        "recent_runbook_denied_actions",
         "recent_policy_rollouts",
         "recent_recovery_actions",
         "recent_autoremediation_actions",
@@ -438,6 +441,8 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "emergency_brake_active",
         "emergency_brake_reason",
         "runbook_executions_24h",
+        "runbook_governance_compliant_24h",
+        "runbook_governance_denied_24h",
         "last_runbook_execution_at",
         "last_policy_change_at",
         "last_policy_change_actor_email",
@@ -672,6 +677,12 @@ def test_job_event_consumer_runbook_repeated_failures_dry_run_and_execute(app) -
     from app.core.config import get_settings
 
     settings = get_settings()
+    settings.jobs_event_runbook_high_impact_codes = ["jobs.consumer.repeated_failures_requeue"]
+    settings.jobs_event_runbook_require_change_ticket = True
+    settings.jobs_event_runbook_dual_control_required = False
+    settings.jobs_event_runbook_allowed_codes = []
+    settings.jobs_event_runbook_denied_codes = []
+    settings.jobs_event_runbook_cooldown_seconds_map = {}
 
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -729,6 +740,8 @@ def test_job_event_consumer_runbook_repeated_failures_dry_run_and_execute(app) -
                 "runbook_code": "jobs.consumer.repeated_failures_requeue",
                 "dry_run": False,
                 "limit": 10,
+                "reason_code": "manual_operator_intervention",
+                "change_ticket_ref": "CHG-RUNBOOK-1001",
             },
         )
         assert execute.status_code == 200, execute.text
@@ -740,6 +753,178 @@ def test_job_event_consumer_runbook_repeated_failures_dry_run_and_execute(app) -
         assert diag.status_code == 200, diag.text
         diag_payload = diag.json()
         assert diag_payload["runbook_executions_24h"] >= 2
+        assert diag_payload["runbook_governance_compliant_actions_24h"] >= 1
+
+
+def test_job_event_consumer_runbook_governance_validation_and_denied_feed(app) -> None:
+    from app.db.session import SessionLocal
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_event_runbook_high_impact_codes = ["jobs.consumer.repeated_failures_requeue"]
+    settings.jobs_event_runbook_require_change_ticket = True
+    settings.jobs_event_runbook_dual_control_required = True
+    settings.jobs_event_runbook_allowed_codes = []
+    settings.jobs_event_runbook_denied_codes = []
+    settings.jobs_event_runbook_cooldown_seconds_map = {}
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"runbook-governance": True}, max_attempts=1)
+            db.commit()
+            event = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == job.id).one()
+            db.add(
+                JobEventConsumerDelivery(
+                    id="runbook-governance-failure-delivery",
+                    consumer_name="notifications-consumer",
+                    event_id=event.id,
+                    stream_name=settings.jobs_event_stream_name,
+                    stream_entry_id="18-0",
+                    status="failed",
+                    attempts=2,
+                    last_error="boom",
+                    delivered_at=None,
+                )
+            )
+            db.commit()
+
+        missing_reason = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers={**_auth_headers(token), "X-Runbook-Confirm": "CONFIRM"},
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.repeated_failures_requeue",
+                "dry_run": False,
+                "limit": 10,
+                "change_ticket_ref": "CHG-RUNBOOK-2001",
+            },
+        )
+        assert missing_reason.status_code == 400, missing_reason.text
+
+        missing_approver = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers={**_auth_headers(token), "X-Runbook-Confirm": "CONFIRM"},
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.repeated_failures_requeue",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "bugfix_rollout",
+                "change_ticket_ref": "CHG-RUNBOOK-2002",
+            },
+        )
+        assert missing_approver.status_code == 400, missing_approver.text
+
+        same_actor_approver = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers={**_auth_headers(token), "X-Runbook-Confirm": "CONFIRM"},
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.repeated_failures_requeue",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "bugfix_rollout",
+                "change_ticket_ref": "CHG-RUNBOOK-2003",
+                "approved_by_email": "root@sbs.local",
+            },
+        )
+        assert same_actor_approver.status_code == 400, same_actor_approver.text
+
+        execute = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers={**_auth_headers(token), "X-Runbook-Confirm": "CONFIRM"},
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.repeated_failures_requeue",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "bugfix_rollout",
+                "change_ticket_ref": "CHG-RUNBOOK-2004",
+                "approved_by_email": "approver@sbs.local",
+            },
+        )
+        assert execute.status_code == 200, execute.text
+
+        diag = client.get("/api/v1/jobs/event-consumers-diagnostics", headers=_auth_headers(token))
+        assert diag.status_code == 200, diag.text
+        diag_payload = diag.json()
+        assert diag_payload["runbook_governance_compliant_actions_24h"] >= 1
+        assert diag_payload["runbook_governance_denied_actions_24h"] >= 3
+        assert len(diag_payload["recent_runbook_denied_actions"]) >= 1
+
+
+def test_job_event_consumer_runbook_policy_deny_and_cooldown(app) -> None:
+    from app.db.session import SessionLocal
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_event_runbook_high_impact_codes = ["jobs.consumer.repeated_failures_requeue"]
+    settings.jobs_event_runbook_require_change_ticket = True
+    settings.jobs_event_runbook_dual_control_required = False
+    settings.jobs_event_runbook_allowed_codes = ["jobs.consumer.repeated_failures_requeue"]
+    settings.jobs_event_runbook_denied_codes = ["jobs.consumer.lag_spike_triage"]
+    settings.jobs_event_runbook_cooldown_seconds_map = {"jobs.consumer.repeated_failures_requeue": 3600}
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"runbook-cooldown": True}, max_attempts=1)
+            db.commit()
+            event = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == job.id).one()
+            db.add(
+                JobEventConsumerDelivery(
+                    id="runbook-policy-failure-delivery",
+                    consumer_name="notifications-consumer",
+                    event_id=event.id,
+                    stream_name=settings.jobs_event_stream_name,
+                    stream_entry_id="19-0",
+                    status="failed",
+                    attempts=2,
+                    last_error="boom",
+                    delivered_at=None,
+                )
+            )
+            db.commit()
+
+        deny_by_policy = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers=_auth_headers(token),
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.lag_spike_triage",
+                "dry_run": True,
+            },
+        )
+        assert deny_by_policy.status_code == 403, deny_by_policy.text
+
+        first_execute = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers={**_auth_headers(token), "X-Runbook-Confirm": "CONFIRM"},
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.repeated_failures_requeue",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "manual_operator_intervention",
+                "change_ticket_ref": "CHG-RUNBOOK-3001",
+            },
+        )
+        assert first_execute.status_code == 200, first_execute.text
+
+        cooldown_blocked = client.post(
+            "/api/v1/jobs/event-consumer-runbook",
+            headers={**_auth_headers(token), "X-Runbook-Confirm": "CONFIRM"},
+            json={
+                "consumer_name": "notifications-consumer",
+                "runbook_code": "jobs.consumer.repeated_failures_requeue",
+                "dry_run": False,
+                "limit": 10,
+                "reason_code": "manual_operator_intervention",
+                "change_ticket_ref": "CHG-RUNBOOK-3002",
+            },
+        )
+        assert cooldown_blocked.status_code == 429, cooldown_blocked.text
 
 
 def test_job_event_consumer_runbook_guardrail_blocked_when_no_lag(app) -> None:

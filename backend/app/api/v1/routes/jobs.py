@@ -215,6 +215,8 @@ class JobEventConsumerDiagnosticsItemResponse(BaseModel):
     emergency_brake_active: bool
     emergency_brake_reason: str
     runbook_executions_24h: int
+    runbook_governance_compliant_24h: int
+    runbook_governance_denied_24h: int
     last_runbook_execution_at: datetime | None
     last_policy_change_at: datetime | None
     last_policy_change_actor_email: str | None
@@ -237,7 +239,10 @@ class JobEventConsumersDiagnosticsResponse(BaseModel):
     emergency_brake_consumers: list[str]
     runbook_executions_24h: int
     runbook_failures_24h: int
+    runbook_governance_compliant_actions_24h: int
+    runbook_governance_denied_actions_24h: int
     recent_runbook_executions: list[dict[str, object]]
+    recent_runbook_denied_actions: list[dict[str, object]]
     recent_policy_rollouts: list[dict[str, object]]
     recent_recovery_actions: list[dict[str, object]]
     recent_autoremediation_actions: list[dict[str, object]]
@@ -333,6 +338,9 @@ class JobEventConsumerRunbookRequest(BaseModel):
     runbook_code: str = Field(..., min_length=3, max_length=120)
     dry_run: bool = True
     limit: int = Field(default=25, ge=1, le=200)
+    reason_code: str | None = Field(default=None, min_length=3, max_length=80)
+    change_ticket_ref: str | None = Field(default=None, min_length=3, max_length=80)
+    approved_by_email: str | None = Field(default=None, min_length=5, max_length=255)
 
 
 class JobEventConsumerRunbookResponse(BaseModel):
@@ -504,9 +512,15 @@ def get_job_event_consumers_diagnostics(
     consumer_names = [str(item.get("consumer_name") or "") for item in consumers if isinstance(item, dict)]
     policy_changes = _latest_policy_change_map(db, consumer_names)
     rollouts_24h, recent_rollouts = _recent_policy_rollouts(db)
-    runbook_execs_24h, runbook_failures_24h, recent_runbooks, per_consumer_runbooks = _recent_jobs_runbook_metrics(
-        db, consumer_names
-    )
+    (
+        runbook_execs_24h,
+        runbook_failures_24h,
+        recent_runbooks,
+        per_consumer_runbooks,
+        runbook_governance_compliant_actions_24h,
+        runbook_governance_denied_actions_24h,
+        recent_runbook_denied_actions,
+    ) = _recent_jobs_runbook_metrics(db, consumer_names)
     for item in consumers:
         if not isinstance(item, dict):
             continue
@@ -530,6 +544,8 @@ def get_job_event_consumers_diagnostics(
         item["emergency_brake_reason"] = "error_threshold_exceeded_15m" if brake_active else ""
         runbook_meta = per_consumer_runbooks.get(consumer_name, {})
         item["runbook_executions_24h"] = int(runbook_meta.get("count", 0) or 0)
+        item["runbook_governance_compliant_24h"] = int(runbook_meta.get("governance_compliant", 0) or 0)
+        item["runbook_governance_denied_24h"] = int(runbook_meta.get("governance_denied", 0) or 0)
         item["last_runbook_execution_at"] = runbook_meta.get("last_at")
         policy_change = policy_changes.get(consumer_name, {})
         item["last_policy_change_at"] = policy_change.get("created_at")
@@ -541,7 +557,10 @@ def get_job_event_consumers_diagnostics(
     ]
     data["runbook_executions_24h"] = int(runbook_execs_24h)
     data["runbook_failures_24h"] = int(runbook_failures_24h)
+    data["runbook_governance_compliant_actions_24h"] = int(runbook_governance_compliant_actions_24h)
+    data["runbook_governance_denied_actions_24h"] = int(runbook_governance_denied_actions_24h)
     data["recent_runbook_executions"] = recent_runbooks
+    data["recent_runbook_denied_actions"] = recent_runbook_denied_actions
     data["recent_policy_rollouts"] = recent_rollouts
     return JobEventConsumersDiagnosticsResponse(**data)
 
@@ -689,6 +708,10 @@ def _create_jobs_runbook_execution(
     dry_run: bool,
     status: str,
     result: dict[str, object],
+    reason_code: str,
+    change_ticket_ref: str,
+    approved_by_email: str,
+    governance_compliant: bool,
 ) -> RunbookExecution:
     execution = RunbookExecution(
         id=str(uuid.uuid4()),
@@ -706,6 +729,10 @@ def _create_jobs_runbook_execution(
                 "runbook_code": runbook.code,
                 "dry_run": dry_run,
                 "status": status,
+                "reason_code": reason_code,
+                "change_ticket_ref": change_ticket_ref,
+                "approved_by_email": approved_by_email,
+                "governance_compliant": governance_compliant,
                 "result": result,
             },
             ensure_ascii=False,
@@ -716,7 +743,10 @@ def _create_jobs_runbook_execution(
     return execution
 
 
-def _recent_jobs_runbook_metrics(db: Session, consumer_names: list[str]) -> tuple[int, int, list[dict[str, object]], dict[str, dict[str, object]]]:
+def _recent_jobs_runbook_metrics(
+    db: Session,
+    consumer_names: list[str],
+) -> tuple[int, int, list[dict[str, object]], dict[str, dict[str, object]], int, int, list[dict[str, object]]]:
     window_start = datetime.now(UTC) - timedelta(hours=24)
     rows = list(
         db.scalars(
@@ -729,17 +759,28 @@ def _recent_jobs_runbook_metrics(db: Session, consumer_names: list[str]) -> tupl
         ).all()
     )
     recent: list[dict[str, object]] = []
-    per_consumer: dict[str, dict[str, object]] = {name: {"count": 0, "last_at": None} for name in consumer_names}
+    per_consumer: dict[str, dict[str, object]] = {
+        name: {"count": 0, "last_at": None, "governance_compliant": 0, "governance_denied": 0}
+        for name in consumer_names
+    }
     failures = 0
+    governance_compliant_actions = 0
     for row in rows:
         summary = _decode(row.result_summary)
         if not isinstance(summary, dict):
             summary = {}
         consumer_name = str(summary.get("consumer_name") or "")
+        governance_compliant = bool(summary.get("governance_compliant", False))
         if consumer_name in per_consumer:
             per_consumer[consumer_name]["count"] = int(per_consumer[consumer_name]["count"] or 0) + 1
+            if governance_compliant:
+                per_consumer[consumer_name]["governance_compliant"] = (
+                    int(per_consumer[consumer_name]["governance_compliant"] or 0) + 1
+                )
             if per_consumer[consumer_name]["last_at"] is None:
                 per_consumer[consumer_name]["last_at"] = row.completed_at or row.created_at
+        if governance_compliant:
+            governance_compliant_actions += 1
         if row.status in {"failed", "guardrail_blocked"}:
             failures += 1
         if len(recent) < 12:
@@ -752,9 +793,134 @@ def _recent_jobs_runbook_metrics(db: Session, consumer_names: list[str]) -> tupl
                     "created_at": row.created_at,
                     "runbook_code": str(summary.get("runbook_code") or ""),
                     "dry_run": bool(summary.get("dry_run", False)),
+                    "governance_compliant": governance_compliant,
                 }
             )
-    return len(rows), failures, recent, per_consumer
+
+    denied_rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "jobs.event_consumer_runbook.denied")
+            .where(AuditLog.created_at >= window_start)
+            .order_by(AuditLog.created_at.desc())
+            .limit(200)
+        ).all()
+    )
+    recent_denied: list[dict[str, object]] = []
+    for row in denied_rows:
+        metadata = _decode(row.metadata_json)
+        metadata_map = metadata if isinstance(metadata, dict) else {}
+        consumer_name = str(metadata_map.get("consumer_name") or "")
+        if consumer_name in per_consumer:
+            per_consumer[consumer_name]["governance_denied"] = int(
+                per_consumer[consumer_name]["governance_denied"] or 0
+            ) + 1
+        if len(recent_denied) < 12:
+            recent_denied.append(
+                {
+                    "consumer_name": consumer_name,
+                    "runbook_code": str(metadata_map.get("runbook_code") or ""),
+                    "denial_reason": str(metadata_map.get("denial_reason") or ""),
+                    "detail": str(metadata_map.get("detail") or ""),
+                    "actor_email": row.actor_email,
+                    "created_at": row.created_at,
+                }
+            )
+
+    return (
+        len(rows),
+        failures,
+        recent,
+        per_consumer,
+        governance_compliant_actions,
+        len(denied_rows),
+        recent_denied,
+    )
+
+
+def _runbook_policy(settings) -> dict[str, object]:
+    catalog_codes = set(_jobs_runbook_catalog().keys())
+
+    allowed_raw = [str(item).strip() for item in settings.jobs_event_runbook_allowed_codes if str(item).strip()]
+    denied_raw = [str(item).strip() for item in settings.jobs_event_runbook_denied_codes if str(item).strip()]
+    high_impact_raw = [str(item).strip() for item in settings.jobs_event_runbook_high_impact_codes if str(item).strip()]
+
+    allowed_codes = [code for code in allowed_raw if code in catalog_codes]
+    denied_codes = [code for code in denied_raw if code in catalog_codes]
+    high_impact_codes = [code for code in high_impact_raw if code in catalog_codes]
+
+    cooldown_raw = (
+        settings.jobs_event_runbook_cooldown_seconds_map
+        if isinstance(settings.jobs_event_runbook_cooldown_seconds_map, dict)
+        else {}
+    )
+    cooldown_seconds: dict[str, int] = {}
+    for key, value in cooldown_raw.items():
+        code = str(key).strip()
+        if not code or code not in catalog_codes:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        cooldown_seconds[code] = max(0, parsed)
+
+    return {
+        "catalog_codes": catalog_codes,
+        "allowed_codes": set(allowed_codes),
+        "denied_codes": set(denied_codes),
+        "high_impact_codes": set(high_impact_codes),
+        "cooldown_seconds": cooldown_seconds,
+        "require_change_ticket": bool(settings.jobs_event_runbook_require_change_ticket),
+        "dual_control_required": bool(settings.jobs_event_runbook_dual_control_required),
+    }
+
+
+def _runbook_execution_cooldown_state(
+    db: Session,
+    *,
+    consumer_name: str,
+    runbook_code: str,
+    cooldown_seconds: int,
+) -> dict[str, object]:
+    if cooldown_seconds <= 0:
+        return {
+            "cooldown_active": False,
+            "retry_after_seconds": 0,
+            "last_executed_at": None,
+        }
+    now = datetime.now(UTC)
+    window_start = now - timedelta(seconds=cooldown_seconds)
+    rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "jobs.event_consumer_runbook.execute")
+            .where(AuditLog.created_at >= window_start)
+            .order_by(AuditLog.created_at.desc())
+            .limit(200)
+        ).all()
+    )
+    for row in rows:
+        metadata = _decode(row.metadata_json)
+        metadata_map = metadata if isinstance(metadata, dict) else {}
+        if str(metadata_map.get("consumer_name") or "") != consumer_name:
+            continue
+        if str(metadata_map.get("runbook_code") or "") != runbook_code:
+            continue
+        created_at = row.created_at if row.created_at.tzinfo is not None else row.created_at.replace(tzinfo=UTC)
+        elapsed = int((now - created_at).total_seconds())
+        remaining = max(0, cooldown_seconds - elapsed)
+        if remaining > 0:
+            return {
+                "cooldown_active": True,
+                "retry_after_seconds": remaining,
+                "last_executed_at": created_at,
+            }
+    return {
+        "cooldown_active": False,
+        "retry_after_seconds": 0,
+        "last_executed_at": None,
+    }
 
 
 def _policy_state(settings, db: Session) -> dict[str, object]:
@@ -1069,6 +1235,81 @@ def execute_job_event_consumer_runbook(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown consumer_name")
     if request.runbook_code not in _jobs_runbook_catalog():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown runbook_code")
+
+    runbook_policy = _runbook_policy(settings)
+    denied_codes = runbook_policy["denied_codes"]
+    allowed_codes = runbook_policy["allowed_codes"]
+    high_impact_codes = runbook_policy["high_impact_codes"]
+    cooldown_seconds_map = runbook_policy["cooldown_seconds"]
+
+    def _deny(detail: str, denial_reason: str, status_code: int) -> None:
+        log_audit(
+            db,
+            action="jobs.event_consumer_runbook.denied",
+            entity_type="runbook_execution",
+            entity_id=request.runbook_code,
+            actor_email=current_user.email,
+            tenant_id=current_user.tenant_id,
+            metadata={
+                "consumer_name": request.consumer_name,
+                "runbook_code": request.runbook_code,
+                "dry_run": request.dry_run,
+                "denial_reason": denial_reason,
+                "detail": detail,
+            },
+        )
+        db.commit()
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    if request.runbook_code in denied_codes:
+        _deny("Runbook is denied by governance policy", "runbook_denied_by_policy", status.HTTP_403_FORBIDDEN)
+    if allowed_codes and request.runbook_code not in allowed_codes:
+        _deny("Runbook is not allowlisted by governance policy", "runbook_not_allowlisted", status.HTTP_403_FORBIDDEN)
+
+    governance_compliant = True
+    reason_code = (request.reason_code or "").strip().lower()
+    change_ticket_ref = (request.change_ticket_ref or "").strip()
+    approved_by_email = (request.approved_by_email or "").strip().lower()
+
+    if not request.dry_run and request.runbook_code in high_impact_codes:
+        governance_compliant = False
+        if reason_code not in ALLOWED_RECOVERY_REASON_CODES:
+            _deny(
+                "reason_code is required and must be one of allowed governance codes",
+                "missing_or_invalid_reason_code",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        if bool(runbook_policy["require_change_ticket"]) and not change_ticket_ref:
+            _deny("change_ticket_ref is required for execute runbook", "missing_change_ticket_ref", status.HTTP_400_BAD_REQUEST)
+        if bool(runbook_policy["dual_control_required"]):
+            if not approved_by_email:
+                _deny(
+                    "approved_by_email is required when runbook dual-control mode is enabled",
+                    "missing_approved_by_email",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            if approved_by_email == current_user.email.lower():
+                _deny(
+                    "approved_by_email must be different from actor",
+                    "invalid_dual_control_approver",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+        governance_compliant = True
+
+    if not request.dry_run:
+        cooldown_state = _runbook_execution_cooldown_state(
+            db,
+            consumer_name=request.consumer_name,
+            runbook_code=request.runbook_code,
+            cooldown_seconds=int(cooldown_seconds_map.get(request.runbook_code, 0) or 0),
+        )
+        if bool(cooldown_state.get("cooldown_active")):
+            _deny(
+                f"Runbook cooldown active; retry after {int(cooldown_state.get('retry_after_seconds') or 0)}s",
+                "runbook_cooldown_active",
+                status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
     if not request.dry_run and runbook_confirm != "CONFIRM":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Execution requires header X-Runbook-Confirm: CONFIRM")
 
@@ -1174,6 +1415,10 @@ def execute_job_event_consumer_runbook(
         dry_run=request.dry_run,
         status=status_value,
         result=result,
+        reason_code=reason_code,
+        change_ticket_ref=change_ticket_ref,
+        approved_by_email=approved_by_email,
+        governance_compliant=governance_compliant,
     )
     log_audit(
         db,
@@ -1188,6 +1433,10 @@ def execute_job_event_consumer_runbook(
             "dry_run": request.dry_run,
             "status": status_value,
             "guardrail_blocked": guardrail_blocked,
+            "reason_code": reason_code,
+            "change_ticket_ref": change_ticket_ref,
+            "approved_by_email": approved_by_email,
+            "governance_compliant": governance_compliant,
         },
     )
     db.commit()

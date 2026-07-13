@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-DETERMINISTIC-RUNBOOKS-021`
-- Latest stage implementation commit: `92f7048`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-GOVERNANCE-022`
+- Latest stage implementation commit: `TBD`
 
 ## Stage Log (Newest First)
+
+- `TBD` PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-GOVERNANCE-022
+  - Added governance policy for high-impact runbook execute paths: reason code, change reference, and optional dual-control approver.
+  - Added settings-driven per-runbook allow/deny controls and cooldown enforcement with explicit denied audit actions.
+  - Extended diagnostics with runbook governance compliant/denied counters and recent denied execution feed.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-GOVERNANCE-022-REPORT.md`
 
 - `92f7048` PLATFORM-CORE-ASYNC-CONSUMER-DETERMINISTIC-RUNBOOKS-021
   - Added deterministic jobs consumer runbook execution endpoint with dry-run/execute confirmation flow.
@@ -182,17 +188,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-GOVERNANCE-022`
+- `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-PERSISTENCE-023`
 
 Scope proposal:
-- Add governance policy for high-impact runbooks: reason code, change reference, and optional dual-control approval.
-- Add per-runbook allow/deny policy and execution cooldowns.
-- Extend diagnostics with runbook governance compliance counters and denied execution feed.
+- Persist runbook governance policy in DB with versioned state and optimistic concurrency updates.
+- Add runtime API to inspect/update runbook governance policy without restart.
+- Surface policy version/hash and recent rollouts in runbook governance diagnostics.
 
 Exit criteria:
-- High-impact runbooks require governance metadata and respect policy cooldowns.
-- Diagnostics show compliant vs denied runbook execution activity.
-- Tests cover governance validation, denial paths, and audit metadata.
+- Runbook governance policy survives restart and worker/API reloads deterministically.
+- Policy updates reject stale writes with explicit `409` conflict.
+- Tests cover persistence load/save, stale-write conflict, and diagnostics rollout metadata.
 
 ## Stage Execution Template
 
