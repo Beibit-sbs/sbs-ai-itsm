@@ -380,7 +380,15 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
 
     assert response.status_code == 200
     data = response.json()
-    for key in ("stream_name", "total_events", "consumer_count", "overall_status", "consumers"):
+    for key in (
+        "stream_name",
+        "total_events",
+        "consumer_count",
+        "overall_status",
+        "recovery_actions_24h",
+        "recent_recovery_actions",
+        "consumers",
+    ):
         assert key in data
     assert isinstance(data["consumers"], list)
     assert len(data["consumers"]) == 2
@@ -401,6 +409,10 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "oldest_undelivered_age_seconds",
         "offset_updated_at",
         "stale_offset",
+        "recovery_preview_24h",
+        "recovery_execute_24h",
+        "last_recovery_execute_at",
+        "last_recovery_execute_actor_email",
         "status",
         "recommended_actions",
     ):
@@ -409,6 +421,11 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
 
 def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:
     from app.db.session import SessionLocal
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_event_recovery_cooldown_seconds = 0
+    settings.jobs_event_recovery_max_exec_per_hour = 100
 
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -475,6 +492,11 @@ def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:
         )
         assert execute_repeat.status_code == 200, execute_repeat.text
 
+        diag = client.get("/api/v1/jobs/event-consumers-diagnostics", headers=_auth_headers(token))
+        assert diag.status_code == 200, diag.text
+        diag_body = diag.json()
+        assert diag_body["recovery_actions_24h"] >= 2
+
         with SessionLocal() as db:
             notif = db.get(JobEventConsumerDelivery, "recovery-delivery-notif")
             auto = db.get(JobEventConsumerDelivery, "recovery-delivery-auto")
@@ -485,6 +507,50 @@ def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:
             assert notif.last_error == "recovery_requeued_by_operator"
             assert auto.status == "failed"
             assert auto.attempts == 2
+
+
+def test_event_consumer_recovery_cooldown_guard(app) -> None:
+    from app.db.session import SessionLocal
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_event_recovery_cooldown_seconds = 3600
+    settings.jobs_event_recovery_max_exec_per_hour = 100
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"cooldown": True}, max_attempts=1)
+            db.commit()
+            event = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == job.id).one()
+            db.add(
+                JobEventConsumerDelivery(
+                    id="recovery-cooldown-delivery",
+                    consumer_name="notifications-consumer",
+                    event_id=event.id,
+                    stream_name="jobs:lifecycle",
+                    stream_entry_id="11-0",
+                    status="failed",
+                    attempts=1,
+                    last_error="boom",
+                    delivered_at=None,
+                )
+            )
+            db.commit()
+
+        first = client.post(
+            "/api/v1/jobs/event-consumer-recovery",
+            headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
+            json={"consumer_name": "notifications-consumer", "dry_run": False, "limit": 10},
+        )
+        assert first.status_code == 200, first.text
+
+        second = client.post(
+            "/api/v1/jobs/event-consumer-recovery",
+            headers={**_auth_headers(token), "X-Recovery-Confirm": "CONFIRM"},
+            json={"consumer_name": "notifications-consumer", "dry_run": False, "limit": 10},
+        )
+        assert second.status_code == 429, second.text
 
 
 def test_create_outbox_entry_is_idempotent_by_job_and_queue(app) -> None:

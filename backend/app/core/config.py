@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     jobs_event_consumer_max_attempts: int = 3
     jobs_event_consumer_lag_alert_threshold: int = 25
     jobs_event_consumer_stale_offset_seconds: int = 300
+    jobs_event_recovery_cooldown_seconds: int = 60
+    jobs_event_recovery_max_exec_per_hour: int = 6
     jobs_retry_base_seconds: float = 0.5
     jobs_retry_max_seconds: float = 15.0
 
@@ -76,6 +78,18 @@ class Settings(BaseSettings):
     def jobs_retry_values_must_be_positive(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("JOBS retry values must be positive")
+        return value
+
+    @field_validator(
+        "jobs_event_consumer_lag_alert_threshold",
+        "jobs_event_consumer_stale_offset_seconds",
+        "jobs_event_recovery_cooldown_seconds",
+        "jobs_event_recovery_max_exec_per_hour",
+    )
+    @classmethod
+    def jobs_event_limits_must_be_non_negative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("JOBS event limits must be >= 0")
         return value
 
 

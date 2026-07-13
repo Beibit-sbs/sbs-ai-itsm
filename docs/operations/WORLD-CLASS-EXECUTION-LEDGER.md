@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-013`
-- Latest stage implementation commit: `1beb8a6`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-SAFETY-014`
+- Latest stage implementation commit: `PENDING_COMMIT`
 
 ## Stage Log (Newest First)
+
+- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-CONSUMER-SAFETY-014
+  - Added per-consumer recovery safety controls: cooldown and hourly execution rate limit.
+  - Added operator audit actions for recovery preview/execute and surfaced them in diagnostics.
+  - Extended diagnostics with recovery counters and recent operator action feed.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-SAFETY-014-REPORT.md`
 
 - `1beb8a6` PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-013
   - Added protected replay tooling for consumer deliveries with bounded filters and dry-run preview.
@@ -134,17 +140,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-SAFETY-014`
+- `PLATFORM-CORE-ASYNC-CONSUMER-GOVERNANCE-015`
 
 Scope proposal:
-- Add consumer safety controls: replay rate limits, cooldown windows, and operator audit annotations.
-- Introduce guardrails to prevent repeated noisy recovery loops under persistent downstream outage.
-- Extend diagnostics with recovery activity counters and recent operator actions.
+- Add governance controls for recovery actions (reason codes, change ticket linkage, and optional dual-control mode).
+- Require structured operator context to improve post-incident forensics and compliance traceability.
+- Expose governance compliance indicators alongside recovery safety diagnostics.
 
 Exit criteria:
-- Safety controls enforce bounded replay pressure during incident conditions.
-- Recovery actions are auditable and visible in diagnostics.
-- Tests cover cooldown/rate-limit behavior and operator guardrails.
+- Recovery execute requires governance metadata (reason/change reference) and persists it in audit trail.
+- Diagnostics expose compliance coverage of recent recovery actions.
+- Tests cover governance validation rules and non-regression of safety controls.
 
 ## Stage Execution Template
 

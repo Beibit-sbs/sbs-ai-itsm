@@ -14,7 +14,7 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from redis import Redis
@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.context import get_correlation_id
+from app.models.audit_log import AuditLog
 from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_event_consumer_delivery import JobEventConsumerDelivery
@@ -71,6 +72,14 @@ def _uuid() -> str:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _serialize(value: Any) -> str | None:
@@ -210,12 +219,59 @@ def job_event_consumers_diagnostics(
     stale_offset_seconds: int,
 ) -> dict[str, object]:
     now = _now()
+    audit_window_start = now - timedelta(hours=24)
     total_events = int(
         db.scalar(select(func.count(JobLifecycleEvent.id)).where(JobLifecycleEvent.relay_stream_name == stream_name)) or 0
     )
     last_event_created_at = db.scalar(
         select(func.max(JobLifecycleEvent.created_at)).where(JobLifecycleEvent.relay_stream_name == stream_name)
     )
+
+    recent_recovery_rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action.in_(["jobs.event_consumer_recovery.preview", "jobs.event_consumer_recovery.execute"]))
+            .where(AuditLog.created_at >= audit_window_start)
+            .order_by(AuditLog.created_at.desc())
+            .limit(50)
+        ).all()
+    )
+    recovery_agg: dict[str, dict[str, object]] = {
+        name: {
+            "preview_24h": 0,
+            "execute_24h": 0,
+            "last_execute_at": None,
+            "last_execute_actor_email": None,
+        }
+        for name in consumer_names
+    }
+    recent_recovery_actions: list[dict[str, object]] = []
+    for row in recent_recovery_rows:
+        metadata = _deserialize(row.metadata_json) if row.metadata_json else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        consumer = str(metadata.get("consumer_name") or "")
+        if consumer not in recovery_agg:
+            continue
+        if row.action.endswith(".preview"):
+            recovery_agg[consumer]["preview_24h"] = int(recovery_agg[consumer]["preview_24h"] or 0) + 1
+        if row.action.endswith(".execute"):
+            recovery_agg[consumer]["execute_24h"] = int(recovery_agg[consumer]["execute_24h"] or 0) + 1
+            if recovery_agg[consumer]["last_execute_at"] is None:
+                recovery_agg[consumer]["last_execute_at"] = _as_utc(row.created_at)
+                recovery_agg[consumer]["last_execute_actor_email"] = row.actor_email
+        if len(recent_recovery_actions) < 12:
+            recent_recovery_actions.append(
+                {
+                    "action": row.action,
+                    "consumer_name": consumer,
+                    "actor_email": row.actor_email,
+                    "created_at": _as_utc(row.created_at),
+                    "dry_run": bool(metadata.get("dry_run", False)),
+                    "selected": int(metadata.get("selected", 0) or 0),
+                    "requeued": int(metadata.get("requeued", 0) or 0),
+                }
+            )
 
     consumers: list[dict[str, object]] = []
     for consumer_name in consumer_names:
@@ -263,8 +319,9 @@ def job_event_consumers_diagnostics(
                 JobEventConsumerDelivery.status != "delivered",
             )
         )
+        oldest_undelivered_utc = _as_utc(oldest_undelivered)
         oldest_undelivered_age_seconds = (
-            int((now - oldest_undelivered).total_seconds()) if oldest_undelivered is not None else 0
+            int((now - oldest_undelivered_utc).total_seconds()) if oldest_undelivered_utc is not None else 0
         )
 
         offset = db.scalar(
@@ -273,12 +330,13 @@ def job_event_consumers_diagnostics(
                 JobEventConsumerOffset.stream_name == stream_name,
             )
         )
-        offset_updated_at = offset.updated_at if offset is not None else None
+        offset_updated_at = _as_utc(offset.updated_at) if offset is not None else None
+        last_event_created_at_utc = _as_utc(last_event_created_at)
         stale_offset = False
-        if offset_updated_at is not None and last_event_created_at is not None:
+        if offset_updated_at is not None and last_event_created_at_utc is not None:
             stale_offset = (
                 (now - offset_updated_at).total_seconds() >= stale_offset_seconds
-                and offset_updated_at < last_event_created_at
+                and offset_updated_at < last_event_created_at_utc
             )
 
         unseen_events = max(0, total_events - total_rows)
@@ -305,6 +363,7 @@ def job_event_consumers_diagnostics(
         elif failed > 0 or lag_events > 0:
             status = "warning"
 
+        recovery_data = recovery_agg.get(consumer_name, {})
         consumers.append(
             {
                 "consumer_name": consumer_name,
@@ -322,6 +381,10 @@ def job_event_consumers_diagnostics(
                 "oldest_undelivered_age_seconds": oldest_undelivered_age_seconds,
                 "offset_updated_at": offset_updated_at,
                 "stale_offset": stale_offset,
+                "recovery_preview_24h": int(recovery_data.get("preview_24h", 0) or 0),
+                "recovery_execute_24h": int(recovery_data.get("execute_24h", 0) or 0),
+                "last_recovery_execute_at": recovery_data.get("last_execute_at"),
+                "last_recovery_execute_actor_email": recovery_data.get("last_execute_actor_email"),
                 "status": status,
                 "recommended_actions": recommended_actions,
             }
@@ -338,7 +401,57 @@ def job_event_consumers_diagnostics(
         "total_events": total_events,
         "consumer_count": len(consumers),
         "overall_status": overall_status,
+        "recovery_actions_24h": len(recent_recovery_rows),
+        "recent_recovery_actions": recent_recovery_actions,
         "consumers": consumers,
+    }
+
+
+def job_event_consumer_recovery_safety_state(
+    db: Session,
+    *,
+    consumer_name: str,
+    cooldown_seconds: int,
+    max_exec_per_hour: int,
+) -> dict[str, object]:
+    now = _now()
+    window_start = now - timedelta(hours=1)
+    execute_rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "jobs.event_consumer_recovery.execute")
+            .where(AuditLog.created_at >= window_start)
+            .order_by(AuditLog.created_at.desc())
+            .limit(200)
+        ).all()
+    )
+    consumer_exec_rows: list[AuditLog] = []
+    for row in execute_rows:
+        metadata = _deserialize(row.metadata_json) if row.metadata_json else {}
+        if isinstance(metadata, dict) and str(metadata.get("consumer_name") or "") == consumer_name:
+            consumer_exec_rows.append(row)
+
+    executed_last_hour = len(consumer_exec_rows)
+    last_executed_at = _as_utc(consumer_exec_rows[0].created_at) if consumer_exec_rows else None
+    cooldown_active = False
+    retry_after_seconds = 0
+    if cooldown_seconds > 0 and last_executed_at is not None:
+        elapsed = int((now - last_executed_at).total_seconds())
+        remaining = cooldown_seconds - elapsed
+        if remaining > 0:
+            cooldown_active = True
+            retry_after_seconds = remaining
+
+    rate_limit_exceeded = max_exec_per_hour > 0 and executed_last_hour >= max_exec_per_hour
+    return {
+        "consumer_name": consumer_name,
+        "executed_last_hour": executed_last_hour,
+        "max_exec_per_hour": max_exec_per_hour,
+        "rate_limit_exceeded": rate_limit_exceeded,
+        "cooldown_seconds": cooldown_seconds,
+        "cooldown_active": cooldown_active,
+        "retry_after_seconds": retry_after_seconds,
+        "last_executed_at": last_executed_at,
     }
 
 
@@ -814,6 +927,7 @@ __all__ = [
     "job_event_bus_summary",
     "job_event_consumer_summary",
     "job_event_consumers_diagnostics",
+    "job_event_consumer_recovery_safety_state",
     "recover_job_event_consumer_deliveries",
     "list_job_events",
     "outbox_diagnostics",

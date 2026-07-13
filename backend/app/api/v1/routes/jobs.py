@@ -21,6 +21,7 @@ from app.services.jobs import (
     get_job as service_get_job,
     job_event_bus_summary,
     job_event_consumers_diagnostics,
+    job_event_consumer_recovery_safety_state,
     job_event_consumer_summary,
     job_summary,
     list_job_events,
@@ -31,6 +32,7 @@ from app.services.jobs import (
     registered_task_names,
     run_task,
 )
+from app.services.audit import log_audit
 from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
@@ -178,6 +180,10 @@ class JobEventConsumerDiagnosticsItemResponse(BaseModel):
     oldest_undelivered_age_seconds: int
     offset_updated_at: datetime | None
     stale_offset: bool
+    recovery_preview_24h: int
+    recovery_execute_24h: int
+    last_recovery_execute_at: datetime | None
+    last_recovery_execute_actor_email: str | None
     status: str
     recommended_actions: list[str]
 
@@ -187,6 +193,8 @@ class JobEventConsumersDiagnosticsResponse(BaseModel):
     total_events: int
     consumer_count: int
     overall_status: str
+    recovery_actions_24h: int
+    recent_recovery_actions: list[dict[str, object]]
     consumers: list[JobEventConsumerDiagnosticsItemResponse]
 
 
@@ -399,6 +407,24 @@ def recover_job_event_consumer(
             detail="Execution requires header X-Recovery-Confirm: CONFIRM",
         )
 
+    if not request.dry_run:
+        safety = job_event_consumer_recovery_safety_state(
+            db,
+            consumer_name=request.consumer_name,
+            cooldown_seconds=settings.jobs_event_recovery_cooldown_seconds,
+            max_exec_per_hour=settings.jobs_event_recovery_max_exec_per_hour,
+        )
+        if bool(safety.get("cooldown_active")):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Recovery cooldown active; retry after {int(safety.get('retry_after_seconds') or 0)}s",
+            )
+        if bool(safety.get("rate_limit_exceeded")):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Recovery hourly rate limit exceeded",
+            )
+
     data = recover_job_event_consumer_deliveries(
         db,
         consumer_name=request.consumer_name,
@@ -408,7 +434,27 @@ def recover_job_event_consumer(
         limit=request.limit,
         dry_run=request.dry_run,
     )
+    log_audit(
+        db,
+        action="jobs.event_consumer_recovery.preview" if request.dry_run else "jobs.event_consumer_recovery.execute",
+        entity_type="job_event_consumer_delivery",
+        entity_id=request.consumer_name,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "consumer_name": request.consumer_name,
+            "statuses": normalized_statuses,
+            "event_types": request.event_types or [],
+            "limit": request.limit,
+            "dry_run": request.dry_run,
+            "selected": int(data.get("selected", 0) or 0),
+            "requeued": int(data.get("requeued", 0) or 0),
+        },
+    )
     if not request.dry_run:
+        db.commit()
+    else:
+        db.flush()
         db.commit()
     return JobEventConsumerRecoveryResponse(**data)
 
