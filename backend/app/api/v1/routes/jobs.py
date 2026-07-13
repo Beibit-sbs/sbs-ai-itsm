@@ -14,11 +14,13 @@ from app.models.job_run import JobRun
 from app.services.jobs import (
     JobQueueUnavailableError,
     UnknownTaskError,
+    create_job_lifecycle_event,
     create_outbox_entry,
     enqueue_task,
     execute_job,
     get_job as service_get_job,
     job_summary,
+    list_job_events,
     list_jobs,
     outbox_diagnostics,
     outbox_summary,
@@ -84,6 +86,20 @@ class JobRunResponse(BaseModel):
     updated_at: datetime
 
 
+class JobLifecycleEventResponse(BaseModel):
+    id: str
+    job_id: str
+    event_type: str
+    task_name: str
+    tenant_id: str | None
+    actor_user_id: str | None
+    correlation_id: str | None
+    previous_status: str | None
+    current_status: str
+    payload: object | None
+    created_at: datetime
+
+
 class JobSummaryResponse(BaseModel):
     total: int
     queued: int
@@ -147,6 +163,22 @@ def _to_response(job: JobRun) -> JobRunResponse:
         duration_ms=job.duration_ms,
         created_at=job.created_at,
         updated_at=job.updated_at,
+    )
+
+
+def _to_event_response(event) -> JobLifecycleEventResponse:
+    return JobLifecycleEventResponse(
+        id=event.id,
+        job_id=event.job_id,
+        event_type=event.event_type,
+        task_name=event.task_name,
+        tenant_id=event.tenant_id,
+        actor_user_id=event.actor_user_id,
+        correlation_id=event.correlation_id,
+        previous_status=event.previous_status,
+        current_status=event.current_status,
+        payload=_decode(event.payload_json),
+        created_at=event.created_at,
     )
 
 
@@ -244,6 +276,22 @@ def get_job_run(
     return _to_response(job)
 
 
+@router.get("/{job_id}/events", response_model=list[JobLifecycleEventResponse])
+def get_job_run_events(
+    job_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[JobLifecycleEventResponse]:
+    _require_read(current_user)
+    job = service_get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if not is_saas_root(current_user):
+        if job.tenant_id is not None and job.tenant_id != current_user.tenant_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return [_to_event_response(event) for event in list_job_events(db, job_id)]
+
+
 @router.post("/{job_id}/replay", response_model=JobRunResponse)
 async def replay_dead_letter_job(
     job_id: str,
@@ -258,6 +306,7 @@ async def replay_dead_letter_job(
     if job.status != "dead_letter":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only dead-letter jobs can be replayed")
 
+    previous_status = job.status
     job.status = "queued"
     job.attempts = 0
     job.error_message = None
@@ -266,6 +315,14 @@ async def replay_dead_letter_job(
     job.finished_at = None
     job.duration_ms = None
     db.flush()
+    create_job_lifecycle_event(
+        db,
+        job=job,
+        event_type="replayed",
+        previous_status=previous_status,
+        current_status=job.status,
+        payload={"attempts_reset_to": 0},
+    )
 
     if settings.jobs_executor_mode == "redis":
         try:

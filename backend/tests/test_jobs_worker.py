@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import time
 
+from fastapi.testclient import TestClient
+
+from app.models.job_lifecycle_event import JobLifecycleEvent
+from app.services.jobs import create_job_run
+from app.workers import jobs_worker
 from app.workers.jobs_worker import (
     _drain_scheduled_jobs,
     _retry_delay_seconds,
+    _run_single_job,
     _schedule_retry,
     _scheduled_queue_name,
 )
@@ -74,4 +80,73 @@ def test_drain_scheduled_jobs_moves_due_jobs_to_main_queue() -> None:
     assert (queue_name, "due-1") in redis.right
     assert (queue_name, "due-2") in redis.right
     assert redis.zset[scheduled_key].get("future") is not None
+
+
+def test_run_single_job_emits_retry_scheduled_event(app, monkeypatch) -> None:
+    from app.core.config import get_settings
+    from app.db.session import SessionLocal
+
+    settings = get_settings()
+    settings.jobs_retry_base_seconds = 0.5
+    settings.jobs_retry_max_seconds = 15.0
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+
+    redis = FakeRedis()
+    with TestClient(app):
+        with SessionLocal() as db:
+            job = create_job_run(
+                db,
+                task_name="system.flaky",
+                payload={"fail_until_attempt": 1},
+                max_attempts=2,
+            )
+            db.commit()
+
+        _run_single_job(job.id, redis_client=redis, queue_name="jobs:queue")
+
+        with SessionLocal() as db:
+            event_types = [
+                event.event_type
+                for event in db.query(JobLifecycleEvent)
+                .filter(JobLifecycleEvent.job_id == job.id)
+                .order_by(JobLifecycleEvent.created_at.asc())
+                .all()
+            ]
+
+    assert event_types == ["queued", "running", "failed", "retry_scheduled"]
+    assert _scheduled_queue_name("jobs:queue") in redis.zset
+
+
+def test_run_single_job_emits_dead_letter_event(app, monkeypatch) -> None:
+    from app.core.config import get_settings
+    from app.db.session import SessionLocal
+
+    settings = get_settings()
+    settings.jobs_dead_letter_queue_name = "jobs:dead-letter"
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+
+    redis = FakeRedis()
+    with TestClient(app):
+        with SessionLocal() as db:
+            job = create_job_run(
+                db,
+                task_name="system.fail",
+                payload={"reason": "boom"},
+                max_attempts=1,
+            )
+            db.commit()
+
+        _run_single_job(job.id, redis_client=redis, queue_name="jobs:queue")
+
+        with SessionLocal() as db:
+            event_types = [
+                event.event_type
+                for event in db.query(JobLifecycleEvent)
+                .filter(JobLifecycleEvent.job_id == job.id)
+                .order_by(JobLifecycleEvent.created_at.asc())
+                .all()
+            ]
+
+    assert event_types == ["queued", "running", "failed", "dead_letter"]
+    assert ("jobs:dead-letter", job.id) in redis.left
 

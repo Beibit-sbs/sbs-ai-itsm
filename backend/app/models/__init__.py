@@ -19,6 +19,7 @@ from app.models.integration_event_log import IntegrationEventLog
 from app.models.integration_mapping import IntegrationMapping
 from app.models.job_run import JobRun
 from app.models.job_queue_outbox import JobQueueOutbox
+from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.knowledge_article import KnowledgeArticle
 from app.models.knowledge_article_feedback import KnowledgeArticleFeedback
 from app.models.knowledge_category import KnowledgeCategory

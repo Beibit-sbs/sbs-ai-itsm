@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
+from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.job_run import JobRun
 
@@ -346,6 +347,23 @@ def test_get_job_by_id_returns_detail(app) -> None:
     assert detail["result"] == {"echoed": {"k": "v"}, "task_name": "system.echo", "attempt": 1}
 
 
+def test_get_job_events_returns_lifecycle_sequence(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        created = client.post(
+            "/api/v1/jobs/enqueue",
+            headers=_auth_headers(token, correlation_id="evt-seq-1"),
+            json={"task_name": "system.echo", "payload": {"k": "v"}},
+        ).json()
+        response = client.get(f"/api/v1/jobs/{created['id']}/events", headers=_auth_headers(token))
+
+    assert response.status_code == 200
+    events = response.json()
+    assert [event["event_type"] for event in events] == ["queued", "running", "success"]
+    assert all(event["job_id"] == created["id"] for event in events)
+    assert all(event["correlation_id"] == "evt-seq-1" for event in events)
+
+
 def test_get_job_unknown_id_returns_404(app) -> None:
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -386,7 +404,9 @@ def test_replay_dead_letter_job_requeues_in_redis_mode(app, monkeypatch) -> None
     assert body["error_message"] is None
     with SessionLocal() as db:
         outbox_rows = db.query(JobQueueOutbox).filter(JobQueueOutbox.job_id == created["id"]).all()
+        replay_events = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == created["id"]).all()
     assert len(outbox_rows) == 1
+    assert replay_events[-1].event_type == "replayed"
 
 
 def test_replay_rejects_non_dead_letter_job(app) -> None:

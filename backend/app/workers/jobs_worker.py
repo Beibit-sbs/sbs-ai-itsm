@@ -13,7 +13,7 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models.job_queue_outbox import JobQueueOutbox
-from app.services.jobs import execute_job, get_job
+from app.services.jobs import create_job_lifecycle_event, execute_job, get_job
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 
 logger = logging.getLogger("app.jobs.worker")
@@ -131,10 +131,19 @@ def _run_single_job(job_id: str, *, redis_client: Redis, queue_name: str) -> Non
                 base_seconds=settings.jobs_retry_base_seconds,
                 max_seconds=settings.jobs_retry_max_seconds,
             )
+            previous_status = job.status
             job.status = "queued"
             job.started_at = None
             job.finished_at = None
             job.duration_ms = None
+            create_job_lifecycle_event(
+                db,
+                job=job,
+                event_type="retry_scheduled",
+                previous_status=previous_status,
+                current_status=job.status,
+                payload={"attempt": job.attempts, "delay_seconds": delay},
+            )
             db.commit()
             _schedule_retry(redis_client, queue_name, job.id, delay)
             logger.warning(
@@ -148,7 +157,16 @@ def _run_single_job(job_id: str, *, redis_client: Redis, queue_name: str) -> Non
             )
             return
         if job.status == "failed" and job.attempts >= job.max_attempts:
+            previous_status = job.status
             job.status = "dead_letter"
+            create_job_lifecycle_event(
+                db,
+                job=job,
+                event_type="dead_letter",
+                previous_status=previous_status,
+                current_status=job.status,
+                payload={"attempt": job.attempts, "max_attempts": job.max_attempts},
+            )
             db.commit()
             redis_client.lpush(settings.jobs_dead_letter_queue_name, job.id)
             logger.error(

@@ -41,10 +41,17 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-OBSERVABILITY-007`
-- Latest stage implementation commit: `52500a2`
+- Last completed stage: `PLATFORM-CORE-ASYNC-EVENTS-008`
+- Latest stage implementation commit: `pending_local_commit_for_events_008`
 
 ## Stage Log (Newest First)
+
+- `pending_local_commit_for_events_008` PLATFORM-CORE-ASYNC-EVENTS-008
+  - Added durable `job_lifecycle_events` storage and additive migration.
+  - Emitted lifecycle events for queued, running, success, failed, retry_scheduled, dead_letter, and replayed transitions.
+  - Added `GET /jobs/{job_id}/events` for ordered lifecycle event inspection.
+  - Tests cover success, retry, dead-letter, and replay event flows.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-EVENTS-008-REPORT.md`
 
 - `52500a2` PLATFORM-CORE-ASYNC-OBSERVABILITY-007
   - Added `/jobs/outbox-diagnostics` for runbook-level queue/outbox triage.
@@ -96,17 +103,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-EVENTS-008`
+- `PLATFORM-CORE-ASYNC-EVENT-BUS-009`
 
 Scope proposal:
-- Add durable event stream abstraction for job lifecycle transitions.
-- Emit structured lifecycle events for queued, running, success, failure, dead-letter, and replay.
-- Prepare downstream hooks for notifications/automation/observability consumers.
+- Add relay/fan-out from durable lifecycle events into a streaming transport.
+- Define consumer-safe event payload contract for notifications, automation, and observability subscribers.
+- Track delivery attempts and replay safety for downstream event publishing.
 
 Exit criteria:
-- Lifecycle events are persisted or published durably from async job transitions.
-- Event payloads contain correlation ID, tenant, task name, job ID, and terminal status.
-- Tests cover event emission for success, retry, dead-letter, and replay flows.
+- Durable events can be published downstream without losing DB source-of-truth.
+- Event relay records delivery state and supports safe retry semantics.
+- Tests cover publish, retry, and idempotent relay behavior.
 
 ## Stage Execution Template
 

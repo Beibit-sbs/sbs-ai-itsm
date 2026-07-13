@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core.context import get_correlation_id
 from app.models.job_queue_outbox import JobQueueOutbox
+from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_run import JobRun
 
 logger = logging.getLogger("app.jobs")
@@ -87,6 +88,37 @@ def _deserialize(value: str | None) -> Any:
         return None
 
 
+def create_job_lifecycle_event(
+    db: Session,
+    *,
+    job: JobRun,
+    event_type: str,
+    previous_status: str | None,
+    current_status: str,
+    payload: dict[str, Any] | None = None,
+) -> JobLifecycleEvent:
+    event = JobLifecycleEvent(
+        id=_uuid(),
+        job_id=job.id,
+        event_type=event_type,
+        task_name=job.task_name,
+        tenant_id=job.tenant_id,
+        actor_user_id=job.actor_user_id,
+        correlation_id=job.correlation_id,
+        previous_status=previous_status,
+        current_status=current_status,
+        payload_json=_serialize(payload or {}),
+    )
+    db.add(event)
+    db.flush()
+    return event
+
+
+def list_job_events(db: Session, job_id: str) -> list[JobLifecycleEvent]:
+    stmt = select(JobLifecycleEvent).where(JobLifecycleEvent.job_id == job_id).order_by(JobLifecycleEvent.created_at.asc())
+    return list(db.scalars(stmt).all())
+
+
 def create_job_run(
     db: Session,
     *,
@@ -126,6 +158,14 @@ def create_job_run(
     )
     db.add(job)
     db.flush()
+    create_job_lifecycle_event(
+        db,
+        job=job,
+        event_type="queued",
+        previous_status=None,
+        current_status=job.status,
+        payload={"max_attempts": job.max_attempts},
+    )
     return job
 
 
@@ -134,11 +174,20 @@ async def execute_job(db: Session, job: JobRun) -> JobRun:
 
     task = registered_task(job.task_name)
     if task is None:
+        previous_status = job.status
         job.status = "failed"
         job.error_message = f"Task '{job.task_name}' is not registered"
         job.finished_at = _now()
         job.attempts = max(job.attempts, 1)
         db.flush()
+        create_job_lifecycle_event(
+            db,
+            job=job,
+            event_type="failed",
+            previous_status=previous_status,
+            current_status=job.status,
+            payload={"reason": "task_not_registered"},
+        )
         return job
 
     payload = _deserialize(job.payload_json) or {}
@@ -154,10 +203,19 @@ async def execute_job(db: Session, job: JobRun) -> JobRun:
         "attempt": job.attempts + 1,
     }
 
+    previous_status = job.status
     job.status = "running"
     job.started_at = _now()
     job.attempts += 1
     db.flush()
+    create_job_lifecycle_event(
+        db,
+        job=job,
+        event_type="running",
+        previous_status=previous_status,
+        current_status=job.status,
+        payload={"attempt": job.attempts},
+    )
 
     start = time.monotonic()
     try:
@@ -167,18 +225,36 @@ async def execute_job(db: Session, job: JobRun) -> JobRun:
             "job_failed",
             extra={"job_id": job.id, "task_name": job.task_name, "correlation_id": job.correlation_id},
         )
+        previous_status = job.status
         job.status = "failed"
         job.error_message = f"{exc.__class__.__name__}: {exc}"[:2000]
         job.finished_at = _now()
         job.duration_ms = int((time.monotonic() - start) * 1000)
         db.flush()
+        create_job_lifecycle_event(
+            db,
+            job=job,
+            event_type="failed",
+            previous_status=previous_status,
+            current_status=job.status,
+            payload={"attempt": job.attempts, "error": job.error_message},
+        )
         return job
 
+    previous_status = job.status
     job.status = "success"
     job.result_json = _serialize(result if isinstance(result, (dict, list)) else {"value": result})
     job.finished_at = _now()
     job.duration_ms = int((time.monotonic() - start) * 1000)
     db.flush()
+    create_job_lifecycle_event(
+        db,
+        job=job,
+        event_type="success",
+        previous_status=previous_status,
+        current_status=job.status,
+        payload={"attempt": job.attempts},
+    )
     return job
 
 
@@ -439,6 +515,7 @@ __all__ = [
     "JobQueueUnavailableError",
     "UnknownTaskError",
     "create_job_run",
+    "create_job_lifecycle_event",
     "create_outbox_entry",
     "enqueue_job_id",
     "enqueue_task",
@@ -446,6 +523,7 @@ __all__ = [
     "get_job",
     "job_summary",
     "list_jobs",
+    "list_job_events",
     "outbox_diagnostics",
     "outbox_summary",
     "register_task",
