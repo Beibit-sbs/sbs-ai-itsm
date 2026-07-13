@@ -59,6 +59,8 @@ type RequesterTemplate = {
   priority: string
   title: string
   description: string
+  summary: string
+  requiredFields: Array<'location' | 'requester_contact' | 'description'>
 }
 
 type TicketTimelineItem = {
@@ -158,6 +160,8 @@ const requesterTemplates: RequesterTemplate[] = [
     priority: 'HIGH',
     title: 'Нет доступа к интернету',
     description: 'Опишите, где и когда пропал доступ: корпус, кабинет/зона, устройство, вид ошибки.',
+    summary: 'Сбои Wi-Fi, отсутствие IP, нестабильный интернет в кабинете или зоне.',
+    requiredFields: ['location', 'description'],
   },
   {
     id: 'account',
@@ -166,6 +170,8 @@ const requesterTemplates: RequesterTemplate[] = [
     priority: 'HIGH',
     title: 'Проблема с доступом к учетной записи',
     description: 'Укажите систему, логин и текст ошибки. Если была смена устройства или телефона, добавьте это в описание.',
+    summary: 'Проблемы входа, блокировки аккаунта, восстановление пароля.',
+    requiredFields: ['requester_contact', 'description'],
   },
   {
     id: 'mail',
@@ -174,6 +180,8 @@ const requesterTemplates: RequesterTemplate[] = [
     priority: 'MEDIUM',
     title: 'Не работает корпоративная почта',
     description: 'Опишите проблему: отправка, получение, синхронизация или авторизация.',
+    summary: 'Не отправляются/не приходят письма, ошибки синхронизации.',
+    requiredFields: ['description'],
   },
   {
     id: 'software',
@@ -182,8 +190,16 @@ const requesterTemplates: RequesterTemplate[] = [
     priority: 'LOW',
     title: 'Запрос на установку программного обеспечения',
     description: 'Укажите название ПО, версию, цель использования и срок, когда доступ должен быть предоставлен.',
+    summary: 'Установка или обновление рабочего ПО по запросу пользователя.',
+    requiredFields: ['location', 'description'],
   },
 ]
+
+const requesterFieldLabels: Record<'location' | 'requester_contact' | 'description', string> = {
+  location: 'Локация',
+  requester_contact: 'Контакт заявителя',
+  description: 'Описание',
+}
 
 function formatDateTime(value: string | null | undefined) {
   if (!value) return '—'
@@ -292,6 +308,7 @@ export default function TicketsPage() {
   const [presetName, setPresetName] = useState('')
   const [activePresetId, setActivePresetId] = useState('')
   const [actionFeedback, setActionFeedback] = useState<ActionFeedback | null>(null)
+  const [createValidationError, setCreateValidationError] = useState<string | null>(null)
 
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [createForm, setCreateForm] = useState<TicketFormState>(emptyTicketForm)
@@ -305,6 +322,16 @@ export default function TicketsPage() {
   const [assignUserId, setAssignUserId] = useState('')
   const [commentBody, setCommentBody] = useState('')
   const [commentInternal, setCommentInternal] = useState(false)
+
+  const selectedRequesterTemplate = useMemo(
+    () => requesterTemplates.find((template) => template.category === createForm.category) ?? null,
+    [createForm.category]
+  )
+
+  const requesterRequiredFields = useMemo(() => {
+    if (!selectedRequesterTemplate) return ['description'] as Array<'location' | 'requester_contact' | 'description'>
+    return selectedRequesterTemplate.requiredFields
+  }, [selectedRequesterTemplate])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -380,6 +407,7 @@ export default function TicketsPage() {
   useEffect(() => {
     if (!session?.user) return
     if (!isCreateOpen) return
+    setCreateValidationError(null)
     if (isRequester) {
       setCreateForm((state) => ({
         ...state,
@@ -778,6 +806,7 @@ export default function TicketsPage() {
   }, [tickets])
 
   const applyRequesterTemplate = (template: RequesterTemplate) => {
+    setCreateValidationError(null)
     setCreateForm((state) => ({
       ...state,
       category: template.category,
@@ -788,6 +817,17 @@ export default function TicketsPage() {
       requester_contact: state.requester_contact,
     }))
     setIsCreateOpen(true)
+  }
+
+  const validateRequesterCreateForm = (payload: TicketFormState) => {
+    const missing: Array<'location' | 'requester_contact' | 'description'> = []
+    for (const field of requesterRequiredFields) {
+      const value = payload[field]
+      if (!value || !value.trim()) {
+        missing.push(field)
+      }
+    }
+    return missing
   }
 
   const toggleTicketSelection = (ticketId: string) => {
@@ -1306,9 +1346,64 @@ export default function TicketsPage() {
               className="modal-form"
               onSubmit={(event) => {
                 event.preventDefault()
+                if (isRequester) {
+                  const missingFields = validateRequesterCreateForm(createForm)
+                  if (missingFields.length > 0) {
+                    const requiredLabels = missingFields.map((field) => requesterFieldLabels[field]).join(', ')
+                    setCreateValidationError(`Заполните обязательные поля: ${requiredLabels}.`)
+                    return
+                  }
+                }
+                setCreateValidationError(null)
                 createMutation.mutate(createForm)
               }}
             >
+              {isRequester ? (
+                <section className="foundation-card" style={{ marginBottom: 12, gridTemplateColumns: '1fr', gap: 12 }}>
+                  <div>
+                    <p className="eyebrow">SERVICE CATALOG</p>
+                    <h3 style={{ margin: '4px 0 8px' }}>Выберите тип услуги</h3>
+                    <p className="muted" style={{ margin: 0 }}>Категория задает обязательные поля и ускоряет обработку обращения.</p>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+                    {requesterTemplates.map((template) => {
+                      const active = createForm.category === template.category
+                      return (
+                        <button
+                          key={template.id}
+                          type="button"
+                          className="ghost-button"
+                          style={{
+                            textAlign: 'left',
+                            display: 'grid',
+                            gap: 6,
+                            borderColor: active ? '#40a8ff' : undefined,
+                            background: active ? '#17344e' : undefined,
+                          }}
+                          onClick={() => applyRequesterTemplate(template)}
+                        >
+                          <strong>{template.label}</strong>
+                          <span className="muted" style={{ fontSize: '.82rem' }}>{template.summary}</span>
+                          <small className="muted">Обязательно: {template.requiredFields.map((field) => requesterFieldLabels[field]).join(', ')}</small>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </section>
+              ) : null}
+
+              {isRequester ? (
+                <section className="foundation-card" style={{ marginBottom: 12, gridTemplateColumns: '1fr', gap: 10 }}>
+                  <div className="detail-fields" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+                    <div><span>Каталог</span><strong>{selectedRequesterTemplate?.label ?? 'Общий запрос'}</strong></div>
+                    <div><span>Обязательные поля</span><strong>{requesterRequiredFields.map((field) => requesterFieldLabels[field]).join(', ')}</strong></div>
+                    <div><span>SLA приоритет</span><strong>{priorityLabel(createForm.priority)}</strong></div>
+                  </div>
+                </section>
+              ) : null}
+
+              {createValidationError ? <p className="error-message">{createValidationError}</p> : null}
+
               <div className="form-grid">
                 <label>
                   <span>Тема</span>
