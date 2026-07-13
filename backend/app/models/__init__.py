@@ -54,3 +54,9 @@ from app.models.ticket import Ticket
 from app.models.ticket_knowledge_link import TicketKnowledgeLink
 from app.models.user import User
 from app.models.webhook_endpoint import WebhookEndpoint
+from app.models.policy_rollout_metrics import PolicyRolloutMetricsHistory, PolicyRolloutMetricsSnapshot
+from app.models.metrics_analysis import (
+    PolicyMetricsAlertRule,
+    PolicyMetricsAnomalyDetection,
+    PolicyMetricsHealthAssessment,
+)

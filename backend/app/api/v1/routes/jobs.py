@@ -73,6 +73,14 @@ from app.services.jobs.metrics_infrastructure import (
     get_metrics_snapshot,
     get_metrics_trend,
 )
+from app.services.jobs.metrics_analysis import (
+    detect_anomalies,
+    analyze_metric_correlation,
+    AlertRule,
+    estimate_metric_trend,
+    get_anomaly_score,
+    analyze_rollout_health,
+)
 from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
@@ -656,6 +664,66 @@ class MetricsTrendResponse(BaseModel):
     latency_min: float | None
     latency_max: float | None
     latency_avg: float | None
+
+
+# Stage 033: Advanced Metrics Analysis Response Models
+
+
+class AnomalyDetectionResponse(BaseModel):
+    """Anomaly detection results."""
+    rollout_id: str
+    metric: str
+    detection_method: str
+    anomaly_indices: list[int]
+    anomaly_count: int
+    total_count: int
+    normal_mean: float | None
+    normal_std: float | None
+    threshold_used: float
+    anomalies_found: bool
+
+
+class MetricCorrelationResponse(BaseModel):
+    """Metric correlation analysis."""
+    metric_a: str
+    metric_b: str
+    correlation: float | None
+    correlation_strength: str
+    relationship: str | None
+    p_value: float | None
+    sample_size: int
+    interpretation: str
+
+
+class TrendForecastResponse(BaseModel):
+    """Trend forecast for metric."""
+    metric: str
+    forecast: list[float]
+    trend_direction: str
+    slope: float
+    r_squared: float
+    forecast_confidence: float
+    projection_text: str
+
+
+class AnomalyScoreResponse(BaseModel):
+    """Composite anomaly score."""
+    anomaly_score: float
+    severity: str
+    component_scores: dict[str, float]
+    primary_concern: str
+    secondary_concerns: list[str]
+
+
+class RolloutHealthResponse(BaseModel):
+    """Rollout health assessment."""
+    rollout_id: str
+    health_score: float
+    status: str  # healthy, degraded, critical, unknown
+    summary: str
+    metrics: dict[str, float]
+    recommendations: list[str]
+    time_window_minutes: int
 
 
 class JobEventConsumerRunbookRequest(BaseModel):
@@ -3922,5 +3990,241 @@ def get_metrics_trend_endpoint(
         latency_max=trend["latency_max"],
         latency_avg=trend["latency_avg"],
     )
+
+
+# Stage 033: Advanced Metrics Analysis Endpoints
+
+
+@router.post(
+    "/analysis/anomalies/{rollout_id}",
+    response_model=AnomalyDetectionResponse,
+    tags=["stage_033_analysis"],
+)
+async def detect_rollout_anomalies(
+    rollout_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    method: str = Query("zscore", description="Detection method: zscore, iqr, mad"),
+    minutes_back: int = Query(30, ge=1, le=10080),
+) -> AnomalyDetectionResponse:
+    """Detect anomalies in rollout metrics.
+    
+    Methods:
+    - zscore: Z-score method (2.5 threshold = 1.2% outliers)
+    - iqr: Interquartile range (1.5x multiplier)
+    - mad: Median absolute deviation (3.0x threshold)
+    
+    Returns anomaly indices and statistics.
+    """
+    _require_read(current_user)
+    
+    # Get historical metrics
+    history = get_metrics_history(db, rollout_id, limit=1000, minutes_back=minutes_back)
+    error_rates = [h.get("error_rate") for h in history if isinstance(h, dict) and h.get("error_rate") is not None]
+    
+    if not error_rates:
+        # Fallback: get from ORM
+        from app.models import PolicyRolloutMetricsHistory
+        cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back)
+        records = db.query(PolicyRolloutMetricsHistory).filter(
+            PolicyRolloutMetricsHistory.rollout_id == rollout_id,
+            PolicyRolloutMetricsHistory.collected_at >= cutoff_time,
+        ).all()
+        error_rates = [r.error_rate for r in records if r.error_rate is not None]
+    
+    analysis = detect_anomalies(error_rates, method=method)
+    
+    return AnomalyDetectionResponse(
+        rollout_id=rollout_id,
+        metric="error_rate",
+        detection_method=method,
+        anomaly_indices=analysis["anomaly_indices"],
+        anomaly_count=analysis["anomaly_count"],
+        total_count=analysis["total_count"],
+        normal_mean=analysis["normal_mean"],
+        normal_std=analysis["normal_std"],
+        threshold_used=analysis["threshold_used"],
+        anomalies_found=analysis["anomaly_count"] > 0,
+    )
+
+
+@router.post(
+    "/analysis/correlation/{rollout_id}",
+    response_model=MetricCorrelationResponse,
+    tags=["stage_033_analysis"],
+)
+async def correlate_rollout_metrics(
+    rollout_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    metric_a: str = Query("error_rate", description="First metric"),
+    metric_b: str = Query("latency_p99_ms", description="Second metric"),
+    minutes_back: int = Query(30, ge=1, le=10080),
+) -> MetricCorrelationResponse:
+    """Analyze correlation between two metrics.
+    
+    Returns Pearson correlation coefficient and strength assessment.
+    """
+    _require_read(current_user)
+    
+    # Get historical metrics
+    from app.models import PolicyRolloutMetricsHistory
+    cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back)
+    records = db.query(PolicyRolloutMetricsHistory).filter(
+        PolicyRolloutMetricsHistory.rollout_id == rollout_id,
+        PolicyRolloutMetricsHistory.collected_at >= cutoff_time,
+    ).order_by(PolicyRolloutMetricsHistory.collected_at.asc()).all()
+    
+    # Extract metric values
+    metric_fields = {
+        "error_rate": "error_rate",
+        "latency_p99_ms": "latency_p99_ms",
+        "throughput_eps": "throughput_eps",
+        "cpu_percent": "cpu_percent",
+        "memory_percent": "memory_percent",
+    }
+    
+    values_a = [getattr(r, metric_fields.get(metric_a), None) for r in records if metric_a in metric_fields]
+    values_b = [getattr(r, metric_fields.get(metric_b), None) for r in records if metric_b in metric_fields]
+    
+    values_a = [v for v in values_a if v is not None]
+    values_b = [v for v in values_b if v is not None]
+    
+    correlation = analyze_metric_correlation(values_a, values_b)
+    
+    return MetricCorrelationResponse(
+        metric_a=metric_a,
+        metric_b=metric_b,
+        correlation=correlation["correlation"],
+        correlation_strength=correlation["correlation_strength"],
+        relationship=correlation["relationship"],
+        p_value=correlation["p_value"],
+        sample_size=correlation["sample_size"],
+        interpretation=correlation["interpretation"],
+    )
+
+
+@router.post(
+    "/analysis/forecast/{rollout_id}",
+    response_model=TrendForecastResponse,
+    tags=["stage_033_analysis"],
+)
+async def forecast_metric_trend(
+    rollout_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    metric: str = Query("error_rate", description="Metric to forecast"),
+    minutes_back: int = Query(30, ge=1, le=10080),
+    forecast_steps: int = Query(5, ge=1, le=20),
+) -> TrendForecastResponse:
+    """Forecast metric trend using linear regression.
+    
+    Predicts next N values based on historical trend.
+    """
+    _require_read(current_user)
+    
+    # Get historical metrics
+    from app.models import PolicyRolloutMetricsHistory
+    cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back)
+    records = db.query(PolicyRolloutMetricsHistory).filter(
+        PolicyRolloutMetricsHistory.rollout_id == rollout_id,
+        PolicyRolloutMetricsHistory.collected_at >= cutoff_time,
+    ).order_by(PolicyRolloutMetricsHistory.collected_at.asc()).all()
+    
+    metric_fields = {
+        "error_rate": "error_rate",
+        "latency_p99_ms": "latency_p99_ms",
+        "throughput_eps": "throughput_eps",
+    }
+    
+    values = [getattr(r, metric_fields.get(metric), None) for r in records if metric in metric_fields]
+    values = [v for v in values if v is not None]
+    
+    forecast = estimate_metric_trend(values, forecast_steps=forecast_steps)
+    
+    return TrendForecastResponse(
+        metric=metric,
+        forecast=forecast["forecast"],
+        trend_direction=forecast["trend_direction"],
+        slope=forecast["slope"],
+        r_squared=forecast["r_squared"],
+        forecast_confidence=forecast["forecast_confidence"],
+        projection_text=forecast["projection_text"],
+    )
+
+
+@router.post(
+    "/analysis/anomaly-score/{rollout_id}",
+    response_model=AnomalyScoreResponse,
+    tags=["stage_033_analysis"],
+)
+async def calculate_anomaly_score(
+    rollout_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AnomalyScoreResponse:
+    """Calculate composite anomaly score for rollout.
+    
+    Combines error rate, latency, and throughput into single severity metric.
+    """
+    _require_read(current_user)
+    
+    # Get latest snapshot
+    snapshot = get_metrics_snapshot(db, rollout_id)
+    
+    if not snapshot:
+        return AnomalyScoreResponse(
+            anomaly_score=0.0,
+            severity="unknown",
+            component_scores={},
+            primary_concern="No metrics available",
+            secondary_concerns=[],
+        )
+    
+    score = get_anomaly_score(
+        error_rate=snapshot.get("error_rate"),
+        latency_p99_ms=snapshot.get("latency_p99_ms"),
+        throughput_eps=snapshot.get("throughput_eps"),
+        error_rate_baseline=snapshot.get("error_rate_baseline"),
+    )
+    
+    return AnomalyScoreResponse(
+        anomaly_score=score["anomaly_score"],
+        severity=score["severity"],
+        component_scores=score["component_scores"],
+        primary_concern=score["primary_concern"],
+        secondary_concerns=score["secondary_concerns"],
+    )
+
+
+@router.post(
+    "/analysis/health/{rollout_id}",
+    response_model=RolloutHealthResponse,
+    tags=["stage_033_analysis"],
+)
+async def assess_rollout_health(
+    rollout_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    minutes_back: int = Query(30, ge=1, le=10080),
+) -> RolloutHealthResponse:
+    """Assess overall health of rollout.
+    
+    Provides health score, status, and recommendations.
+    """
+    _require_read(current_user)
+    
+    health = analyze_rollout_health(db, rollout_id, minutes_back=minutes_back)
+    
+    return RolloutHealthResponse(
+        rollout_id=health["rollout_id"],
+        health_score=health["health_score"],
+        status=health["status"],
+        summary=health["summary"],
+        metrics=health["metrics"],
+        recommendations=health["recommendations"],
+        time_window_minutes=health["time_window_minutes"],
+    )
+
 
 
