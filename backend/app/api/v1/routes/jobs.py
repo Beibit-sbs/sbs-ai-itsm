@@ -48,6 +48,11 @@ from app.services.jobs.runbook_policy_state import (
     load_runbook_policy_into_settings,
     save_runbook_policy,
 )
+from app.services.jobs.policy_enforcement_integration import (
+    get_effective_policy,
+    get_policy_enforcement_status,
+    evaluate_policy_before_apply,
+)
 from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
@@ -457,6 +462,38 @@ class PolicyCanaryEvaluateGraduationResponse(BaseModel):
     error_rate_current: float | None
     error_rate_change_percent: float | None = None
     auto_rollback_confidence: float  # 0.0=safe, 1.0=rollback recommended
+
+
+# Stage 029: Policy Enforcement Integration Models
+class PolicyEnforcementStatusResponse(BaseModel):
+    """Current enforcement status for a consumer."""
+    consumer_name: str
+    policy_type: str
+    policy_applies: bool
+    global_policy_version: int
+    global_policy_set: bool
+    active_rollout: dict[str, object] | None = None  # None if no active rollout
+    consumer_override: dict[str, object] | None = None  # None if no override
+    enforcement_reason: str
+
+
+class GetEffectivePolicyResponse(BaseModel):
+    """Get the effective policy that would be applied to a consumer."""
+    consumer_name: str
+    policy_type: str
+    effective_policy: dict[str, object]
+    policy_version: int
+    enforcement_status: PolicyEnforcementStatusResponse
+
+
+class EvaluatePolicyBeforeApplyResponse(BaseModel):
+    """Dry-run evaluation of what policy would apply."""
+    consumer_name: str
+    policy_type: str
+    will_apply: bool
+    effective_policy: dict[str, object]
+    enforcement_status: PolicyEnforcementStatusResponse
+    warnings: list[str]
 
 
 class JobEventConsumerRunbookRequest(BaseModel):
@@ -3124,3 +3161,165 @@ async def enqueue_job_run(
     db.commit()
     db.refresh(job)
     return _to_response(job)
+
+
+# Stage 029: Policy Enforcement Integration Endpoints
+
+@router.get(
+    "/policy/enforcement/status/{consumer_name}/{policy_type}",
+    response_model=PolicyEnforcementStatusResponse,
+)
+def get_policy_enforcement_status_endpoint(
+    consumer_name: str,
+    policy_type: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PolicyEnforcementStatusResponse:
+    """Get current enforcement status for a consumer.
+    
+    Shows:
+    - Whether policy applies to consumer
+    - Active canary rollout info (if applicable)
+    - Consumer override info (if applicable)
+    - Reason for enforcement decision
+    """
+    _require_read(current_user)
+    
+    if policy_type not in ("runbook", "autoremediation"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="policy_type must be 'runbook' or 'autoremediation'",
+        )
+    
+    status_info = get_policy_enforcement_status(db, consumer_name, policy_type)
+    
+    return PolicyEnforcementStatusResponse(
+        consumer_name=status_info["consumer_name"],
+        policy_type=status_info["policy_type"],
+        policy_applies=status_info["policy_applies"],
+        global_policy_version=status_info["global_policy_version"],
+        global_policy_set=status_info["global_policy_set"],
+        active_rollout=status_info["active_rollout"],
+        consumer_override=status_info["consumer_override"],
+        enforcement_reason=status_info["enforcement_reason"],
+    )
+
+
+@router.get(
+    "/policy/enforcement/effective/{consumer_name}/{policy_type}",
+    response_model=GetEffectivePolicyResponse,
+)
+def get_effective_policy_endpoint(
+    consumer_name: str,
+    policy_type: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> GetEffectivePolicyResponse:
+    """Get the effective policy for a consumer.
+    
+    Combines:
+    1. Global policy (base)
+    2. Consumer override (merged on top)
+    3. Respects canary selection
+    
+    Returns empty policy if consumer should not receive policy.
+    """
+    _require_read(current_user)
+    
+    if policy_type not in ("runbook", "autoremediation"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="policy_type must be 'runbook' or 'autoremediation'",
+        )
+    
+    effective = get_effective_policy(db, consumer_name, policy_type)
+    status_info = get_policy_enforcement_status(db, consumer_name, policy_type)
+    
+    return GetEffectivePolicyResponse(
+        consumer_name=consumer_name,
+        policy_type=policy_type,
+        effective_policy=effective,
+        policy_version=status_info["global_policy_version"],
+        enforcement_status=PolicyEnforcementStatusResponse(
+            consumer_name=status_info["consumer_name"],
+            policy_type=status_info["policy_type"],
+            policy_applies=status_info["policy_applies"],
+            global_policy_version=status_info["global_policy_version"],
+            global_policy_set=status_info["global_policy_set"],
+            active_rollout=status_info["active_rollout"],
+            consumer_override=status_info["consumer_override"],
+            enforcement_reason=status_info["enforcement_reason"],
+        ),
+    )
+
+
+class PolicyEnforcementEvaluateRequest(BaseModel):
+    """Dry-run evaluation of what policy would apply."""
+    consumer_name: str = Field(..., min_length=1, max_length=80)
+    policy_type: str = Field(..., description="'runbook' or 'autoremediation'")
+
+
+@router.post(
+    "/policy/enforcement/evaluate",
+    response_model=EvaluatePolicyBeforeApplyResponse,
+)
+def evaluate_policy_before_apply_endpoint(
+    request: PolicyEnforcementEvaluateRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EvaluatePolicyBeforeApplyResponse:
+    """Dry-run evaluation: what policy would apply if applied now?
+    
+    Used for testing/validation before actual application.
+    
+    Returns:
+    - will_apply: whether policy will be applied
+    - effective_policy: the policy that would be applied (or empty dict)
+    - enforcement_status: detailed enforcement reason
+    - warnings: any warnings (e.g., stale consumer override)
+    """
+    _require_read(current_user)
+    
+    if request.policy_type not in ("runbook", "autoremediation"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="policy_type must be 'runbook' or 'autoremediation'",
+        )
+    
+    evaluation = evaluate_policy_before_apply(db, request.consumer_name, request.policy_type)
+    status_info = evaluation["enforcement_status"]
+    
+    log_audit(
+        db,
+        action="policy.enforcement.evaluated",
+        entity_type="consumer",
+        entity_id=request.consumer_name,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "consumer_name": request.consumer_name,
+            "policy_type": request.policy_type,
+            "will_apply": evaluation["will_apply"],
+            "warnings_count": len(evaluation["warnings"]),
+        },
+    )
+    db.commit()
+    
+    return EvaluatePolicyBeforeApplyResponse(
+        consumer_name=evaluation["consumer_name"],
+        policy_type=evaluation["policy_type"],
+        will_apply=evaluation["will_apply"],
+        effective_policy=evaluation["effective_policy"],
+        enforcement_status=PolicyEnforcementStatusResponse(
+            consumer_name=status_info["consumer_name"],
+            policy_type=status_info["policy_type"],
+            policy_applies=status_info["policy_applies"],
+            global_policy_version=status_info["global_policy_version"],
+            global_policy_set=status_info["global_policy_set"],
+            active_rollout=status_info["active_rollout"],
+            consumer_override=status_info["consumer_override"],
+            enforcement_reason=status_info["enforcement_reason"],
+        ),
+        warnings=evaluation["warnings"],
+    )
+
