@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
 from pydantic import BaseModel, Field
@@ -38,6 +38,7 @@ from app.services.jobs import (
     run_task,
 )
 from app.services.audit import log_audit
+from app.services.jobs.policy_state import PolicyVersionConflictError, load_policy_into_settings, save_policy
 from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
@@ -201,6 +202,7 @@ class JobEventConsumerDiagnosticsItemResponse(BaseModel):
     last_recovery_execute_at: datetime | None
     last_recovery_execute_actor_email: str | None
     effective_policy_hash: str
+    policy_version: int
     policy_canary_mode: bool
     last_policy_change_at: datetime | None
     last_policy_change_actor_email: str | None
@@ -218,6 +220,9 @@ class JobEventConsumersDiagnosticsResponse(BaseModel):
     governance_execute_actions_24h: int
     governance_compliant_actions_24h: int
     governance_compliance_rate_pct: float
+    policy_version: int
+    policy_rollouts_24h: int
+    recent_policy_rollouts: list[dict[str, object]]
     recent_recovery_actions: list[dict[str, object]]
     recent_autoremediation_actions: list[dict[str, object]]
     consumers: list[JobEventConsumerDiagnosticsItemResponse]
@@ -276,6 +281,7 @@ class JobEventConsumerAutoremediationPreviewResponse(BaseModel):
 
 class JobEventConsumerAutoremediationPolicyResponse(BaseModel):
     consumer_name: str
+    policy_version: int
     effective_policy: dict[str, object]
     suppression_windows_utc: list[str]
     error_denylist: list[str]
@@ -286,6 +292,7 @@ class JobEventConsumerAutoremediationPolicyResponse(BaseModel):
 
 class JobEventConsumerAutoremediationPolicyUpdateRequest(BaseModel):
     consumer_name: str = Field(default="notifications-consumer", min_length=1, max_length=80)
+    expected_version: int = Field(..., ge=1)
     enabled: bool | None = None
     allowed_event_types: list[str] | None = None
     min_failed_age_seconds: int | None = Field(default=None, ge=0)
@@ -441,6 +448,7 @@ def get_job_event_consumers_diagnostics(
 ) -> JobEventConsumersDiagnosticsResponse:
     _require_read(current_user)
     settings = get_settings()
+    policy_state = _policy_state(settings, db)
     data = job_event_consumers_diagnostics(
         db,
         stream_name=settings.jobs_event_stream_name,
@@ -455,16 +463,21 @@ def get_job_event_consumers_diagnostics(
     consumers = data.get("consumers", [])
     consumer_names = [str(item.get("consumer_name") or "") for item in consumers if isinstance(item, dict)]
     policy_changes = _latest_policy_change_map(db, consumer_names)
+    rollouts_24h, recent_rollouts = _recent_policy_rollouts(db)
     for item in consumers:
         if not isinstance(item, dict):
             continue
         consumer_name = str(item.get("consumer_name") or "")
         effective_policy = _effective_autoremediation_policy(settings, consumer_name)
         item["effective_policy_hash"] = _policy_hash(effective_policy)
+        item["policy_version"] = int(policy_state.get("version", 1) or 1)
         item["policy_canary_mode"] = bool(effective_policy.get("canary_mode", False))
         policy_change = policy_changes.get(consumer_name, {})
         item["last_policy_change_at"] = policy_change.get("created_at")
         item["last_policy_change_actor_email"] = policy_change.get("actor_email")
+    data["policy_version"] = int(policy_state.get("version", 1) or 1)
+    data["policy_rollouts_24h"] = int(rollouts_24h)
+    data["recent_policy_rollouts"] = recent_rollouts
     return JobEventConsumersDiagnosticsResponse(**data)
 
 
@@ -525,6 +538,37 @@ def _latest_policy_change_map(db: Session, consumer_names: list[str]) -> dict[st
     return out
 
 
+def _policy_state(settings, db: Session) -> dict[str, object]:
+    return load_policy_into_settings(db, settings)
+
+
+def _recent_policy_rollouts(db: Session) -> tuple[int, list[dict[str, object]]]:
+    window_start = datetime.now(UTC) - timedelta(hours=24)
+    rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "jobs.event_consumer_autoremediation_policy.update")
+            .where(AuditLog.created_at >= window_start)
+            .order_by(AuditLog.created_at.desc())
+            .limit(50)
+        ).all()
+    )
+    items: list[dict[str, object]] = []
+    for row in rows[:12]:
+        metadata = _decode(row.metadata_json)
+        metadata_map = metadata if isinstance(metadata, dict) else {}
+        items.append(
+            {
+                "consumer_name": str(metadata_map.get("consumer_name") or ""),
+                "old_policy_hash": str(metadata_map.get("old_policy_hash") or ""),
+                "new_policy_hash": str(metadata_map.get("new_policy_hash") or ""),
+                "actor_email": row.actor_email,
+                "created_at": row.created_at,
+            }
+        )
+    return len(rows), items
+
+
 @router.get(
     "/event-consumer-autoremediation-preview",
     response_model=JobEventConsumerAutoremediationPreviewResponse,
@@ -537,6 +581,7 @@ def get_job_event_consumer_autoremediation_preview(
 ) -> JobEventConsumerAutoremediationPreviewResponse:
     _require_read(current_user)
     settings = get_settings()
+    _policy_state(settings, db)
     selected_consumer = consumer_name or settings.jobs_event_consumer_name
     allowed = {settings.jobs_event_consumer_name, settings.jobs_event_automation_consumer_name}
     if selected_consumer not in allowed:
@@ -581,6 +626,7 @@ def get_job_event_consumer_autoremediation_policy(
 ) -> JobEventConsumerAutoremediationPolicyResponse:
     _require_read(current_user)
     settings = get_settings()
+    policy_state = _policy_state(settings, db)
     selected_consumer = consumer_name or settings.jobs_event_consumer_name
     allowed = {settings.jobs_event_consumer_name, settings.jobs_event_automation_consumer_name}
     if selected_consumer not in allowed:
@@ -591,6 +637,7 @@ def get_job_event_consumer_autoremediation_policy(
     policy_change = policy_changes.get(selected_consumer, {})
     return JobEventConsumerAutoremediationPolicyResponse(
         consumer_name=selected_consumer,
+        policy_version=int(policy_state.get("version", 1) or 1),
         effective_policy=effective_policy,
         suppression_windows_utc=[str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item],
         error_denylist=[str(item) for item in settings.jobs_event_autoremediation_error_denylist if item],
@@ -611,6 +658,7 @@ def update_job_event_consumer_autoremediation_policy(
 ) -> JobEventConsumerAutoremediationPolicyResponse:
     _require_enqueue(current_user)
     settings = get_settings()
+    policy_state = _policy_state(settings, db)
     allowed = {settings.jobs_event_consumer_name, settings.jobs_event_automation_consumer_name}
     if request.consumer_name not in allowed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown consumer_name")
@@ -639,15 +687,37 @@ def update_job_event_consumer_autoremediation_policy(
             profile[key] = value
 
     profile_map[request.consumer_name] = profile
-    settings.jobs_event_autoremediation_policy_profiles = profile_map
-    if request.suppression_windows_utc is not None:
-        settings.jobs_event_autoremediation_suppression_windows_utc = [
-            str(item).strip() for item in request.suppression_windows_utc if str(item).strip()
-        ]
-    if request.error_denylist is not None:
-        settings.jobs_event_autoremediation_error_denylist = [
-            str(item).strip() for item in request.error_denylist if str(item).strip()
-        ]
+
+    suppression_windows = (
+        [str(item).strip() for item in request.suppression_windows_utc if str(item).strip()]
+        if request.suppression_windows_utc is not None
+        else [str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item]
+    )
+    error_denylist = (
+        [str(item).strip() for item in request.error_denylist if str(item).strip()]
+        if request.error_denylist is not None
+        else [str(item) for item in settings.jobs_event_autoremediation_error_denylist if item]
+    )
+
+    payload = {
+        "policy_profiles": profile_map,
+        "suppression_windows_utc": suppression_windows,
+        "error_denylist": error_denylist,
+        "canary_mode": bool(settings.jobs_event_autoremediation_canary_mode),
+        "canary_limit_per_cycle": int(settings.jobs_event_autoremediation_canary_limit_per_cycle),
+    }
+
+    try:
+        saved_state = save_policy(
+            db,
+            settings,
+            payload=payload,
+            expected_version=request.expected_version,
+            actor_email=current_user.email,
+        )
+    except PolicyVersionConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     new_effective = _effective_autoremediation_policy(settings, request.consumer_name)
     old_hash = _policy_hash(old_effective)
@@ -663,18 +733,21 @@ def update_job_event_consumer_autoremediation_policy(
             "consumer_name": request.consumer_name,
             "old_policy_hash": old_hash,
             "new_policy_hash": new_hash,
-            "suppression_windows_utc": settings.jobs_event_autoremediation_suppression_windows_utc,
-            "error_denylist": settings.jobs_event_autoremediation_error_denylist,
+            "previous_version": int(policy_state.get("version", 1) or 1),
+            "new_version": int(saved_state.get("version", 1) or 1),
+            "suppression_windows_utc": suppression_windows,
+            "error_denylist": error_denylist,
         },
     )
     db.commit()
     return JobEventConsumerAutoremediationPolicyResponse(
         consumer_name=request.consumer_name,
+        policy_version=int(saved_state.get("version", 1) or 1),
         effective_policy=new_effective,
-        suppression_windows_utc=[str(item) for item in settings.jobs_event_autoremediation_suppression_windows_utc if item],
-        error_denylist=[str(item) for item in settings.jobs_event_autoremediation_error_denylist if item],
+        suppression_windows_utc=suppression_windows,
+        error_denylist=error_denylist,
         effective_policy_hash=new_hash,
-        last_policy_change_at=datetime.now(UTC),
+        last_policy_change_at=saved_state.get("updated_at"),
         last_policy_change_actor_email=current_user.email,
     )
 

@@ -390,6 +390,9 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "governance_execute_actions_24h",
         "governance_compliant_actions_24h",
         "governance_compliance_rate_pct",
+        "policy_version",
+        "policy_rollouts_24h",
+        "recent_policy_rollouts",
         "recent_recovery_actions",
         "recent_autoremediation_actions",
         "consumers",
@@ -422,6 +425,7 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "last_recovery_execute_at",
         "last_recovery_execute_actor_email",
         "effective_policy_hash",
+        "policy_version",
         "policy_canary_mode",
         "last_policy_change_at",
         "last_policy_change_actor_email",
@@ -514,11 +518,19 @@ def test_job_event_consumer_autoremediation_policy_runbook_update(app) -> None:
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
 
+        current = client.get(
+            "/api/v1/jobs/event-consumer-autoremediation-policy?consumer_name=notifications-consumer",
+            headers=_auth_headers(token),
+        )
+        assert current.status_code == 200, current.text
+        current_payload = current.json()
+
         update = client.post(
             "/api/v1/jobs/event-consumer-autoremediation-policy",
             headers=_auth_headers(token),
             json={
                 "consumer_name": "notifications-consumer",
+                "expected_version": current_payload["policy_version"],
                 "enabled": True,
                 "allowed_event_types": ["failed"],
                 "min_failed_age_seconds": 5,
@@ -538,6 +550,7 @@ def test_job_event_consumer_autoremediation_policy_runbook_update(app) -> None:
         assert updated["effective_policy"]["canary_limit_per_cycle"] == 1
         assert updated["suppression_windows_utc"] == ["01:00-02:00"]
         assert updated["error_denylist"] == ["permanent"]
+        assert updated["policy_version"] == current_payload["policy_version"] + 1
         assert updated["effective_policy_hash"]
 
         read_back = client.get(
@@ -547,7 +560,41 @@ def test_job_event_consumer_autoremediation_policy_runbook_update(app) -> None:
         assert read_back.status_code == 200, read_back.text
         payload = read_back.json()
         assert payload["effective_policy"]["canary_mode"] is True
+        assert payload["policy_version"] == updated["policy_version"]
         assert payload["effective_policy_hash"]
+
+
+def test_job_event_consumer_autoremediation_policy_rejects_stale_version(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        current = client.get(
+            "/api/v1/jobs/event-consumer-autoremediation-policy?consumer_name=notifications-consumer",
+            headers=_auth_headers(token),
+        )
+        assert current.status_code == 200, current.text
+        version = int(current.json()["policy_version"])
+
+        first = client.post(
+            "/api/v1/jobs/event-consumer-autoremediation-policy",
+            headers=_auth_headers(token),
+            json={
+                "consumer_name": "notifications-consumer",
+                "expected_version": version,
+                "enabled": True,
+            },
+        )
+        assert first.status_code == 200, first.text
+
+        stale = client.post(
+            "/api/v1/jobs/event-consumer-autoremediation-policy",
+            headers=_auth_headers(token),
+            json={
+                "consumer_name": "notifications-consumer",
+                "expected_version": version,
+                "enabled": False,
+            },
+        )
+        assert stale.status_code == 409, stale.text
 
 
 def test_event_consumer_recovery_dry_run_and_confirmed_execute(app) -> None:

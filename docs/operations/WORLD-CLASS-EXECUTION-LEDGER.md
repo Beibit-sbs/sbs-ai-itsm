@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-AUTOMATION-018`
-- Latest stage implementation commit: `8101961`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-POLICY-PERSISTENCE-019`
+- Latest stage implementation commit: `pending`
 
 ## Stage Log (Newest First)
+
+- `pending` PLATFORM-CORE-ASYNC-CONSUMER-POLICY-PERSISTENCE-019
+  - Added versioned DB persistence for auto-remediation policy state with startup/worker reload.
+  - Added optimistic concurrency token (`expected_version`) on runbook policy updates with `409` conflict on stale writes.
+  - Extended diagnostics with policy version and recent rollout history visibility.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-POLICY-PERSISTENCE-019-REPORT.md`
 
 - `8101961` PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-AUTOMATION-018
   - Added runbook API endpoints to inspect/update auto-remediation policy at runtime with audit trail.
@@ -164,17 +170,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-POLICY-PERSISTENCE-019`
+- `PLATFORM-CORE-ASYNC-CONSUMER-RATE-SHAPING-020`
 
 Scope proposal:
-- Persist auto-remediation policy state in DB (versioned row model) with startup reload into runtime settings.
-- Add optimistic concurrency/version token on policy update endpoint to prevent operator overwrite races.
-- Expose policy version and rollout history in diagnostics for post-incident traceability.
+- Add per-consumer rate-shaping guardrails (burst + steady-state budgets) for auto-remediation cycles.
+- Add emergency brake mode with explicit operator reset to halt auto-remediation after repeated unsafe outcomes.
+- Add diagnostics for budget consumption and brake triggers with runbook recommendations.
 
 Exit criteria:
-- Policy survives service restart and remains consistent across backend/worker processes.
-- Concurrent updates are safely rejected on stale version.
-- Diagnostics show active policy version and recent version transitions.
+- Auto-remediation respects configured burst/steady budgets per consumer.
+- Emergency brake can halt automatic actions and requires explicit operator release.
+- Diagnostics expose budget and brake states clearly with actionable operator guidance.
 
 ## Stage Execution Template
 

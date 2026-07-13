@@ -30,6 +30,7 @@ from app.services.jobs import (
     job_event_consumer_autoremediation_safety_state,
     is_autoremediation_suppressed_now,
 )
+from app.services.jobs.policy_state import load_policy_into_settings
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 
 logger = logging.getLogger("app.jobs.worker")
@@ -357,6 +358,15 @@ def _retry_failed_event_consumers_batch(
 
 def _run_auto_remediation_cycle(*, max_per_consumer: int | None = None) -> int:
     settings = get_settings()
+    bootstrap_db = SessionLocal()
+    try:
+        load_policy_into_settings(bootstrap_db, settings)
+    except Exception:
+        bootstrap_db.rollback()
+        logger.exception("job_event_consumer_policy_state_load_failed")
+    finally:
+        bootstrap_db.close()
+
     if not settings.jobs_event_autoremediation_enabled:
         return 0
 

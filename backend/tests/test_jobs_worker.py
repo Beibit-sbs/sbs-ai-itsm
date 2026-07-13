@@ -446,6 +446,7 @@ def test_auto_remediation_requeues_exhausted_failed_deliveries(app, monkeypatch)
 
     monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
     monkeypatch.setattr(jobs_worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(jobs_worker, "load_policy_into_settings", lambda db, current: {"version": 1})
     monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediation_safety_state", _fake_safety)
     monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediate", _fake_autoremediate)
 
@@ -478,6 +479,7 @@ def test_auto_remediation_respects_cooldown_guard(app, monkeypatch) -> None:
 
     monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
     monkeypatch.setattr(jobs_worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(jobs_worker, "load_policy_into_settings", lambda db, current: {"version": 1})
 
     with TestClient(app):
         with SessionLocal() as db:
@@ -536,6 +538,7 @@ def test_auto_remediation_skips_when_suppression_window_active(app, monkeypatch)
 
     monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
     monkeypatch.setattr(jobs_worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(jobs_worker, "load_policy_into_settings", lambda db, current: {"version": 1})
     monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediate", _fake_autoremediate)
 
     with TestClient(app):
@@ -596,6 +599,7 @@ def test_auto_remediation_uses_policy_profile_overrides(app, monkeypatch) -> Non
 
     monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
     monkeypatch.setattr(jobs_worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(jobs_worker, "load_policy_into_settings", lambda db, current: {"version": 1})
     monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediation_safety_state", _fake_safety)
     monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediate", _fake_autoremediate)
 
@@ -650,6 +654,7 @@ def test_auto_remediation_applies_canary_limit(app, monkeypatch) -> None:
 
     monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
     monkeypatch.setattr(jobs_worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(jobs_worker, "load_policy_into_settings", lambda db, current: {"version": 1})
     monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediation_safety_state", _fake_safety)
     monkeypatch.setattr(jobs_worker, "job_event_consumer_autoremediate", _fake_autoremediate)
 
