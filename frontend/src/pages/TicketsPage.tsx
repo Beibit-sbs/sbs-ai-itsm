@@ -306,6 +306,10 @@ function canRequesterReopen(status: string) {
   return status === 'RESOLVED' || status === 'CLOSED'
 }
 
+function canHandoffToRequester(status: string) {
+  return ['TRIAGE', 'ASSIGNED', 'IN_PROGRESS', 'WAITING_USER'].includes(status)
+}
+
 function formatMinutes(value: number | null | undefined) {
   if (value == null) return '—'
   if (value < 60) return `${value} мин`
@@ -356,6 +360,7 @@ export default function TicketsPage() {
   const [assignUserId, setAssignUserId] = useState('')
   const [commentBody, setCommentBody] = useState('')
   const [commentInternal, setCommentInternal] = useState(false)
+  const [selectedOperatorTemplateId, setSelectedOperatorTemplateId] = useState('')
 
   const selectedRequesterTemplate = useMemo(
     () => requesterTemplates.find((template) => template.category === createForm.category) ?? null,
@@ -591,6 +596,37 @@ export default function TicketsPage() {
     },
   })
 
+  const handoffToRequesterMutation = useMutation({
+    mutationFn: async (payload: { ticketId: string; body: string; shouldTransition: boolean }) => {
+      const token = session?.access_token ?? ''
+      await addTicketComment(token, payload.ticketId, { body: payload.body, is_internal: false })
+      if (payload.shouldTransition) {
+        await transitionTicket(token, payload.ticketId, {
+          status: 'WAITING_USER',
+          comment: 'Ожидаем уточнение от пользователя',
+          is_internal: false,
+        })
+      }
+    },
+    onSuccess: async (_, variables) => {
+      setCommentBody('')
+      setCommentInternal(false)
+      setActionFeedback({
+        kind: 'success',
+        message: variables.shouldTransition
+          ? 'Запрос отправлен, заявка переведена в статус Ожидает пользователя.'
+          : 'Запрос пользователю отправлен.',
+      })
+      await queryClient.invalidateQueries({ queryKey: ['ticket', session?.access_token, variables.ticketId] })
+      await queryClient.invalidateQueries({ queryKey: ['ticket-history', session?.access_token, variables.ticketId] })
+      await queryClient.invalidateQueries({ queryKey: ['tickets'] })
+      await queryClient.invalidateQueries({ queryKey: ['notifications-unread-count'] })
+    },
+    onError: (error) => {
+      setActionFeedback({ kind: 'error', message: error instanceof Error ? error.message : 'Не удалось передать запрос пользователю.' })
+    },
+  })
+
   const bulkMutation = useMutation({
     mutationFn: async (payload: { ticketIds: string[]; status?: string; assigneeId?: string; comment?: string }): Promise<BulkActionResult> => {
       const token = session?.access_token ?? ''
@@ -687,6 +723,21 @@ export default function TicketsPage() {
     if (isRequester || !detail) return []
     return operatorReplyTemplates.filter((template) => template.statuses.includes(detail.status) || template.statuses.includes(detail.category))
   }, [detail, isRequester])
+
+  const selectedOperatorTemplate = useMemo(
+    () => availableOperatorTemplates.find((template) => template.id === selectedOperatorTemplateId) ?? availableOperatorTemplates[0] ?? null,
+    [availableOperatorTemplates, selectedOperatorTemplateId]
+  )
+
+  useEffect(() => {
+    if (availableOperatorTemplates.length === 0) {
+      setSelectedOperatorTemplateId('')
+      return
+    }
+    setSelectedOperatorTemplateId((current) =>
+      availableOperatorTemplates.some((template) => template.id === current) ? current : availableOperatorTemplates[0].id
+    )
+  }, [availableOperatorTemplates])
 
   const timelineItems = useMemo<TicketTimelineItem[]>(() => {
     if (!detail) return []
@@ -1693,7 +1744,9 @@ export default function TicketsPage() {
                                   key={template.id}
                                   type="button"
                                   className="ghost-button"
+                                  style={{ borderColor: selectedOperatorTemplateId === template.id ? '#40a8ff' : undefined }}
                                   onClick={() => {
+                                    setSelectedOperatorTemplateId(template.id)
                                     setCommentInternal(false)
                                     setCommentBody(template.body)
                                   }}
@@ -1723,16 +1776,32 @@ export default function TicketsPage() {
                             <button
                               type="button"
                               className="ghost-button"
-                              disabled={commentMutation.isPending}
+                              disabled={handoffToRequesterMutation.isPending || !selectedOperatorTemplate}
                               onClick={() =>
-                                commentMutation.mutate({
+                                handoffToRequesterMutation.mutate({
                                   ticketId: detail.id,
-                                  body: availableOperatorTemplates[0]?.body ?? commentBody,
-                                  is_internal: false,
+                                  body: selectedOperatorTemplate?.body ?? commentBody,
+                                  shouldTransition: false,
                                 })
                               }
                             >
-                              Отправить шаблон
+                              {handoffToRequesterMutation.isPending ? 'Отправка...' : 'Отправить шаблон'}
+                            </button>
+                          ) : null}
+                          {!isRequester && canHandoffToRequester(detail.status) && detail.status !== 'WAITING_USER' && availableOperatorTemplates.length > 0 ? (
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              disabled={handoffToRequesterMutation.isPending || !selectedOperatorTemplate}
+                              onClick={() =>
+                                handoffToRequesterMutation.mutate({
+                                  ticketId: detail.id,
+                                  body: selectedOperatorTemplate?.body ?? commentBody,
+                                  shouldTransition: true,
+                                })
+                              }
+                            >
+                              {handoffToRequesterMutation.isPending ? 'Применение...' : 'Запросить данные и перевести в Ожидает пользователя'}
                             </button>
                           ) : null}
                         </div>
