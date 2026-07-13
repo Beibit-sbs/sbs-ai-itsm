@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RATE-SHAPING-020`
-- Latest stage implementation commit: `pending`
+- Latest stage implementation commit: `f844c6c`
 
 ## Stage Log (Newest First)
 
-- `pending` PLATFORM-CORE-ASYNC-CONSUMER-RATE-SHAPING-020
+- `f844c6c` PLATFORM-CORE-ASYNC-CONSUMER-RATE-SHAPING-020
   - Added burst/steady rate-shaping guardrails for per-consumer auto-remediation execution.
   - Added emergency brake activation path on repeated auto-remediation errors and explicit brake reset endpoint.
   - Extended diagnostics with budget consumption and brake-state visibility for operator runbooks.
