@@ -205,4 +205,28 @@ def auto_rollback_canary(
     rollout.auto_rollback_triggered = True
     rollout.auto_rollback_reason = reason
     
+    db.add(rollout)
+    db.commit()
+    db.refresh(rollout)
     return rollout
+
+
+def get_rollout_for_approval(
+    db: Session,
+    approval_id: str,
+) -> PolicyCanaryRollout | None:
+    """Get most recent rollout for approval request.
+    
+    Args:
+        db: Database session
+        approval_id: PolicyApprovalRequest ID
+    
+    Returns:
+        Most recent PolicyCanaryRollout or None
+    """
+    return (
+        db.query(PolicyCanaryRollout)
+        .filter_by(approval_request_id=approval_id)
+        .order_by(PolicyCanaryRollout.started_at.desc())
+        .first()
+    )

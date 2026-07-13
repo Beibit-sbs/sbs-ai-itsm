@@ -433,6 +433,32 @@ class PolicyCanaryGraduateRequest(BaseModel):
     new_canary_percentage: int = Field(ge=5, le=100)
 
 
+class PolicyCanaryMetricsUpdateRequest(BaseModel):
+    """Update current metrics during canary rollout."""
+    rollout_id: str
+    error_rate: float = Field(ge=0.0, le=100.0)
+    latency_p99_ms: int = Field(ge=0)
+    throughput_eps: float = Field(ge=0.0)
+
+
+class PolicyCanaryAutoRollbackRequest(BaseModel):
+    """Request manual auto-rollback of canary."""
+    rollout_id: str
+    reason: str = Field(..., min_length=10, max_length=255)
+
+
+class PolicyCanaryEvaluateGraduationResponse(BaseModel):
+    """Evaluate if canary is safe to graduate."""
+    rollout_id: str
+    current_canary_percentage: int
+    is_safe_to_graduate: bool
+    safety_reason: str
+    error_rate_baseline: float | None
+    error_rate_current: float | None
+    error_rate_change_percent: float | None = None
+    auto_rollback_confidence: float  # 0.0=safe, 1.0=rollback recommended
+
+
 class JobEventConsumerRunbookRequest(BaseModel):
     consumer_name: str = Field(default="notifications-consumer", min_length=1, max_length=80)
     runbook_code: str = Field(..., min_length=3, max_length=120)
@@ -2194,6 +2220,187 @@ def complete_policy_rollout(
         policy_type=rollout.policy_type,
         current_canary_percentage=rollout.current_canary_percentage,
         affected_consumers_count=200,  # 100% = all consumers
+        status=rollout.status,
+        error_rate_baseline=rollout.error_rate_baseline,
+        error_rate_current=rollout.error_rate_current,
+        auto_rollback_triggered=rollout.auto_rollback_triggered,
+        auto_rollback_reason=rollout.auto_rollback_reason,
+        started_at=rollout.started_at,
+        completed_at=rollout.completed_at,
+    )
+
+
+@router.post(
+    "/policy/{rollout_id}/update-metrics",
+    response_model=PolicyCanaryRolloutResponse,
+)
+def update_canary_rollout_metrics(
+    rollout_id: str,
+    request: PolicyCanaryMetricsUpdateRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PolicyCanaryRolloutResponse:
+    """Update current metrics during canary rollout monitoring."""
+    from app.models.policy_canary_rollout import PolicyCanaryRollout
+    from app.services.jobs.policy_metrics_monitoring import update_rollout_metrics
+
+    _require_read(current_user)
+
+    rollout = db.query(PolicyCanaryRollout).filter_by(id=rollout_id).first()
+    if not rollout:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rollout not found")
+    
+    if rollout.status != "in_progress":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Can only update metrics on in-progress rollouts; status is '{rollout.status}'",
+        )
+
+    metrics = {
+        "error_rate": request.error_rate,
+        "latency_p99_ms": request.latency_p99_ms,
+        "throughput_eps": request.throughput_eps,
+    }
+
+    update_rollout_metrics(db, rollout_id, metrics)
+
+    log_audit(
+        db,
+        action="policy.canary.metrics_updated",
+        entity_type="policy_canary_rollout",
+        entity_id=rollout_id,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "rollout_id": rollout_id,
+            "error_rate": request.error_rate,
+            "latency_p99_ms": request.latency_p99_ms,
+            "throughput_eps": request.throughput_eps,
+        },
+    )
+    db.commit()
+    db.refresh(rollout)
+
+    return PolicyCanaryRolloutResponse(
+        rollout_id=rollout.id,
+        approval_request_id=rollout.approval_request_id,
+        policy_type=rollout.policy_type,
+        current_canary_percentage=rollout.current_canary_percentage,
+        affected_consumers_count=rollout.affected_consumers_count,
+        status=rollout.status,
+        error_rate_baseline=rollout.error_rate_baseline,
+        error_rate_current=rollout.error_rate_current,
+        auto_rollback_triggered=rollout.auto_rollback_triggered,
+        auto_rollback_reason=rollout.auto_rollback_reason,
+        started_at=rollout.started_at,
+        completed_at=rollout.completed_at,
+    )
+
+
+@router.post(
+    "/policy/{rollout_id}/evaluate-graduation",
+    response_model=PolicyCanaryEvaluateGraduationResponse,
+)
+def evaluate_canary_graduation_safety(
+    rollout_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PolicyCanaryEvaluateGraduationResponse:
+    """Evaluate if canary rollout is safe to graduate to next percentage."""
+    from app.models.policy_canary_rollout import PolicyCanaryRollout
+    from app.services.jobs.policy_metrics_monitoring import (
+        evaluate_safe_to_graduate,
+        estimate_auto_rollback_confidence,
+    )
+
+    _require_read(current_user)
+
+    rollout = db.query(PolicyCanaryRollout).filter_by(id=rollout_id).first()
+    if not rollout:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rollout not found")
+
+    is_safe, reason = evaluate_safe_to_graduate(rollout)
+    confidence = estimate_auto_rollback_confidence(
+        rollout.error_rate_baseline,
+        rollout.error_rate_current,
+    )
+
+    error_rate_change_percent = None
+    if rollout.error_rate_baseline is not None and rollout.error_rate_current is not None:
+        if rollout.error_rate_baseline != 0:
+            error_rate_change_percent = (
+                (rollout.error_rate_current - rollout.error_rate_baseline)
+                / rollout.error_rate_baseline
+            ) * 100
+
+    return PolicyCanaryEvaluateGraduationResponse(
+        rollout_id=rollout.id,
+        current_canary_percentage=rollout.current_canary_percentage,
+        is_safe_to_graduate=is_safe,
+        safety_reason=reason,
+        error_rate_baseline=rollout.error_rate_baseline,
+        error_rate_current=rollout.error_rate_current,
+        error_rate_change_percent=error_rate_change_percent,
+        auto_rollback_confidence=confidence,
+    )
+
+
+@router.post(
+    "/policy/{rollout_id}/auto-rollback",
+    response_model=PolicyCanaryRolloutResponse,
+)
+def trigger_canary_auto_rollback(
+    rollout_id: str,
+    request: PolicyCanaryAutoRollbackRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PolicyCanaryRolloutResponse:
+    """Trigger auto-rollback of canary rollout (manual invocation)."""
+    from app.models.policy_canary_rollout import PolicyCanaryRollout
+    from app.models.policy_approval_request import PolicyApprovalRequest
+    from app.services.jobs.policy_canary_enforcement import auto_rollback_canary
+
+    _require_enqueue(current_user)
+
+    rollout = db.query(PolicyCanaryRollout).filter_by(id=rollout_id).first()
+    if not rollout:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rollout not found")
+    
+    if rollout.status != "in_progress":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Can only rollback in-progress rollouts; status is '{rollout.status}'",
+        )
+
+    auto_rollback_canary(db, rollout_id, request.reason)
+
+    # Update approval request if it exists
+    approval = db.query(PolicyApprovalRequest).filter_by(id=rollout.approval_request_id).first()
+    if approval:
+        approval.status = "rolled_out"  # Rollout completed (in rolled-back state)
+
+    log_audit(
+        db,
+        action="policy.canary.auto_rollback",
+        entity_type="policy_canary_rollout",
+        entity_id=rollout_id,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "rollout_id": rollout_id,
+            "rollback_reason": request.reason,
+            "previous_canary_percentage": rollout.current_canary_percentage,
+        },
+    )
+    db.commit()
+    db.refresh(rollout)
+
+    return PolicyCanaryRolloutResponse(
+        rollout_id=rollout.id,
+        approval_request_id=rollout.approval_request_id,
+        policy_type=rollout.policy_type,
+        current_canary_percentage=rollout.current_canary_percentage,
+        affected_consumers_count=rollout.affected_consumers_count,
         status=rollout.status,
         error_rate_baseline=rollout.error_rate_baseline,
         error_rate_current=rollout.error_rate_current,
