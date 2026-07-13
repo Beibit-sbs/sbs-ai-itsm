@@ -41,6 +41,11 @@ type TicketFilterPreset = {
   pageSize: number
 }
 
+type ActionFeedback = {
+  kind: 'success' | 'error'
+  message: string
+}
+
 type TicketFormState = {
   title: string
   description: string
@@ -212,6 +217,7 @@ export default function TicketsPage() {
   const [presets, setPresets] = useState<TicketFilterPreset[]>([])
   const [presetName, setPresetName] = useState('')
   const [activePresetId, setActivePresetId] = useState('')
+  const [actionFeedback, setActionFeedback] = useState<ActionFeedback | null>(null)
 
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [createForm, setCreateForm] = useState<TicketFormState>(emptyTicketForm)
@@ -240,6 +246,12 @@ export default function TicketsPage() {
   useEffect(() => {
     setSelectedTicketIds([])
   }, [queue, debouncedSearch, statusFilter, priorityFilter, categoryFilter, assigneeFilter, sortBy, sortDir, page, pageSize])
+
+  useEffect(() => {
+    if (!actionFeedback) return
+    const timer = window.setTimeout(() => setActionFeedback(null), 5000)
+    return () => window.clearTimeout(timer)
+  }, [actionFeedback])
 
   useEffect(() => {
     if (!session?.user?.id) {
@@ -370,8 +382,12 @@ export default function TicketsPage() {
       setIsCreateOpen(false)
       setCreateForm(emptyTicketForm)
       setSelectedTicketId(ticket.id)
+      setActionFeedback({ kind: 'success', message: `Заявка ${ticket.ticket_number ?? ''} создана.`.trim() })
       await queryClient.invalidateQueries({ queryKey: ['tickets'] })
       await queryClient.invalidateQueries({ queryKey: ['notifications-unread-count'] })
+    },
+    onError: (error) => {
+      setActionFeedback({ kind: 'error', message: error instanceof Error ? error.message : 'Не удалось создать заявку.' })
     },
   })
 
@@ -384,10 +400,14 @@ export default function TicketsPage() {
       }),
     onSuccess: async (ticket) => {
       setTransitionComment('')
+      setActionFeedback({ kind: 'success', message: `Статус заявки ${ticket.ticket_number ?? ''} обновлен.`.trim() })
       await queryClient.invalidateQueries({ queryKey: ['tickets'] })
       await queryClient.invalidateQueries({ queryKey: ['ticket', session?.access_token, ticket.id] })
       await queryClient.invalidateQueries({ queryKey: ['ticket-history', session?.access_token, ticket.id] })
       await queryClient.invalidateQueries({ queryKey: ['notifications-unread-count'] })
+    },
+    onError: (error) => {
+      setActionFeedback({ kind: 'error', message: error instanceof Error ? error.message : 'Не удалось изменить статус.' })
     },
   })
 
@@ -396,10 +416,14 @@ export default function TicketsPage() {
       assignTicket(session?.access_token ?? '', payload.ticketId, payload),
     onSuccess: async (ticket) => {
       setAssignComment('')
+      setActionFeedback({ kind: 'success', message: `Исполнитель по заявке ${ticket.ticket_number ?? ''} обновлен.`.trim() })
       await queryClient.invalidateQueries({ queryKey: ['tickets'] })
       await queryClient.invalidateQueries({ queryKey: ['ticket', session?.access_token, ticket.id] })
       await queryClient.invalidateQueries({ queryKey: ['ticket-history', session?.access_token, ticket.id] })
       await queryClient.invalidateQueries({ queryKey: ['notifications-unread-count'] })
+    },
+    onError: (error) => {
+      setActionFeedback({ kind: 'error', message: error instanceof Error ? error.message : 'Не удалось назначить исполнителя.' })
     },
   })
 
@@ -409,10 +433,14 @@ export default function TicketsPage() {
     onSuccess: async (_, variables) => {
       setCommentBody('')
       setCommentInternal(false)
+      setActionFeedback({ kind: 'success', message: 'Комментарий добавлен.' })
       await queryClient.invalidateQueries({ queryKey: ['ticket', session?.access_token, variables.ticketId] })
       await queryClient.invalidateQueries({ queryKey: ['ticket-history', session?.access_token, variables.ticketId] })
       await queryClient.invalidateQueries({ queryKey: ['tickets'] })
       await queryClient.invalidateQueries({ queryKey: ['notifications-unread-count'] })
+    },
+    onError: (error) => {
+      setActionFeedback({ kind: 'error', message: error instanceof Error ? error.message : 'Не удалось добавить комментарий.' })
     },
   })
 
@@ -438,8 +466,12 @@ export default function TicketsPage() {
     onSuccess: async () => {
       setSelectedTicketIds([])
       setIsBulkPreviewOpen(false)
+      setActionFeedback({ kind: 'success', message: 'Массовая операция успешно применена.' })
       await queryClient.invalidateQueries({ queryKey: ['tickets'] })
       await queryClient.invalidateQueries({ queryKey: ['notifications-unread-count'] })
+    },
+    onError: (error) => {
+      setActionFeedback({ kind: 'error', message: error instanceof Error ? error.message : 'Не удалось выполнить массовую операцию.' })
     },
   })
 
@@ -582,6 +614,23 @@ export default function TicketsPage() {
     setActivePresetId('')
   }
 
+  const applyKpiFilter = (filter: 'overdue' | 'dueToday' | 'unassigned' | 'critical') => {
+    setPage(1)
+    if (filter === 'overdue') {
+      setQueue('sla_breached')
+      return
+    }
+    if (filter === 'dueToday') {
+      setQueue('due_today')
+      return
+    }
+    if (filter === 'unassigned') {
+      setQueue('unassigned')
+      return
+    }
+    setQueue('critical')
+  }
+
   return (
     <AppShell
       title="Заявки"
@@ -597,6 +646,17 @@ export default function TicketsPage() {
           Создать заявку
         </button>
       </section>
+
+      {actionFeedback ? (
+        <section
+          className="foundation-card"
+          style={{ marginTop: 12, borderColor: actionFeedback.kind === 'success' ? '#15803d' : '#b42318', background: actionFeedback.kind === 'success' ? '#f0fdf4' : '#fef2f2' }}
+        >
+          <p style={{ margin: 0, color: actionFeedback.kind === 'success' ? '#166534' : '#b42318', fontWeight: 600 }}>
+            {actionFeedback.message}
+          </p>
+        </section>
+      ) : null}
 
       <section className="module-subnav" style={{ marginTop: 18 }}>
         {queueOptions.map((item) => (
@@ -820,22 +880,22 @@ export default function TicketsPage() {
 
       <section className="foundation-card" style={{ marginTop: 12 }}>
         <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
-          <div className="inline-field">
+          <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('overdue')}>
             <span>SLA просрочено</span>
             <strong style={{ color: triageStats.overdue > 0 ? '#b42318' : undefined }}>{triageStats.overdue}</strong>
-          </div>
-          <div className="inline-field">
+          </button>
+          <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('dueToday')}>
             <span>На сегодня</span>
             <strong style={{ color: triageStats.dueToday > 0 ? '#b54708' : undefined }}>{triageStats.dueToday}</strong>
-          </div>
-          <div className="inline-field">
+          </button>
+          <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('unassigned')}>
             <span>Неназначенные</span>
             <strong>{triageStats.unassigned}</strong>
-          </div>
-          <div className="inline-field">
+          </button>
+          <button type="button" className="inline-field ghost-button" style={{ textAlign: 'left', display: 'block', minHeight: 82 }} onClick={() => applyKpiFilter('critical')}>
             <span>Критичные</span>
             <strong style={{ color: triageStats.critical > 0 ? '#b42318' : undefined }}>{triageStats.critical}</strong>
-          </div>
+          </button>
         </div>
       </section>
 
