@@ -21,6 +21,7 @@ from redis import Redis
 from sqlalchemy import Select, case, func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.context import get_correlation_id
 from app.models.job_queue_outbox import JobQueueOutbox
 from app.models.job_lifecycle_event import JobLifecycleEvent
@@ -97,6 +98,7 @@ def create_job_lifecycle_event(
     current_status: str,
     payload: dict[str, Any] | None = None,
 ) -> JobLifecycleEvent:
+    settings = get_settings()
     event = JobLifecycleEvent(
         id=_uuid(),
         job_id=job.id,
@@ -108,6 +110,13 @@ def create_job_lifecycle_event(
         previous_status=previous_status,
         current_status=current_status,
         payload_json=_serialize(payload or {}),
+        relay_stream_name=settings.jobs_event_stream_name,
+        relay_published_at=None,
+        relay_publish_attempted_at=None,
+        relay_failed_attempts=0,
+        relay_last_error=None,
+        relay_lock_owner=None,
+        relay_lock_expires_at=None,
     )
     db.add(event)
     db.flush()
@@ -117,6 +126,55 @@ def create_job_lifecycle_event(
 def list_job_events(db: Session, job_id: str) -> list[JobLifecycleEvent]:
     stmt = select(JobLifecycleEvent).where(JobLifecycleEvent.job_id == job_id).order_by(JobLifecycleEvent.created_at.asc())
     return list(db.scalars(stmt).all())
+
+
+def job_event_bus_summary(db: Session, stream_name: str | None = None) -> dict[str, int | float | str]:
+    now = _now()
+    stmt = select(
+        func.count(JobLifecycleEvent.id),
+        func.sum(case((JobLifecycleEvent.relay_published_at.is_(None), 1), else_=0)),
+        func.sum(case((JobLifecycleEvent.relay_published_at.is_not(None), 1), else_=0)),
+        func.sum(case((JobLifecycleEvent.relay_failed_attempts > 0, 1), else_=0)),
+        func.sum(
+            case(
+                (
+                    (JobLifecycleEvent.relay_published_at.is_(None))
+                    & (JobLifecycleEvent.relay_lock_owner.is_not(None))
+                    & (JobLifecycleEvent.relay_lock_expires_at.is_not(None))
+                    & (JobLifecycleEvent.relay_lock_expires_at >= now),
+                    1,
+                ),
+                else_=0,
+            )
+        ),
+        func.sum(
+            case(
+                (
+                    (JobLifecycleEvent.relay_published_at.is_(None))
+                    & (JobLifecycleEvent.relay_lock_owner.is_not(None))
+                    & (JobLifecycleEvent.relay_lock_expires_at.is_not(None))
+                    & (JobLifecycleEvent.relay_lock_expires_at < now),
+                    1,
+                ),
+                else_=0,
+            )
+        ),
+    )
+    if stream_name:
+        stmt = stmt.where(JobLifecycleEvent.relay_stream_name == stream_name)
+    total, pending, published, failures, locked, stale_locks = db.execute(stmt).one()
+    total_value = int(total or 0)
+    failure_rate = round((int(failures or 0) / total_value) * 100, 2) if total_value else 0.0
+    return {
+        "stream_name": stream_name or "*",
+        "total": total_value,
+        "pending": int(pending or 0),
+        "published": int(published or 0),
+        "with_failures": int(failures or 0),
+        "locked": int(locked or 0),
+        "stale_locks": int(stale_locks or 0),
+        "failure_rate_pct": failure_rate,
+    }
 
 
 def create_job_run(
@@ -523,6 +581,7 @@ __all__ = [
     "get_job",
     "job_summary",
     "list_jobs",
+    "job_event_bus_summary",
     "list_job_events",
     "outbox_diagnostics",
     "outbox_summary",

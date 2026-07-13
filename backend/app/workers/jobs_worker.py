@@ -12,11 +12,85 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
+from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_queue_outbox import JobQueueOutbox
 from app.services.jobs import create_job_lifecycle_event, execute_job, get_job
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 
 logger = logging.getLogger("app.jobs.worker")
+
+
+def _event_stream_payload(event: JobLifecycleEvent) -> dict[str, str]:
+    return {
+        "event_id": event.id,
+        "job_id": event.job_id,
+        "event_type": event.event_type,
+        "task_name": event.task_name,
+        "tenant_id": event.tenant_id or "",
+        "actor_user_id": event.actor_user_id or "",
+        "correlation_id": event.correlation_id or "",
+        "previous_status": event.previous_status or "",
+        "current_status": event.current_status,
+        "payload_json": event.payload_json or "{}",
+        "created_at": event.created_at.isoformat(),
+        "source": "job_lifecycle_events",
+    }
+
+
+def _relay_job_events_batch(redis_client: Redis, *, batch_size: int = 100) -> int:
+    worker_id = f"event-relay-{uuid.uuid4()}"
+    now = datetime.now(UTC)
+    lock_ttl_seconds = 30
+    db = SessionLocal()
+    relayed = 0
+    try:
+        stmt = (
+            select(JobLifecycleEvent)
+            .where(JobLifecycleEvent.relay_published_at.is_(None))
+            .where(
+                (JobLifecycleEvent.relay_lock_expires_at.is_(None))
+                | (JobLifecycleEvent.relay_lock_expires_at < now)
+            )
+            .order_by(JobLifecycleEvent.created_at.asc())
+            .limit(batch_size)
+        )
+        rows = list(db.scalars(stmt).all())
+        for row in rows:
+            row.relay_lock_owner = worker_id
+            row.relay_lock_expires_at = datetime.fromtimestamp(time.time() + lock_ttl_seconds, tz=UTC)
+            row.relay_publish_attempted_at = now
+        db.flush()
+
+        for row in rows:
+            relay_key = f"jobs:event-relay:{row.id}"
+            is_first_publish = False
+            try:
+                is_first_publish = redis_client.set(relay_key, row.id, nx=True, ex=7 * 24 * 3600)
+                if is_first_publish:
+                    redis_client.xadd(row.relay_stream_name, _event_stream_payload(row))
+                row.relay_published_at = datetime.now(UTC)
+                row.relay_last_error = None if is_first_publish else "relay_dedup_skip_already_published"
+                row.relay_lock_owner = None
+                row.relay_lock_expires_at = None
+                relayed += 1
+            except Exception as exc:  # pragma: no cover - external redis/network path
+                if is_first_publish:
+                    try:
+                        redis_client.delete(relay_key)
+                    except Exception:  # pragma: no cover - best-effort cleanup path
+                        logger.exception("job_event_bus_relay_dedup_cleanup_failed", extra={"event_id": row.id})
+                row.relay_failed_attempts += 1
+                row.relay_last_error = f"{exc.__class__.__name__}: {exc}"[:2000]
+                row.relay_lock_owner = None
+                row.relay_lock_expires_at = None
+        db.commit()
+        return relayed
+    except Exception:
+        db.rollback()
+        logger.exception("job_event_bus_relay_failed")
+        return relayed
+    finally:
+        db.close()
 
 
 def _retry_delay_seconds(attempts: int, *, base_seconds: float, max_seconds: float) -> float:
@@ -202,6 +276,7 @@ def run_worker_forever() -> None:
     )
     try:
         while True:
+            _relay_job_events_batch(redis_client)
             _publish_outbox_batch(redis_client)
             _drain_scheduled_jobs(redis_client, settings.jobs_queue_name)
             try:

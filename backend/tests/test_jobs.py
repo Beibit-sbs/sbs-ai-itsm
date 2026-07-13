@@ -71,6 +71,7 @@ def test_jobs_runtime_reports_inline_mode_by_default(app) -> None:
     assert body["worker_required"] is False
     assert body["queue_name"]
     assert body["dead_letter_queue_name"]
+    assert body["event_stream_name"]
     assert body["retry_base_seconds"] > 0
     assert body["retry_max_seconds"] > 0
 
@@ -317,6 +318,22 @@ def test_jobs_outbox_diagnostics_reports_threshold_breaches(app) -> None:
     assert data["status"] == "critical"
     assert data["publish_failure_rate_pct"] == 40.0
     assert data["recommended_actions"]
+
+
+def test_job_event_bus_summary_shape(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        client.post(
+            "/api/v1/jobs/enqueue",
+            headers=_auth_headers(token),
+            json={"task_name": "system.echo", "payload": {"x": 1}},
+        )
+        response = client.get("/api/v1/jobs/event-bus-summary", headers=_auth_headers(token))
+
+    assert response.status_code == 200
+    data = response.json()
+    for key in ("stream_name", "total", "pending", "published", "with_failures", "locked", "stale_locks", "failure_rate_pct"):
+        assert key in data
 
 
 def test_create_outbox_entry_is_idempotent_by_job_and_queue(app) -> None:

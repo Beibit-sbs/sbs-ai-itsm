@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     jobs_executor_mode: str = "inline"
     jobs_queue_name: str = "jobs:queue"
     jobs_dead_letter_queue_name: str = "jobs:dead-letter"
+    jobs_event_stream_name: str = "jobs:lifecycle"
     jobs_retry_base_seconds: float = 0.5
     jobs_retry_max_seconds: float = 15.0
 

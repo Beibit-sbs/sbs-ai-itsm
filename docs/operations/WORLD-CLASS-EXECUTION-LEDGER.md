@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-EVENTS-008`
-- Latest stage implementation commit: `51d6781`
+- Last completed stage: `PLATFORM-CORE-ASYNC-EVENT-BUS-009`
+- Latest stage implementation commit: `pending_local_commit_for_event_bus_009`
 
 ## Stage Log (Newest First)
+
+- `pending_local_commit_for_event_bus_009` PLATFORM-CORE-ASYNC-EVENT-BUS-009
+  - Added Redis Stream relay for durable lifecycle events with DB lock + Redis dedup protection.
+  - Added relay delivery-state metadata, retry handling, and event-bus summary endpoint.
+  - Consumer-safe event payload contract now published to `jobs:lifecycle`.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-EVENT-BUS-009-REPORT.md`
 
 - `51d6781` PLATFORM-CORE-ASYNC-EVENTS-008
   - Added durable `job_lifecycle_events` storage and additive migration.
@@ -103,17 +109,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-EVENT-BUS-009`
+- `PLATFORM-CORE-ASYNC-CONSUMERS-010`
 
 Scope proposal:
-- Add relay/fan-out from durable lifecycle events into a streaming transport.
-- Define consumer-safe event payload contract for notifications, automation, and observability subscribers.
-- Track delivery attempts and replay safety for downstream event publishing.
+- Add first downstream consumers for lifecycle events (notifications, automation hooks, observability counters).
+- Keep consumer processing idempotent and independently retryable from the durable source.
+- Define minimal subscription boundaries so later tracks can attach safely.
 
 Exit criteria:
-- Durable events can be published downstream without losing DB source-of-truth.
-- Event relay records delivery state and supports safe retry semantics.
-- Tests cover publish, retry, and idempotent relay behavior.
+- At least one downstream consumer reacts to relayed lifecycle events without breaking source durability.
+- Consumer retries remain isolated from event-source truth and relay semantics.
+- Tests cover consumer side-effects and idempotent reprocessing.
 
 ## Stage Execution Template
 

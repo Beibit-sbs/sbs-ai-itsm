@@ -19,6 +19,7 @@ from app.services.jobs import (
     enqueue_task,
     execute_job,
     get_job as service_get_job,
+    job_event_bus_summary,
     job_summary,
     list_job_events,
     list_jobs,
@@ -113,6 +114,7 @@ class JobRuntimeResponse(BaseModel):
     executor_mode: str
     queue_name: str
     dead_letter_queue_name: str
+    event_stream_name: str
     retry_base_seconds: float
     retry_max_seconds: float
     worker_required: bool
@@ -135,6 +137,17 @@ class JobOutboxDiagnosticsResponse(JobOutboxSummaryResponse):
     stale_lock_alert_threshold: int
     status: str
     recommended_actions: list[str]
+
+
+class JobEventBusSummaryResponse(BaseModel):
+    stream_name: str
+    total: int
+    pending: int
+    published: int
+    with_failures: int
+    locked: int
+    stale_locks: int
+    failure_rate_pct: float
 
 
 class EnqueueJobRequest(BaseModel):
@@ -232,10 +245,22 @@ def get_jobs_runtime(
         executor_mode=settings.jobs_executor_mode,
         queue_name=settings.jobs_queue_name,
         dead_letter_queue_name=settings.jobs_dead_letter_queue_name,
+        event_stream_name=settings.jobs_event_stream_name,
         retry_base_seconds=settings.jobs_retry_base_seconds,
         retry_max_seconds=settings.jobs_retry_max_seconds,
         worker_required=settings.jobs_executor_mode == "redis",
     )
+
+
+@router.get("/event-bus-summary", response_model=JobEventBusSummaryResponse)
+def get_job_event_bus_summary(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobEventBusSummaryResponse:
+    _require_read(current_user)
+    settings = get_settings()
+    data = job_event_bus_summary(db, stream_name=settings.jobs_event_stream_name)
+    return JobEventBusSummaryResponse(**data)
 
 
 @router.get("/outbox-summary", response_model=JobOutboxSummaryResponse)

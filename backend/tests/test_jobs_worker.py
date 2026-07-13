@@ -9,6 +9,7 @@ from app.services.jobs import create_job_run
 from app.workers import jobs_worker
 from app.workers.jobs_worker import (
     _drain_scheduled_jobs,
+    _relay_job_events_batch,
     _retry_delay_seconds,
     _run_single_job,
     _schedule_retry,
@@ -21,6 +22,9 @@ class FakeRedis:
         self.left: list[tuple[str, str]] = []
         self.right: list[tuple[str, str]] = []
         self.zset: dict[str, dict[str, float]] = {}
+        self.streams: dict[str, list[dict[str, str]]] = {}
+        self.set_keys: dict[str, str] = {}
+        self.fail_xadd_once = False
 
     def lpush(self, key: str, value: str) -> None:
         self.left.append((key, value))
@@ -50,6 +54,26 @@ class FakeRedis:
             del bucket[member]
             return 1
         return 0
+
+    def set(self, key: str, value: str, *, nx: bool = False, ex: int | None = None) -> bool:
+        if nx and key in self.set_keys:
+            return False
+        self.set_keys[key] = value
+        return True
+
+    def delete(self, key: str) -> int:
+        if key in self.set_keys:
+            del self.set_keys[key]
+            return 1
+        return 0
+
+    def xadd(self, stream_name: str, payload: dict[str, str]) -> str:
+        if self.fail_xadd_once:
+            self.fail_xadd_once = False
+            raise RuntimeError("simulated stream failure")
+        bucket = self.streams.setdefault(stream_name, [])
+        bucket.append(payload)
+        return f"{len(bucket)}-0"
 
 
 def test_retry_delay_seconds_is_exponential_with_cap() -> None:
@@ -149,4 +173,81 @@ def test_run_single_job_emits_dead_letter_event(app, monkeypatch) -> None:
 
     assert event_types == ["queued", "running", "failed", "dead_letter"]
     assert ("jobs:dead-letter", job.id) in redis.left
+
+
+def test_relay_job_events_batch_publishes_pending_events(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    redis = FakeRedis()
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"relay": "ok"})
+            db.commit()
+
+        relayed = _relay_job_events_batch(redis, batch_size=100)
+
+        with SessionLocal() as db:
+            events = (
+                db.query(JobLifecycleEvent)
+                .filter(JobLifecycleEvent.job_id == job.id)
+                .order_by(JobLifecycleEvent.created_at.asc())
+                .all()
+            )
+
+    assert relayed == 1
+    assert "jobs:lifecycle" in redis.streams
+    assert redis.streams["jobs:lifecycle"][0]["event_type"] == "queued"
+    assert events[0].relay_published_at is not None
+    assert events[0].relay_failed_attempts == 0
+
+
+def test_relay_job_events_batch_retries_after_stream_failure(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    redis = FakeRedis()
+    redis.fail_xadd_once = True
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"relay": "retry"})
+            db.commit()
+
+        first_relay = _relay_job_events_batch(redis, batch_size=100)
+        second_relay = _relay_job_events_batch(redis, batch_size=100)
+
+        with SessionLocal() as db:
+            event = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == job.id).one()
+
+    assert first_relay == 0
+    assert second_relay == 1
+    assert event.relay_published_at is not None
+    assert event.relay_failed_attempts == 1
+    assert "jobs:lifecycle" in redis.streams
+
+
+def test_relay_job_events_batch_marks_event_published_when_dedup_key_exists(app, monkeypatch) -> None:
+    from app.db.session import SessionLocal
+
+    monkeypatch.setattr(jobs_worker, "SessionLocal", SessionLocal)
+    redis = FakeRedis()
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            job = create_job_run(db, task_name="system.echo", payload={"relay": "dedup"})
+            db.commit()
+            event = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == job.id).one()
+
+        redis.set(f"jobs:event-relay:{event.id}", event.id, nx=True, ex=60)
+        relayed = _relay_job_events_batch(redis, batch_size=100)
+
+        with SessionLocal() as db:
+            refreshed = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.id == event.id).one()
+
+    assert relayed == 1
+    assert redis.streams == {}
+    assert refreshed.relay_published_at is not None
+    assert refreshed.relay_last_error == "relay_dedup_skip_already_published"
 
