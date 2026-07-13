@@ -42,11 +42,11 @@ Current execution policy:
 
 - Branch: `main`
 - Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMERS-010`
-- Latest stage implementation commit: `PENDING_COMMIT`
+- Latest stage implementation commit: `a841857`
 
 ## Stage Log (Newest First)
 
-- `PENDING_COMMIT` PLATFORM-CORE-ASYNC-CONSUMERS-010
+- `a841857` PLATFORM-CORE-ASYNC-CONSUMERS-010
   - Added first downstream consumer pipeline over relayed lifecycle events with per-consumer offsets and idempotent delivery state.
   - Added isolated consumer retry loop and notification side-effects for `failed`/`dead_letter` job events.
   - Added `GET /jobs/event-consumer-summary` for runtime visibility of consumer throughput/failures.
