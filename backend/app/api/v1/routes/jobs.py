@@ -20,6 +20,7 @@ from app.services.jobs import (
     get_job as service_get_job,
     job_summary,
     list_jobs,
+    outbox_diagnostics,
     outbox_summary,
     registered_task_names,
     run_task,
@@ -106,6 +107,18 @@ class JobOutboxSummaryResponse(BaseModel):
     pending: int
     published: int
     with_failures: int
+
+
+class JobOutboxDiagnosticsResponse(JobOutboxSummaryResponse):
+    locked: int
+    stale_locks: int
+    dedup_skips: int
+    publish_failure_rate_pct: float
+    pending_alert_threshold: int
+    failure_alert_threshold: int
+    stale_lock_alert_threshold: int
+    status: str
+    recommended_actions: list[str]
 
 
 class EnqueueJobRequest(BaseModel):
@@ -202,6 +215,17 @@ def get_jobs_outbox_summary(
     settings = get_settings()
     data = outbox_summary(db, queue_name=settings.jobs_queue_name)
     return JobOutboxSummaryResponse(**data)
+
+
+@router.get("/outbox-diagnostics", response_model=JobOutboxDiagnosticsResponse)
+def get_jobs_outbox_diagnostics(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobOutboxDiagnosticsResponse:
+    _require_read(current_user)
+    settings = get_settings()
+    data = outbox_diagnostics(db, queue_name=settings.jobs_queue_name)
+    return JobOutboxDiagnosticsResponse(**data)
 
 
 @router.get("/{job_id}", response_model=JobRunResponse)

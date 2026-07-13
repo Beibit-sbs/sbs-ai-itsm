@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi.testclient import TestClient
 
 from app.models.job_queue_outbox import JobQueueOutbox
@@ -233,6 +235,87 @@ def test_jobs_outbox_summary_shape(app) -> None:
     data = response.json()
     for key in ("total", "pending", "published", "with_failures"):
         assert key in data
+
+
+def test_jobs_outbox_diagnostics_shape(app) -> None:
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    settings.jobs_executor_mode = "redis"
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        client.post(
+            "/api/v1/jobs/enqueue",
+            headers=_auth_headers(token),
+            json={"task_name": "system.echo", "payload": {"x": 1}},
+        )
+        response = client.get("/api/v1/jobs/outbox-diagnostics", headers=_auth_headers(token))
+
+    assert response.status_code == 200
+    data = response.json()
+    for key in (
+        "total",
+        "pending",
+        "published",
+        "with_failures",
+        "locked",
+        "stale_locks",
+        "dedup_skips",
+        "publish_failure_rate_pct",
+        "pending_alert_threshold",
+        "failure_alert_threshold",
+        "stale_lock_alert_threshold",
+        "status",
+        "recommended_actions",
+    ):
+        assert key in data
+
+
+def test_jobs_outbox_diagnostics_reports_threshold_breaches(app) -> None:
+    from app.core.config import get_settings
+    from app.db.session import SessionLocal
+
+    settings = get_settings()
+    settings.jobs_executor_mode = "redis"
+    settings.jobs_queue_name = "jobs:test"
+
+    now = datetime.now(UTC)
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+
+        with SessionLocal() as db:
+            rows = []
+            for index in range(5):
+                rows.append(
+                    JobQueueOutbox(
+                        id=f"outbox-{index}",
+                        job_id=f"job-{index}",
+                        queue_name="jobs:test",
+                        dedup_key=f"jobs:test:job-{index}",
+                        published_at=None,
+                        publish_attempted_at=now,
+                        lock_owner="worker-1" if index == 0 else None,
+                        lock_expires_at=now - timedelta(minutes=1) if index == 0 else None,
+                        failed_attempts=1 if index in (0, 1) else 0,
+                        last_error="dedup_skip_already_published" if index == 2 else None,
+                    )
+                )
+            db.add_all(rows)
+            db.commit()
+
+        response = client.get("/api/v1/jobs/outbox-diagnostics", headers=_auth_headers(token))
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["pending"] == 5
+    assert data["with_failures"] == 2
+    assert data["stale_locks"] == 1
+    assert data["dedup_skips"] == 1
+    assert data["status"] == "critical"
+    assert data["publish_failure_rate_pct"] == 40.0
+    assert data["recommended_actions"]
 
 
 def test_create_outbox_entry_is_idempotent_by_job_and_queue(app) -> None:

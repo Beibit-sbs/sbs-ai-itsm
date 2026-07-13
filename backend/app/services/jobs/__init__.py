@@ -266,6 +266,88 @@ def outbox_summary(db: Session, queue_name: str | None = None) -> dict[str, int]
     }
 
 
+def outbox_diagnostics(db: Session, queue_name: str | None = None) -> dict[str, int | float | str | list[str]]:
+    now = _now()
+    pending_threshold = 5
+    failure_threshold = 2
+    stale_lock_threshold = 1
+    dedup_skip_threshold = 1
+
+    stmt = select(
+        func.count(JobQueueOutbox.id),
+        func.sum(case((JobQueueOutbox.published_at.is_(None), 1), else_=0)),
+        func.sum(case((JobQueueOutbox.published_at.is_not(None), 1), else_=0)),
+        func.sum(case((JobQueueOutbox.failed_attempts > 0, 1), else_=0)),
+        func.sum(
+            case(
+                (
+                    (JobQueueOutbox.published_at.is_(None))
+                    & (JobQueueOutbox.lock_owner.is_not(None))
+                    & (JobQueueOutbox.lock_expires_at.is_not(None))
+                    & (JobQueueOutbox.lock_expires_at >= now),
+                    1,
+                ),
+                else_=0,
+            )
+        ),
+        func.sum(
+            case(
+                (
+                    (JobQueueOutbox.published_at.is_(None))
+                    & (JobQueueOutbox.lock_owner.is_not(None))
+                    & (JobQueueOutbox.lock_expires_at.is_not(None))
+                    & (JobQueueOutbox.lock_expires_at < now),
+                    1,
+                ),
+                else_=0,
+            )
+        ),
+        func.sum(case((JobQueueOutbox.last_error == "dedup_skip_already_published", 1), else_=0)),
+    )
+    if queue_name:
+        stmt = stmt.where(JobQueueOutbox.queue_name == queue_name)
+    total, pending, published, failed, locked, stale_locks, dedup_skips = db.execute(stmt).one()
+
+    total_value = int(total or 0)
+    pending_value = int(pending or 0)
+    published_value = int(published or 0)
+    failed_value = int(failed or 0)
+    locked_value = int(locked or 0)
+    stale_locks_value = int(stale_locks or 0)
+    dedup_skips_value = int(dedup_skips or 0)
+    publish_failure_rate_pct = round((failed_value / total_value) * 100, 2) if total_value else 0.0
+
+    recommended_actions: list[str] = []
+    status = "ok"
+    if pending_value >= pending_threshold:
+        status = "warn"
+        recommended_actions.append("Inspect worker throughput and Redis queue drain rate.")
+    if failed_value >= failure_threshold or stale_locks_value >= stale_lock_threshold:
+        status = "critical"
+        recommended_actions.append("Inspect worker logs and clear blocked outbox rows after root-cause analysis.")
+    if dedup_skips_value >= dedup_skip_threshold:
+        status = "critical" if status == "critical" else "warn"
+        recommended_actions.append("Review duplicate publish attempts across workers and confirm dedup keys are stable.")
+    if not recommended_actions:
+        recommended_actions.append("No immediate action required.")
+
+    return {
+        "total": total_value,
+        "pending": pending_value,
+        "published": published_value,
+        "with_failures": failed_value,
+        "locked": locked_value,
+        "stale_locks": stale_locks_value,
+        "dedup_skips": dedup_skips_value,
+        "publish_failure_rate_pct": publish_failure_rate_pct,
+        "pending_alert_threshold": pending_threshold,
+        "failure_alert_threshold": failure_threshold,
+        "stale_lock_alert_threshold": stale_lock_threshold,
+        "status": status,
+        "recommended_actions": recommended_actions,
+    }
+
+
 def enqueue_task(
     db: Session,
     task_name: str,
@@ -364,6 +446,7 @@ __all__ = [
     "get_job",
     "job_summary",
     "list_jobs",
+    "outbox_diagnostics",
     "outbox_summary",
     "register_task",
     "registered_task",

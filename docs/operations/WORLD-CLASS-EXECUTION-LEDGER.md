@@ -41,12 +41,19 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-IDEMPOTENCY-006`
-- Latest commit: `to_be_recorded_on_commit`
+- Last completed stage: `PLATFORM-CORE-ASYNC-OBSERVABILITY-007`
+- Latest commit: `pending_local_commit_for_observability_007`
 
 ## Stage Log (Newest First)
 
-- `to_be_recorded_on_commit` PLATFORM-CORE-ASYNC-IDEMPOTENCY-006
+- `pending_local_commit_for_observability_007` PLATFORM-CORE-ASYNC-OBSERVABILITY-007
+  - Added `/jobs/outbox-diagnostics` for runbook-level queue/outbox triage.
+  - Exposed lock contention, stale locks, dedup skips, and publish failure rate.
+  - Added threshold-based status evaluation and recommended operator actions.
+  - Extended admin diagnostics UI with actionable outbox SLO indicators.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-OBSERVABILITY-007-REPORT.md`
+
+- `fbd8ab1` PLATFORM-CORE-ASYNC-IDEMPOTENCY-006
   - Outbox idempotency metadata and unique dedup key enforcement.
   - Migration hardening: duplicate cleanup before unique index creation.
   - Redis publish dedup guard (`SET NX EX`) for multi-worker safety.
@@ -89,17 +96,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-OBSERVABILITY-007`
+- `PLATFORM-CORE-ASYNC-EVENTS-008`
 
 Scope proposal:
-- Add end-to-end metrics for outbox lock contention and dedup skips.
-- Add alerting thresholds for pending outbox growth and publish failure spikes.
-- Add runbook-level diagnostics endpoint to accelerate incident triage.
+- Add durable event stream abstraction for job lifecycle transitions.
+- Emit structured lifecycle events for queued, running, success, failure, dead-letter, and replay.
+- Prepare downstream hooks for notifications/automation/observability consumers.
 
 Exit criteria:
-- API exposes lock/dedup contention counters and failure rates.
-- Admin diagnostics page shows actionable outbox SLO indicators.
-- Tests cover metrics and alert-threshold computation paths.
+- Lifecycle events are persisted or published durably from async job transitions.
+- Event payloads contain correlation ID, tenant, task name, job ID, and terminal status.
+- Tests cover event emission for success, retry, dead-letter, and replay flows.
 
 ## Stage Execution Template
 

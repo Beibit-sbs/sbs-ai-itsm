@@ -1342,6 +1342,18 @@ export type JobOutboxSummary = {
   with_failures: number
 }
 
+export type JobOutboxDiagnostics = JobOutboxSummary & {
+  locked: number
+  stale_locks: number
+  dedup_skips: number
+  publish_failure_rate_pct: number
+  pending_alert_threshold: number
+  failure_alert_threshold: number
+  stale_lock_alert_threshold: number
+  status: 'ok' | 'warn' | 'critical' | string
+  recommended_actions: string[]
+}
+
 export type JobRun = {
   id: string
   task_name: string
@@ -1388,6 +1400,13 @@ export async function fetchJobOutboxSummary(accessToken: string): Promise<JobOut
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   return readJsonResponse<JobOutboxSummary>(response)
+}
+
+export async function fetchJobOutboxDiagnostics(accessToken: string): Promise<JobOutboxDiagnostics> {
+  const response = await fetch(`${API_BASE_URL}/jobs/outbox-diagnostics`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  return readJsonResponse<JobOutboxDiagnostics>(response)
 }
 
 export type AiProviderStatus = {

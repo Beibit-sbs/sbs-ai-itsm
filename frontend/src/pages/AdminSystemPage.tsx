@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import AppShell from '../components/AppShell'
-import { fetchAiProviderStatus, fetchJobOutboxSummary, fetchJobRuns, fetchJobRuntime, fetchJobSummary, getDeepHealth, getHealth, getLiveness, getReadiness } from '../api/client'
+import { fetchAiProviderStatus, fetchJobOutboxDiagnostics, fetchJobOutboxSummary, fetchJobRuns, fetchJobRuntime, fetchJobSummary, getDeepHealth, getHealth, getLiveness, getReadiness } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
 function statusClass(value: string | undefined) {
@@ -84,6 +84,14 @@ export default function AdminSystemPage() {
   const jobsOutboxQuery = useQuery({
     queryKey: ['system-jobs-outbox', session?.access_token],
     queryFn: () => fetchJobOutboxSummary(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token),
+    refetchInterval: 15000,
+    retry: false,
+  })
+
+  const jobsOutboxDiagnosticsQuery = useQuery({
+    queryKey: ['system-jobs-outbox-diagnostics', session?.access_token],
+    queryFn: () => fetchJobOutboxDiagnostics(session?.access_token ?? ''),
     enabled: Boolean(session?.access_token),
     refetchInterval: 15000,
     retry: false,
@@ -222,6 +230,25 @@ export default function AdminSystemPage() {
                   {jobsOutboxQuery.data?.with_failures ?? 0}
                 </span>
               </p>
+              <p>
+                Outbox status:{' '}
+                <span className={statusClass(jobsOutboxDiagnosticsQuery.data?.status)}>
+                  {jobsOutboxDiagnosticsQuery.data?.status ?? 'unknown'}
+                </span>
+              </p>
+              <p>Locked rows: {jobsOutboxDiagnosticsQuery.data?.locked ?? '—'}</p>
+              <p>
+                Stale locks:{' '}
+                <span className={statusClass((jobsOutboxDiagnosticsQuery.data?.stale_locks ?? 0) > 0 ? 'failed' : 'ok')}>
+                  {jobsOutboxDiagnosticsQuery.data?.stale_locks ?? 0}
+                </span>
+              </p>
+              <p>Dedup skips: {jobsOutboxDiagnosticsQuery.data?.dedup_skips ?? '—'}</p>
+              <p>Publish failure rate: {jobsOutboxDiagnosticsQuery.data?.publish_failure_rate_pct ?? '—'}%</p>
+              <p>
+                Thresholds: pending {jobsOutboxDiagnosticsQuery.data?.pending_alert_threshold ?? '—'}, failures {jobsOutboxDiagnosticsQuery.data?.failure_alert_threshold ?? '—'}, stale locks {jobsOutboxDiagnosticsQuery.data?.stale_lock_alert_threshold ?? '—'}
+              </p>
+              <p>Recommended action: {(jobsOutboxDiagnosticsQuery.data?.recommended_actions ?? ['—']).join(' ')}</p>
             </>
           )}
         </article>
