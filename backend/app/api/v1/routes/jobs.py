@@ -43,6 +43,11 @@ from app.services.jobs import (
 )
 from app.services.audit import log_audit
 from app.services.jobs.policy_state import PolicyVersionConflictError, load_policy_into_settings, save_policy
+from app.services.jobs.runbook_policy_state import (
+    RunbookPolicyVersionConflictError,
+    load_runbook_policy_into_settings,
+    save_runbook_policy,
+)
 from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
@@ -241,8 +246,12 @@ class JobEventConsumersDiagnosticsResponse(BaseModel):
     runbook_failures_24h: int
     runbook_governance_compliant_actions_24h: int
     runbook_governance_denied_actions_24h: int
+    runbook_policy_version: int
+    runbook_policy_hash: str
+    runbook_policy_rollouts_24h: int
     recent_runbook_executions: list[dict[str, object]]
     recent_runbook_denied_actions: list[dict[str, object]]
+    recent_runbook_policy_rollouts: list[dict[str, object]]
     recent_policy_rollouts: list[dict[str, object]]
     recent_recovery_actions: list[dict[str, object]]
     recent_autoremediation_actions: list[dict[str, object]]
@@ -351,6 +360,29 @@ class JobEventConsumerRunbookResponse(BaseModel):
     status: str
     guardrail_blocked: bool
     result: dict[str, object]
+
+
+class JobEventConsumerRunbookPolicyResponse(BaseModel):
+    policy_version: int
+    policy_hash: str
+    allowed_codes: list[str]
+    denied_codes: list[str]
+    high_impact_codes: list[str]
+    cooldown_seconds_map: dict[str, int]
+    require_change_ticket: bool
+    dual_control_required: bool
+    last_policy_change_at: datetime | None
+    last_policy_change_actor_email: str | None
+
+
+class JobEventConsumerRunbookPolicyUpdateRequest(BaseModel):
+    expected_version: int = Field(..., ge=1)
+    allowed_codes: list[str] | None = None
+    denied_codes: list[str] | None = None
+    high_impact_codes: list[str] | None = None
+    cooldown_seconds_map: dict[str, int] | None = None
+    require_change_ticket: bool | None = None
+    dual_control_required: bool | None = None
 
 
 class EnqueueJobRequest(BaseModel):
@@ -497,6 +529,7 @@ def get_job_event_consumers_diagnostics(
     _require_read(current_user)
     settings = get_settings()
     policy_state = _policy_state(settings, db)
+    runbook_policy_state = _runbook_policy_state(settings, db)
     data = job_event_consumers_diagnostics(
         db,
         stream_name=settings.jobs_event_stream_name,
@@ -512,6 +545,8 @@ def get_job_event_consumers_diagnostics(
     consumer_names = [str(item.get("consumer_name") or "") for item in consumers if isinstance(item, dict)]
     policy_changes = _latest_policy_change_map(db, consumer_names)
     rollouts_24h, recent_rollouts = _recent_policy_rollouts(db)
+    runbook_policy_rollouts_24h, recent_runbook_policy_rollouts, _ = _recent_runbook_policy_rollouts(db)
+    runbook_policy_payload = _runbook_policy_payload(settings)
     (
         runbook_execs_24h,
         runbook_failures_24h,
@@ -559,8 +594,12 @@ def get_job_event_consumers_diagnostics(
     data["runbook_failures_24h"] = int(runbook_failures_24h)
     data["runbook_governance_compliant_actions_24h"] = int(runbook_governance_compliant_actions_24h)
     data["runbook_governance_denied_actions_24h"] = int(runbook_governance_denied_actions_24h)
+    data["runbook_policy_version"] = int(runbook_policy_state.get("version", 1) or 1)
+    data["runbook_policy_hash"] = _policy_hash(runbook_policy_payload)
+    data["runbook_policy_rollouts_24h"] = int(runbook_policy_rollouts_24h)
     data["recent_runbook_executions"] = recent_runbooks
     data["recent_runbook_denied_actions"] = recent_runbook_denied_actions
+    data["recent_runbook_policy_rollouts"] = recent_runbook_policy_rollouts
     data["recent_policy_rollouts"] = recent_rollouts
     return JobEventConsumersDiagnosticsResponse(**data)
 
@@ -927,6 +966,10 @@ def _policy_state(settings, db: Session) -> dict[str, object]:
     return load_policy_into_settings(db, settings)
 
 
+def _runbook_policy_state(settings, db: Session) -> dict[str, object]:
+    return load_runbook_policy_into_settings(db, settings)
+
+
 def _recent_policy_rollouts(db: Session) -> tuple[int, list[dict[str, object]]]:
     window_start = datetime.now(UTC) - timedelta(hours=24)
     rows = list(
@@ -952,6 +995,85 @@ def _recent_policy_rollouts(db: Session) -> tuple[int, list[dict[str, object]]]:
             }
         )
     return len(rows), items
+
+
+def _recent_runbook_policy_rollouts(
+    db: Session,
+) -> tuple[int, list[dict[str, object]], dict[str, object]]:
+    window_start = datetime.now(UTC) - timedelta(hours=24)
+    rows = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "jobs.event_consumer_runbook_policy.update")
+            .where(AuditLog.created_at >= window_start)
+            .order_by(AuditLog.created_at.desc())
+            .limit(50)
+        ).all()
+    )
+    items: list[dict[str, object]] = []
+    latest: dict[str, object] = {}
+    for row in rows:
+        metadata = _decode(row.metadata_json)
+        metadata_map = metadata if isinstance(metadata, dict) else {}
+        if not latest:
+            latest = {
+                "created_at": row.created_at,
+                "actor_email": row.actor_email,
+            }
+        if len(items) < 12:
+            items.append(
+                {
+                    "old_policy_hash": str(metadata_map.get("old_policy_hash") or ""),
+                    "new_policy_hash": str(metadata_map.get("new_policy_hash") or ""),
+                    "actor_email": row.actor_email,
+                    "created_at": row.created_at,
+                }
+            )
+    return len(rows), items, latest
+
+
+def _runbook_policy_payload(settings) -> dict[str, object]:
+    catalog_codes = set(_jobs_runbook_catalog().keys())
+
+    allowed_codes = [
+        str(item).strip()
+        for item in settings.jobs_event_runbook_allowed_codes
+        if str(item).strip() and str(item).strip() in catalog_codes
+    ]
+    denied_codes = [
+        str(item).strip()
+        for item in settings.jobs_event_runbook_denied_codes
+        if str(item).strip() and str(item).strip() in catalog_codes
+    ]
+    high_impact_codes = [
+        str(item).strip()
+        for item in settings.jobs_event_runbook_high_impact_codes
+        if str(item).strip() and str(item).strip() in catalog_codes
+    ]
+    cooldown_raw = (
+        settings.jobs_event_runbook_cooldown_seconds_map
+        if isinstance(settings.jobs_event_runbook_cooldown_seconds_map, dict)
+        else {}
+    )
+    cooldown_seconds_map: dict[str, int] = {}
+    for key, value in cooldown_raw.items():
+        code = str(key).strip()
+        if not code or code not in catalog_codes:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        cooldown_seconds_map[code] = max(0, parsed)
+
+    return {
+        "allowed_codes": sorted(set(allowed_codes)),
+        "denied_codes": sorted(set(denied_codes)),
+        "high_impact_codes": sorted(set(high_impact_codes)),
+        "cooldown_seconds_map": cooldown_seconds_map,
+        "require_change_ticket": bool(settings.jobs_event_runbook_require_change_ticket),
+        "dual_control_required": bool(settings.jobs_event_runbook_dual_control_required),
+    }
 
 
 @router.get(
@@ -1220,6 +1342,137 @@ def reset_job_event_consumer_autoremediation_brake(
     )
 
 
+@router.get(
+    "/event-consumer-runbook-policy",
+    response_model=JobEventConsumerRunbookPolicyResponse,
+)
+def get_job_event_consumer_runbook_policy(
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobEventConsumerRunbookPolicyResponse:
+    _require_read(current_user)
+    settings = get_settings()
+    policy_state = _runbook_policy_state(settings, db)
+    payload = _runbook_policy_payload(settings)
+    _, _, latest_change = _recent_runbook_policy_rollouts(db)
+    return JobEventConsumerRunbookPolicyResponse(
+        policy_version=int(policy_state.get("version", 1) or 1),
+        policy_hash=_policy_hash(payload),
+        allowed_codes=[str(item) for item in payload.get("allowed_codes", [])],
+        denied_codes=[str(item) for item in payload.get("denied_codes", [])],
+        high_impact_codes=[str(item) for item in payload.get("high_impact_codes", [])],
+        cooldown_seconds_map={
+            str(key): int(value)
+            for key, value in dict(payload.get("cooldown_seconds_map", {})).items()
+        },
+        require_change_ticket=bool(payload.get("require_change_ticket", True)),
+        dual_control_required=bool(payload.get("dual_control_required", False)),
+        last_policy_change_at=latest_change.get("created_at"),
+        last_policy_change_actor_email=latest_change.get("actor_email"),
+    )
+
+
+@router.post(
+    "/event-consumer-runbook-policy",
+    response_model=JobEventConsumerRunbookPolicyResponse,
+)
+def update_job_event_consumer_runbook_policy(
+    request: JobEventConsumerRunbookPolicyUpdateRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JobEventConsumerRunbookPolicyResponse:
+    _require_enqueue(current_user)
+    settings = get_settings()
+    policy_state = _runbook_policy_state(settings, db)
+    old_payload = _runbook_policy_payload(settings)
+    catalog_codes = set(_jobs_runbook_catalog().keys())
+
+    def _sanitize_codes(value: list[str] | None, fallback: list[str]) -> list[str]:
+        if value is None:
+            return list(fallback)
+        return sorted({str(item).strip() for item in value if str(item).strip() in catalog_codes})
+
+    new_payload = {
+        "allowed_codes": _sanitize_codes(
+            request.allowed_codes,
+            [str(item) for item in old_payload.get("allowed_codes", [])],
+        ),
+        "denied_codes": _sanitize_codes(
+            request.denied_codes,
+            [str(item) for item in old_payload.get("denied_codes", [])],
+        ),
+        "high_impact_codes": _sanitize_codes(
+            request.high_impact_codes,
+            [str(item) for item in old_payload.get("high_impact_codes", [])],
+        ),
+        "cooldown_seconds_map": (
+            {
+                str(key).strip(): max(0, int(value))
+                for key, value in request.cooldown_seconds_map.items()
+                if str(key).strip() in catalog_codes
+            }
+            if request.cooldown_seconds_map is not None
+            else dict(old_payload.get("cooldown_seconds_map", {}))
+        ),
+        "require_change_ticket": (
+            bool(request.require_change_ticket)
+            if request.require_change_ticket is not None
+            else bool(old_payload.get("require_change_ticket", True))
+        ),
+        "dual_control_required": (
+            bool(request.dual_control_required)
+            if request.dual_control_required is not None
+            else bool(old_payload.get("dual_control_required", False))
+        ),
+    }
+
+    try:
+        saved_state = save_runbook_policy(
+            db,
+            settings,
+            payload=new_payload,
+            expected_version=request.expected_version,
+            actor_email=current_user.email,
+        )
+    except RunbookPolicyVersionConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    old_hash = _policy_hash(old_payload)
+    new_hash = _policy_hash(new_payload)
+    log_audit(
+        db,
+        action="jobs.event_consumer_runbook_policy.update",
+        entity_type="job_event_consumer_runbook_policy",
+        entity_id="runbook-governance",
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "old_policy_hash": old_hash,
+            "new_policy_hash": new_hash,
+            "previous_version": int(policy_state.get("version", 1) or 1),
+            "new_version": int(saved_state.get("version", 1) or 1),
+        },
+    )
+    db.commit()
+
+    return JobEventConsumerRunbookPolicyResponse(
+        policy_version=int(saved_state.get("version", 1) or 1),
+        policy_hash=new_hash,
+        allowed_codes=[str(item) for item in new_payload.get("allowed_codes", [])],
+        denied_codes=[str(item) for item in new_payload.get("denied_codes", [])],
+        high_impact_codes=[str(item) for item in new_payload.get("high_impact_codes", [])],
+        cooldown_seconds_map={
+            str(key): int(value)
+            for key, value in dict(new_payload.get("cooldown_seconds_map", {})).items()
+        },
+        require_change_ticket=bool(new_payload.get("require_change_ticket", True)),
+        dual_control_required=bool(new_payload.get("dual_control_required", False)),
+        last_policy_change_at=saved_state.get("updated_at"),
+        last_policy_change_actor_email=current_user.email,
+    )
+
+
 @router.post("/event-consumer-runbook", response_model=JobEventConsumerRunbookResponse)
 def execute_job_event_consumer_runbook(
     request: JobEventConsumerRunbookRequest,
@@ -1230,6 +1483,7 @@ def execute_job_event_consumer_runbook(
     _require_enqueue(current_user)
     settings = get_settings()
     _policy_state(settings, db)
+    _runbook_policy_state(settings, db)
     allowed = {settings.jobs_event_consumer_name, settings.jobs_event_automation_consumer_name}
     if request.consumer_name not in allowed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown consumer_name")

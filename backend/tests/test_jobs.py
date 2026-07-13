@@ -397,8 +397,12 @@ def test_job_event_consumers_diagnostics_shape(app) -> None:
         "runbook_failures_24h",
         "runbook_governance_compliant_actions_24h",
         "runbook_governance_denied_actions_24h",
+        "runbook_policy_version",
+        "runbook_policy_hash",
+        "runbook_policy_rollouts_24h",
         "recent_runbook_executions",
         "recent_runbook_denied_actions",
+        "recent_runbook_policy_rollouts",
         "recent_policy_rollouts",
         "recent_recovery_actions",
         "recent_autoremediation_actions",
@@ -617,6 +621,65 @@ def test_job_event_consumer_autoremediation_policy_rejects_stale_version(app) ->
         assert stale.status_code == 409, stale.text
 
 
+def test_job_event_consumer_runbook_policy_update_and_rejects_stale_version(app) -> None:
+    from app.core.config import get_settings
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+
+        current = client.get(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+        )
+        assert current.status_code == 200, current.text
+        current_payload = current.json()
+        version = int(current_payload["policy_version"])
+
+        update = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": version,
+                "allowed_codes": ["jobs.consumer.repeated_failures_requeue"],
+                "denied_codes": ["jobs.consumer.lag_spike_triage"],
+                "high_impact_codes": ["jobs.consumer.repeated_failures_requeue"],
+                "cooldown_seconds_map": {"jobs.consumer.repeated_failures_requeue": 300},
+                "require_change_ticket": True,
+                "dual_control_required": True,
+            },
+        )
+        assert update.status_code == 200, update.text
+        updated = update.json()
+        assert updated["policy_version"] == version + 1
+        assert updated["policy_hash"]
+        assert updated["denied_codes"] == ["jobs.consumer.lag_spike_triage"]
+        assert updated["cooldown_seconds_map"]["jobs.consumer.repeated_failures_requeue"] == 300
+        assert updated["dual_control_required"] is True
+
+        # Ensure runtime read path reloads from persisted state and not from ad-hoc in-memory changes.
+        settings = get_settings()
+        settings.jobs_event_runbook_denied_codes = []
+
+        read_back = client.get(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+        )
+        assert read_back.status_code == 200, read_back.text
+        persisted = read_back.json()
+        assert persisted["denied_codes"] == ["jobs.consumer.lag_spike_triage"]
+        assert persisted["policy_version"] == updated["policy_version"]
+
+        stale = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": version,
+                "allowed_codes": ["jobs.consumer.stale_offset_triage"],
+            },
+        )
+        assert stale.status_code == 409, stale.text
+
+
 def test_job_event_consumer_autoremediation_brake_reset(app) -> None:
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
@@ -677,15 +740,27 @@ def test_job_event_consumer_runbook_repeated_failures_dry_run_and_execute(app) -
     from app.core.config import get_settings
 
     settings = get_settings()
-    settings.jobs_event_runbook_high_impact_codes = ["jobs.consumer.repeated_failures_requeue"]
-    settings.jobs_event_runbook_require_change_ticket = True
-    settings.jobs_event_runbook_dual_control_required = False
-    settings.jobs_event_runbook_allowed_codes = []
-    settings.jobs_event_runbook_denied_codes = []
-    settings.jobs_event_runbook_cooldown_seconds_map = {}
 
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
+        current_policy = client.get("/api/v1/jobs/event-consumer-runbook-policy", headers=_auth_headers(token))
+        assert current_policy.status_code == 200, current_policy.text
+        current_version = int(current_policy.json()["policy_version"])
+        configured_policy = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": current_version,
+                "high_impact_codes": ["jobs.consumer.repeated_failures_requeue"],
+                "require_change_ticket": True,
+                "dual_control_required": False,
+                "allowed_codes": [],
+                "denied_codes": [],
+                "cooldown_seconds_map": {},
+            },
+        )
+        assert configured_policy.status_code == 200, configured_policy.text
+
         with SessionLocal() as db:
             job = create_job_run(db, task_name="system.echo", payload={"runbook": True}, max_attempts=1)
             db.commit()
@@ -761,15 +836,27 @@ def test_job_event_consumer_runbook_governance_validation_and_denied_feed(app) -
     from app.core.config import get_settings
 
     settings = get_settings()
-    settings.jobs_event_runbook_high_impact_codes = ["jobs.consumer.repeated_failures_requeue"]
-    settings.jobs_event_runbook_require_change_ticket = True
-    settings.jobs_event_runbook_dual_control_required = True
-    settings.jobs_event_runbook_allowed_codes = []
-    settings.jobs_event_runbook_denied_codes = []
-    settings.jobs_event_runbook_cooldown_seconds_map = {}
 
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
+        current_policy = client.get("/api/v1/jobs/event-consumer-runbook-policy", headers=_auth_headers(token))
+        assert current_policy.status_code == 200, current_policy.text
+        current_version = int(current_policy.json()["policy_version"])
+        configured_policy = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": current_version,
+                "high_impact_codes": ["jobs.consumer.repeated_failures_requeue"],
+                "require_change_ticket": True,
+                "dual_control_required": True,
+                "allowed_codes": [],
+                "denied_codes": [],
+                "cooldown_seconds_map": {},
+            },
+        )
+        assert configured_policy.status_code == 200, configured_policy.text
+
         with SessionLocal() as db:
             job = create_job_run(db, task_name="system.echo", payload={"runbook-governance": True}, max_attempts=1)
             db.commit()
@@ -859,15 +946,27 @@ def test_job_event_consumer_runbook_policy_deny_and_cooldown(app) -> None:
     from app.core.config import get_settings
 
     settings = get_settings()
-    settings.jobs_event_runbook_high_impact_codes = ["jobs.consumer.repeated_failures_requeue"]
-    settings.jobs_event_runbook_require_change_ticket = True
-    settings.jobs_event_runbook_dual_control_required = False
-    settings.jobs_event_runbook_allowed_codes = ["jobs.consumer.repeated_failures_requeue"]
-    settings.jobs_event_runbook_denied_codes = ["jobs.consumer.lag_spike_triage"]
-    settings.jobs_event_runbook_cooldown_seconds_map = {"jobs.consumer.repeated_failures_requeue": 3600}
 
     with TestClient(app) as client:
         token = _login(client, "root@sbs.local", "Root!2026")
+        current_policy = client.get("/api/v1/jobs/event-consumer-runbook-policy", headers=_auth_headers(token))
+        assert current_policy.status_code == 200, current_policy.text
+        current_version = int(current_policy.json()["policy_version"])
+        configured_policy = client.post(
+            "/api/v1/jobs/event-consumer-runbook-policy",
+            headers=_auth_headers(token),
+            json={
+                "expected_version": current_version,
+                "high_impact_codes": ["jobs.consumer.repeated_failures_requeue"],
+                "require_change_ticket": True,
+                "dual_control_required": False,
+                "allowed_codes": ["jobs.consumer.repeated_failures_requeue"],
+                "denied_codes": ["jobs.consumer.lag_spike_triage"],
+                "cooldown_seconds_map": {"jobs.consumer.repeated_failures_requeue": 3600},
+            },
+        )
+        assert configured_policy.status_code == 200, configured_policy.text
+
         with SessionLocal() as db:
             job = create_job_run(db, task_name="system.echo", payload={"runbook-cooldown": True}, max_attempts=1)
             db.commit()

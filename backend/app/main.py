@@ -12,6 +12,7 @@ from app.services.asset_import import ensure_asset_import_schema
 from app.services.asset_sla import ensure_asset_sla_schema
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 from app.services.jobs.policy_state import load_policy_into_settings
+from app.services.jobs.runbook_policy_state import load_runbook_policy_into_settings
 from app.services.notifications_schema import ensure_notifications_schema
 from app.services.reporting_schema import ensure_reporting_schema
 from app.services.seed import seed_demo_data, seed_system_data
@@ -34,6 +35,7 @@ async def lifespan(_: FastAPI):
     db = SessionLocal()
     try:
         load_policy_into_settings(db, settings)
+        load_runbook_policy_into_settings(db, settings)
         if settings.demo_mode:
             seed_demo_data(db)
         else:

@@ -41,10 +41,16 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-GOVERNANCE-022`
-- Latest stage implementation commit: `495e8bf`
+- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-PERSISTENCE-023`
+- Latest stage implementation commit: `TBD`
 
 ## Stage Log (Newest First)
+
+- `TBD` PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-PERSISTENCE-023
+  - Added versioned DB persistence for runbook governance policy with startup/runtime reload into settings.
+  - Added runbook policy runtime API (`GET/POST /jobs/event-consumer-runbook-policy`) with optimistic concurrency token `expected_version` and `409` stale-write handling.
+  - Extended diagnostics with runbook policy version/hash/rollout history metadata.
+  - Report: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-PERSISTENCE-023-REPORT.md`
 
 - `495e8bf` PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-GOVERNANCE-022
   - Added governance policy for high-impact runbook execute paths: reason code, change reference, and optional dual-control approver.
@@ -188,17 +194,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-PERSISTENCE-023`
+- `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-SAFETY-024`
 
 Scope proposal:
-- Persist runbook governance policy in DB with versioned state and optimistic concurrency updates.
-- Add runtime API to inspect/update runbook governance policy without restart.
-- Surface policy version/hash and recent rollouts in runbook governance diagnostics.
+- Add runbook policy rollout safety controls: staged activation and optional dry-run validation mode for policy updates.
+- Add explicit runbook policy drift diagnostics at per-consumer level (effective policy decision trace).
+- Add guarded rollback endpoint for fast restore to previous policy version.
 
 Exit criteria:
-- Runbook governance policy survives restart and worker/API reloads deterministically.
-- Policy updates reject stale writes with explicit `409` conflict.
-- Tests cover persistence load/save, stale-write conflict, and diagnostics rollout metadata.
+- Runbook policy updates can be staged/validated before full activation.
+- Diagnostics expose per-consumer policy decision traceability.
+- Rollback path is deterministic, audited, and tested.
 
 ## Stage Execution Template
 

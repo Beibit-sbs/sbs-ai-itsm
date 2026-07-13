@@ -23,6 +23,7 @@ from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_event_consumer_delivery import JobEventConsumerDelivery
 from app.models.job_event_consumer_offset import JobEventConsumerOffset
 from app.models.job_event_autoremediation_policy_state import JobEventAutoremediationPolicyState
+from app.models.job_event_runbook_policy_state import JobEventRunbookPolicyState
 from app.models.knowledge_article import KnowledgeArticle
 from app.models.knowledge_article_feedback import KnowledgeArticleFeedback
 from app.models.knowledge_category import KnowledgeCategory
