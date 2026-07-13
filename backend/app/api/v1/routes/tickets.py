@@ -422,7 +422,15 @@ def _apply_queue_scope(statement, queue: str, current_user: AuthUserResponse):
             )
         )
     if queue_value == "due_today":
-        return statement.where(or_(func.date(Ticket.resolution_due_at) == now.date(), func.date(Ticket.sla_due_at) == now.date()))
+        return statement.where(
+            and_(
+                Ticket.status.not_in(CLOSED_STATUSES),
+                or_(
+                    func.date(Ticket.resolution_due_at) == now.date(),
+                    func.date(Ticket.sla_due_at) == now.date(),
+                ),
+            )
+        )
     if queue_value == "created_by_me":
         return statement.where(or_(Ticket.requester_id == current_user.id, func.lower(Ticket.requester_email) == current_user.email.lower()))
     if queue_value == "closed":

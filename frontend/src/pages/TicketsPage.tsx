@@ -25,6 +25,8 @@ import AppShell from '../components/AppShell'
 
 type QueueKey = 'all' | 'mine' | 'unassigned' | 'critical' | 'sla_breached' | 'due_today' | 'created_by_me' | 'closed'
 type TicketTab = 'overview' | 'comments' | 'history' | 'sla' | 'asset' | 'ai'
+type TicketSortBy = 'updated_at' | 'created_at' | 'priority' | 'status' | 'sla_due_at' | 'ticket_number'
+type TicketSortDir = 'asc' | 'desc'
 
 type TicketFormState = {
   title: string
@@ -162,6 +164,8 @@ export default function TicketsPage() {
   const [priorityFilter, setPriorityFilter] = useState('ALL')
   const [categoryFilter, setCategoryFilter] = useState('ALL')
   const [assigneeFilter, setAssigneeFilter] = useState('ALL')
+  const [sortBy, setSortBy] = useState<TicketSortBy>('updated_at')
+  const [sortDir, setSortDir] = useState<TicketSortDir>('desc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
 
@@ -187,7 +191,7 @@ export default function TicketsPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [queue, statusFilter, priorityFilter, categoryFilter, assigneeFilter, pageSize])
+  }, [queue, statusFilter, priorityFilter, categoryFilter, assigneeFilter, sortBy, sortDir, pageSize])
 
   useEffect(() => {
     if (!selectedTicketId && !isCreateOpen) return
@@ -220,7 +224,7 @@ export default function TicketsPage() {
   }, [isCreateOpen, isRequester, session?.user])
 
   const ticketsQuery = useQuery({
-    queryKey: ['tickets', session?.access_token, queue, debouncedSearch, statusFilter, priorityFilter, categoryFilter, assigneeFilter, page, pageSize],
+    queryKey: ['tickets', session?.access_token, queue, debouncedSearch, statusFilter, priorityFilter, categoryFilter, assigneeFilter, sortBy, sortDir, page, pageSize],
     queryFn: () =>
       fetchTicketsPage(session?.access_token ?? '', {
         queue,
@@ -229,6 +233,8 @@ export default function TicketsPage() {
         priority: priorityFilter,
         category: categoryFilter,
         assignee_name: assigneeFilter,
+        sort_by: sortBy,
+        sort_dir: sortDir,
         page,
         page_size: pageSize,
       }),
@@ -425,7 +431,7 @@ export default function TicketsPage() {
       </section>
 
       <section className="foundation-card tickets-toolbar" style={{ marginTop: 14 }}>
-        <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(6, minmax(0, 1fr))' }}>
+        <div className="tickets-toolbar-group" style={{ gridTemplateColumns: 'repeat(8, minmax(0, 1fr))' }}>
           <label className="inline-field">
             <span>Поиск</span>
             <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Номер, тема, заявитель" />
@@ -461,6 +467,24 @@ export default function TicketsPage() {
               {assigneeOptions.map((value) => (
                 <option key={value} value={value}>{value}</option>
               ))}
+            </select>
+          </label>
+          <label className="inline-field">
+            <span>Сортировать по</span>
+            <select value={sortBy} onChange={(event) => setSortBy(event.target.value as TicketSortBy)}>
+              <option value="updated_at">Обновлено</option>
+              <option value="created_at">Создано</option>
+              <option value="priority">Приоритет</option>
+              <option value="status">Статус</option>
+              <option value="sla_due_at">SLA дедлайн</option>
+              <option value="ticket_number">Номер</option>
+            </select>
+          </label>
+          <label className="inline-field">
+            <span>Порядок</span>
+            <select value={sortDir} onChange={(event) => setSortDir(event.target.value as TicketSortDir)}>
+              <option value="desc">Сначала новые</option>
+              <option value="asc">Сначала старые</option>
             </select>
           </label>
           <label className="inline-field">

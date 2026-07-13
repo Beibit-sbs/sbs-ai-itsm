@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 
 
@@ -295,3 +297,26 @@ def test_closed_ticket_can_be_reopened_by_manager(app) -> None:
         )
         assert reopen.status_code == 200, reopen.text
         assert reopen.json()["status"] == "REOPENED"
+
+
+def test_due_today_queue_excludes_closed_tickets(app) -> None:
+    with TestClient(app) as client:
+        admin_token = _login(client, "admin@sbs.local", "Sbs!2026")
+        ticket = _create_ticket(client, admin_token, title="Due today filter")
+
+        # Make ticket due today using public API, then close it.
+        patch_due = client.patch(
+            f"/api/v1/tickets/{ticket['id']}",
+            headers=_headers(admin_token),
+            json={"sla_due_at": datetime.now(UTC).isoformat()},
+        )
+        assert patch_due.status_code == 200, patch_due.text
+
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(admin_token), json={"status": "assigned"}).status_code == 200
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(admin_token), json={"status": "in_progress"}).status_code == 200
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(admin_token), json={"status": "resolved"}).status_code == 200
+        assert client.post(f"/api/v1/tickets/{ticket['id']}/transition", headers=_headers(admin_token), json={"status": "closed"}).status_code == 200
+
+        due_today = client.get("/api/v1/tickets?queue=due_today", headers=_headers(admin_token))
+        assert due_today.status_code == 200
+        assert all(item["id"] != ticket["id"] for item in due_today.json()["items"])
