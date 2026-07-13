@@ -1,7 +1,7 @@
 # Stage 025: Recovery Policy Safety (Autoremediation Governance Controls)
 
 **Date:** 2026-07-13  
-**Commit Hash:** TBD  
+**Commit Hash:** e595ab0  
 **Status:** ✅ COMPLETE  
 
 ## Overview

@@ -48,7 +48,7 @@
 
 ### PLATFORM-CORE-ASYNC-CONSUMER-RECOVERY-POLICY-SAFETY-025
 **Objective:** Extend policy safety controls to recovery/autoremediation policies (consistency across governance)
-**Commit:** TBD (6c0c615 for report/ledger)  
+**Commit:** e595ab0  
 **Status:** ✅ COMPLETE  
 **Key Features:**
 - Staged activation for autoremediation policy updates (`validate_only` flag)
