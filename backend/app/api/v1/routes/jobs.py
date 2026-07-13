@@ -66,6 +66,13 @@ from app.services.jobs.background_scheduler import (
     restart_scheduler,
     get_scheduler_metrics,
 )
+from app.services.jobs.metrics_infrastructure import (
+    store_metrics_history,
+    update_metrics_snapshot,
+    get_metrics_history,
+    get_metrics_snapshot,
+    get_metrics_trend,
+)
 from app.services.rbac import has_permission, is_saas_root
 
 router = APIRouter(prefix="/jobs")
@@ -595,6 +602,60 @@ class SchedulerMetricsResponse(BaseModel):
     error_rate_percent: float
     average_errors_per_poll: float
     last_poll_time: datetime | None
+
+
+# Stage 032: Real Metrics Infrastructure Models
+class MetricsHistoryItem(BaseModel):
+    """Single metrics history record."""
+    id: str
+    rollout_id: str
+    collected_at: datetime
+    error_rate: float | None
+    latency_p99_ms: float | None
+    throughput_eps: float | None
+    cpu_percent: float | None
+    memory_percent: float | None
+    request_count: int | None
+    source: str | None
+    collection_duration_ms: int | None
+
+
+class MetricsHistoryResponse(BaseModel):
+    """Metrics history for a rollout."""
+    rollout_id: str
+    records: list[MetricsHistoryItem]
+    total_records: int
+    time_window_minutes: int | None
+
+
+class MetricsSnapshotResponse(BaseModel):
+    """Latest metrics snapshot."""
+    rollout_id: str
+    error_rate: float | None
+    latency_p99_ms: float | None
+    throughput_eps: float | None
+    cpu_percent: float | None
+    memory_percent: float | None
+    request_count: int | None
+    snapshot_at: datetime | None
+    error_rate_baseline: float | None
+    error_rate_previous: float | None
+    error_rate_increasing: bool | None
+    error_rate_change_percent: float | None
+
+
+class MetricsTrendResponse(BaseModel):
+    """Trend analysis for metrics."""
+    rollout_id: str
+    time_window_minutes: int
+    data_points: int
+    error_rate_min: float | None
+    error_rate_max: float | None
+    error_rate_avg: float | None
+    error_rate_trend: str | None  # "up", "down", "stable"
+    latency_min: float | None
+    latency_max: float | None
+    latency_avg: float | None
 
 
 class JobEventConsumerRunbookRequest(BaseModel):
@@ -3719,6 +3780,147 @@ def get_scheduler_metrics_endpoint(
         error_rate_percent=metrics["error_rate_percent"],
         average_errors_per_poll=metrics["average_errors_per_poll"],
         last_poll_time=metrics.get("last_poll_time"),
+    )
+
+
+# Stage 032: Real Metrics Infrastructure Endpoints
+
+@router.get(
+    "/metrics/history/{rollout_id}",
+    response_model=MetricsHistoryResponse,
+)
+def get_metrics_history_endpoint(
+    rollout_id: str,
+    limit: int = Query(100, ge=10, le=1000),
+    minutes_back: int | None = Query(None, ge=1, le=10080),  # Up to 7 days
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetricsHistoryResponse:
+    """Get historical metrics for a rollout.
+    
+    Returns time-series metrics data for trend analysis.
+    
+    Returns:
+    - records: Historical metrics points
+    - total_records: Number of records returned
+    - time_window_minutes: Query time window (if specified)
+    """
+    _require_read(current_user)
+    
+    records = get_metrics_history(db, rollout_id, limit=limit, minutes_back=minutes_back)
+    
+    return MetricsHistoryResponse(
+        rollout_id=rollout_id,
+        records=[
+            MetricsHistoryItem(
+                id=record.id,
+                rollout_id=record.rollout_id,
+                collected_at=record.collected_at,
+                error_rate=record.error_rate,
+                latency_p99_ms=record.latency_p99_ms,
+                throughput_eps=record.throughput_eps,
+                cpu_percent=record.cpu_percent,
+                memory_percent=record.memory_percent,
+                request_count=record.request_count,
+                source=record.source,
+                collection_duration_ms=record.collection_duration_ms,
+            )
+            for record in records
+        ],
+        total_records=len(records),
+        time_window_minutes=minutes_back,
+    )
+
+
+@router.get(
+    "/metrics/snapshot/{rollout_id}",
+    response_model=MetricsSnapshotResponse,
+)
+def get_metrics_snapshot_endpoint(
+    rollout_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetricsSnapshotResponse:
+    """Get latest metrics snapshot for a rollout.
+    
+    Returns most recent metrics without joins (fast access).
+    Includes trend information vs previous poll.
+    
+    Returns:
+    - Current metrics values
+    - Baseline comparison
+    - Trend direction (up/down/stable)
+    """
+    _require_read(current_user)
+    
+    snapshot = get_metrics_snapshot(db, rollout_id)
+    
+    if snapshot is None:
+        return MetricsSnapshotResponse(
+            rollout_id=rollout_id,
+            error_rate=None,
+            latency_p99_ms=None,
+            throughput_eps=None,
+            cpu_percent=None,
+            memory_percent=None,
+            request_count=None,
+            snapshot_at=None,
+            error_rate_baseline=None,
+            error_rate_previous=None,
+            error_rate_increasing=None,
+            error_rate_change_percent=None,
+        )
+    
+    return MetricsSnapshotResponse(
+        rollout_id=snapshot.rollout_id,
+        error_rate=snapshot.error_rate,
+        latency_p99_ms=snapshot.latency_p99_ms,
+        throughput_eps=snapshot.throughput_eps,
+        cpu_percent=snapshot.cpu_percent,
+        memory_percent=snapshot.memory_percent,
+        request_count=snapshot.request_count,
+        snapshot_at=snapshot.snapshot_at,
+        error_rate_baseline=snapshot.error_rate_baseline,
+        error_rate_previous=snapshot.error_rate_previous,
+        error_rate_increasing=snapshot.error_rate_increasing,
+        error_rate_change_percent=snapshot.error_rate_change_percent,
+    )
+
+
+@router.get(
+    "/metrics/trend/{rollout_id}",
+    response_model=MetricsTrendResponse,
+)
+def get_metrics_trend_endpoint(
+    rollout_id: str,
+    minutes_back: int = Query(30, ge=1, le=10080),  # Up to 7 days
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetricsTrendResponse:
+    """Analyze metrics trend over time window.
+    
+    Provides trend analysis for anomaly detection and forecasting.
+    
+    Returns:
+    - Min/max/avg values for metrics
+    - Trend direction ("up", "down", "stable")
+    - Data point count
+    """
+    _require_read(current_user)
+    
+    trend = get_metrics_trend(db, rollout_id, minutes_back=minutes_back)
+    
+    return MetricsTrendResponse(
+        rollout_id=trend["rollout_id"],
+        time_window_minutes=trend["time_window_minutes"],
+        data_points=trend["data_points"],
+        error_rate_min=trend["error_rate_min"],
+        error_rate_max=trend["error_rate_max"],
+        error_rate_avg=trend["error_rate_avg"],
+        error_rate_trend=trend["error_rate_trend"],
+        latency_min=trend["latency_min"],
+        latency_max=trend["latency_max"],
+        latency_avg=trend["latency_avg"],
     )
 
 
