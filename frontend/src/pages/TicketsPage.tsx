@@ -208,6 +208,7 @@ export default function TicketsPage() {
   const [bulkStatus, setBulkStatus] = useState('IN_PROGRESS')
   const [bulkAssigneeId, setBulkAssigneeId] = useState('')
   const [bulkComment, setBulkComment] = useState('Массовая операция оператора')
+  const [isBulkPreviewOpen, setIsBulkPreviewOpen] = useState(false)
   const [presets, setPresets] = useState<TicketFilterPreset[]>([])
   const [presetName, setPresetName] = useState('')
   const [activePresetId, setActivePresetId] = useState('')
@@ -436,6 +437,7 @@ export default function TicketsPage() {
     },
     onSuccess: async () => {
       setSelectedTicketIds([])
+      setIsBulkPreviewOpen(false)
       await queryClient.invalidateQueries({ queryKey: ['tickets'] })
       await queryClient.invalidateQueries({ queryKey: ['notifications-unread-count'] })
     },
@@ -498,6 +500,16 @@ export default function TicketsPage() {
     })
     return Array.from(values).sort((a, b) => a.localeCompare(b, 'ru'))
   }, [tickets])
+
+  const selectedTicketsPreview = useMemo(
+    () => tickets.filter((ticket) => selectedTicketIds.includes(ticket.id)),
+    [tickets, selectedTicketIds]
+  )
+
+  const bulkAssigneeName = useMemo(() => {
+    if (!bulkAssigneeId) return 'Без назначения'
+    return users.find((user) => user.id === bulkAssigneeId)?.full_name ?? 'Выбранный исполнитель'
+  }, [bulkAssigneeId, users])
 
   const triageStats = useMemo(() => {
     const overdue = tickets.filter((ticket) => ticket.sla_badge === 'BREACHED').length
@@ -728,6 +740,68 @@ export default function TicketsPage() {
                 type="button"
                 className="ghost-button"
                 disabled={selectedTicketIds.length === 0 || bulkMutation.isPending}
+                onClick={() => setIsBulkPreviewOpen(true)}
+              >
+                Предпросмотр и подтверждение
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {isBulkPreviewOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setIsBulkPreviewOpen(false)}>
+          <div className="modal-card modal-card-large" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">BULK PREVIEW</p>
+                <h2>Подтверждение массового действия</h2>
+                <p className="modal-subtitle">Проверь список заявок и параметры операции перед применением.</p>
+              </div>
+              <button type="button" className="ghost-button" onClick={() => setIsBulkPreviewOpen(false)}>Закрыть</button>
+            </div>
+
+            <section className="foundation-card" style={{ marginBottom: 12 }}>
+              <div className="detail-fields">
+                <div><span>Количество заявок</span><strong>{selectedTicketsPreview.length}</strong></div>
+                <div><span>Новый статус</span><strong>{statusLabel(bulkStatus)}</strong></div>
+                <div><span>Назначение</span><strong>{bulkAssigneeName}</strong></div>
+                <div><span>Комментарий</span><strong>{bulkComment || '—'}</strong></div>
+              </div>
+            </section>
+
+            <section className="ticket-table-wrap" style={{ maxHeight: 320, overflow: 'auto' }}>
+              <table className="ticket-table">
+                <thead>
+                  <tr>
+                    <th>Номер</th>
+                    <th>Тема</th>
+                    <th>Текущий статус</th>
+                    <th>Приоритет</th>
+                    <th>Исполнитель</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedTicketsPreview.map((ticket) => (
+                    <tr key={ticket.id}>
+                      <td>{ticket.ticket_number ?? '—'}</td>
+                      <td>{ticket.title}</td>
+                      <td>{statusLabel(ticket.status)}</td>
+                      <td>{priorityLabel(ticket.priority)}</td>
+                      <td>{ticket.assignee_name ?? 'Не назначен'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+
+            <div className="analytics-actions" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+              <button type="button" className="ghost-button" onClick={() => setIsBulkPreviewOpen(false)}>
+                Отмена
+              </button>
+              <button
+                type="button"
+                disabled={selectedTicketIds.length === 0 || bulkMutation.isPending}
                 onClick={() =>
                   bulkMutation.mutate({
                     ticketIds: selectedTicketIds,
@@ -737,11 +811,11 @@ export default function TicketsPage() {
                   })
                 }
               >
-                {bulkMutation.isPending ? 'Применение...' : 'Применить к выбранным'}
+                {bulkMutation.isPending ? 'Применение...' : 'Подтвердить массовое действие'}
               </button>
             </div>
           </div>
-        </section>
+        </div>
       ) : null}
 
       <section className="foundation-card" style={{ marginTop: 12 }}>
