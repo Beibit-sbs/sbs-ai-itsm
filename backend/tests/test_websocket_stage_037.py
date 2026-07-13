@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.services.jobs.dashboard_websocket_service import (
     DashboardWebSocketManager,
+    DashboardStreamBroadcaster,
     ws_manager,
 )
 
@@ -321,6 +322,70 @@ class TestWebSocketIntegration:
         assert True
 
 
+class TestDashboardStreamBroadcaster:
+    """Tests for background stream broadcaster loops."""
+
+    @pytest.mark.asyncio
+    async def test_start_and_stop_broadcaster(self):
+        """Broadcaster should create and stop all stream tasks cleanly."""
+        manager = DashboardWebSocketManager()
+        broadcaster = DashboardStreamBroadcaster(
+            db_session_factory=MagicMock(),
+            manager=manager,
+            intervals={
+                "summary": 1,
+                "metrics": 1,
+                "alerts": 1,
+                "comparison": 1,
+                "anomalies": 1,
+                "correlation": 1,
+            },
+        )
+
+        await broadcaster.start()
+        assert broadcaster.is_running is True
+        assert len(broadcaster.tasks) == 6
+
+        await broadcaster.stop()
+        assert broadcaster.is_running is False
+        assert broadcaster.tasks == []
+
+    @pytest.mark.asyncio
+    async def test_stream_loop_broadcasts_for_connected_tenant(self):
+        """Loop should fetch and broadcast for active tenant connections."""
+        manager = DashboardWebSocketManager()
+        manager.active_connections["tenant-1"] = {MagicMock()}
+
+        broadcaster = DashboardStreamBroadcaster(
+            db_session_factory=MagicMock(),
+            manager=manager,
+            intervals={
+                "summary": 1,
+                "metrics": 1,
+                "alerts": 1,
+                "comparison": 1,
+                "anomalies": 1,
+                "correlation": 1,
+            },
+        )
+
+        payload = {"ok": True}
+        fetcher = MagicMock(return_value=payload)
+        sender = AsyncMock()
+
+        broadcaster.is_running = True
+        loop_task = asyncio.create_task(
+            broadcaster._run_stream_loop("summary", 3600, fetcher, sender)
+        )
+        await asyncio.sleep(0.05)
+        broadcaster.is_running = False
+        loop_task.cancel()
+        await asyncio.gather(loop_task, return_exceptions=True)
+
+        fetcher.assert_called_with("tenant-1")
+        sender.assert_called()
+
+
 class TestSocketTokenEndpoint:
     """Test the socket token endpoint for WebSocket authentication"""
 
@@ -365,5 +430,6 @@ all_tests = [
     TestDashboardWebSocketManager,
     TestWebSocketClientTypes,
     TestWebSocketIntegration,
+    TestDashboardStreamBroadcaster,
     TestSocketTokenEndpoint,
 ]

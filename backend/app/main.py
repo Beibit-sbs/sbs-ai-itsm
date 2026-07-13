@@ -13,6 +13,7 @@ from app.services.asset_sla import ensure_asset_sla_schema
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 from app.services.jobs.policy_state import load_policy_into_settings
 from app.services.jobs.runbook_policy_state import load_runbook_policy_into_settings
+from app.services.jobs.dashboard_websocket_service import dashboard_stream_broadcaster
 from app.services.notifications_schema import ensure_notifications_schema
 from app.services.reporting_schema import ensure_reporting_schema
 from app.services.seed import seed_demo_data, seed_system_data
@@ -42,7 +43,12 @@ async def lifespan(_: FastAPI):
             seed_system_data(db)
     finally:
         db.close()
-    yield
+
+    await dashboard_stream_broadcaster.start()
+    try:
+        yield
+    finally:
+        await dashboard_stream_broadcaster.stop()
 
 
 def create_app() -> FastAPI:

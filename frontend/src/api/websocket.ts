@@ -348,6 +348,13 @@ export function useDashboardWebSocket(baseUrl: string, accessToken: string) {
   const clientRef = React.useRef<DashboardWebSocketClient | null>(null)
 
   React.useEffect(() => {
+    if (!accessToken) {
+      setIsConnected(false)
+      setError(null)
+      clientRef.current = null
+      return
+    }
+
     const client = new DashboardWebSocketClient(baseUrl, accessToken)
     clientRef.current = client
 

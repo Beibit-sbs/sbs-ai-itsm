@@ -14,14 +14,13 @@ to reduce message overhead.
 """
 
 import asyncio
-import json
 import logging
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Set
 from datetime import datetime, UTC
 from contextlib import asynccontextmanager
 
 from fastapi import WebSocket, WebSocketDisconnect
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.services.jobs.dashboard_service import (
     get_dashboard_summary,
@@ -31,6 +30,8 @@ from app.services.jobs.dashboard_service import (
     get_anomaly_timeline,
     get_metric_correlation_matrix,
 )
+from app.db.session import SessionLocal
+from app.models.policy_canary_rollout import PolicyCanaryRollout
 
 logger = logging.getLogger(__name__)
 
@@ -200,121 +201,152 @@ class DashboardStreamBroadcaster:
     and broadcast updates to subscribed clients.
     """
 
-    def __init__(self, db_session: AsyncSession, tenant_id: str):
-        self.db_session = db_session
-        self.tenant_id = tenant_id
+    def __init__(
+        self,
+        db_session_factory: Callable[[], Session] = SessionLocal,
+        manager: DashboardWebSocketManager = ws_manager,
+        intervals: Dict[str, int] | None = None,
+    ):
+        self.db_session_factory = db_session_factory
+        self.manager = manager
         self.is_running = False
+        self.tasks: List[asyncio.Task] = []
+        self.intervals = intervals or {
+            "summary": 30,
+            "metrics": 30,
+            "alerts": 30,
+            "comparison": 60,
+            "anomalies": 60,
+            "correlation": 120,
+        }
 
-    async def start_broadcasting(self):
-        """Start background broadcasting tasks for this tenant."""
+    async def start(self):
+        """Start background broadcast loops for all active tenant connections."""
+        if self.is_running:
+            return
+
         self.is_running = True
-        
-        # Start concurrent broadcast tasks with staggered intervals
-        await asyncio.gather(
-            self._broadcast_summary_loop(),
-            self._broadcast_metrics_loop(),
-            self._broadcast_alerts_loop(),
-            self._broadcast_comparison_loop(),
-            self._broadcast_anomalies_loop(),
-            self._broadcast_correlation_loop(),
-            return_exceptions=True,
-        )
+        self.tasks = [
+            asyncio.create_task(
+                self._run_stream_loop("summary", self.intervals["summary"], self._fetch_summary, self.manager.broadcast_summary)
+            ),
+            asyncio.create_task(
+                self._run_stream_loop("metrics", self.intervals["metrics"], self._fetch_metrics, self.manager.broadcast_metrics)
+            ),
+            asyncio.create_task(
+                self._run_stream_loop("alerts", self.intervals["alerts"], self._fetch_alerts, self.manager.broadcast_alerts)
+            ),
+            asyncio.create_task(
+                self._run_stream_loop("comparison", self.intervals["comparison"], self._fetch_comparison, self.manager.broadcast_comparison)
+            ),
+            asyncio.create_task(
+                self._run_stream_loop("anomalies", self.intervals["anomalies"], self._fetch_anomalies, self.manager.broadcast_anomalies)
+            ),
+            asyncio.create_task(
+                self._run_stream_loop("correlation", self.intervals["correlation"], self._fetch_correlation, self.manager.broadcast_correlation)
+            ),
+        ]
 
-    async def stop_broadcasting(self):
-        """Stop background broadcasting tasks."""
+        logger.info("Dashboard stream broadcaster started")
+
+    async def stop(self):
+        """Stop all background broadcast loops."""
         self.is_running = False
 
-    async def _broadcast_summary_loop(self):
-        """Broadcast dashboard summary every 30 seconds."""
+        for task in self.tasks:
+            task.cancel()
+
+        if self.tasks:
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+
+        self.tasks = []
+        logger.info("Dashboard stream broadcaster stopped")
+
+    async def _run_stream_loop(
+        self,
+        stream_name: str,
+        interval_seconds: int,
+        fetcher: Callable[[str], dict],
+        broadcaster: Callable[[str, dict], asyncio.Future],
+    ):
         while self.is_running:
             try:
-                summary = await self._fetch_summary()
-                await ws_manager.broadcast_summary(self.tenant_id, summary)
-                await asyncio.sleep(30)  # 30 second interval
-            except Exception as e:
-                logger.error(f"Error in summary broadcast loop: {e}")
-                await asyncio.sleep(5)
+                tenant_ids = list(self.manager.active_connections.keys())
+                for tenant_id in tenant_ids:
+                    if self.manager.get_tenant_connection_count(tenant_id) == 0:
+                        continue
+                    payload = fetcher(tenant_id)
+                    await broadcaster(tenant_id, payload)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("Error in %s broadcast loop: %s", stream_name, exc)
 
-    async def _broadcast_metrics_loop(self):
-        """Broadcast metrics timeline every 30 seconds."""
-        while self.is_running:
             try:
-                metrics = await self._fetch_metrics()
-                await ws_manager.broadcast_metrics(self.tenant_id, metrics)
-                await asyncio.sleep(30)  # 30 second interval
-            except Exception as e:
-                logger.error(f"Error in metrics broadcast loop: {e}")
-                await asyncio.sleep(5)
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
 
-    async def _broadcast_alerts_loop(self):
-        """Broadcast active alerts every 30 seconds."""
-        while self.is_running:
-            try:
-                alerts = await self._fetch_alerts()
-                await ws_manager.broadcast_alerts(self.tenant_id, alerts)
-                await asyncio.sleep(30)  # 30 second interval
-            except Exception as e:
-                logger.error(f"Error in alerts broadcast loop: {e}")
-                await asyncio.sleep(5)
+    def _get_active_rollout_ids(self, db: Session, tenant_id: str, limit: int = 10) -> List[str]:
+        rollouts = (
+            db.query(PolicyCanaryRollout.id)
+            .filter(
+                PolicyCanaryRollout.tenant_id == tenant_id,
+                PolicyCanaryRollout.status == "active",
+            )
+            .limit(limit)
+            .all()
+        )
+        return [row[0] for row in rollouts]
 
-    async def _broadcast_comparison_loop(self):
-        """Broadcast rollout comparison every 60 seconds."""
-        while self.is_running:
-            try:
-                comparison = await self._fetch_comparison()
-                await ws_manager.broadcast_comparison(self.tenant_id, comparison)
-                await asyncio.sleep(60)  # 60 second interval
-            except Exception as e:
-                logger.error(f"Error in comparison broadcast loop: {e}")
-                await asyncio.sleep(5)
+    def _fetch_summary(self, tenant_id: str) -> dict:
+        with self.db_session_factory() as db:
+            return get_dashboard_summary(db, tenant_id)
 
-    async def _broadcast_anomalies_loop(self):
-        """Broadcast anomaly timeline every 60 seconds."""
-        while self.is_running:
-            try:
-                anomalies = await self._fetch_anomalies()
-                await ws_manager.broadcast_anomalies(self.tenant_id, anomalies)
-                await asyncio.sleep(60)  # 60 second interval
-            except Exception as e:
-                logger.error(f"Error in anomalies broadcast loop: {e}")
-                await asyncio.sleep(5)
+    def _fetch_metrics(self, tenant_id: str) -> dict:
+        with self.db_session_factory() as db:
+            rollout_ids = self._get_active_rollout_ids(db, tenant_id, limit=1)
+            if not rollout_ids:
+                return {
+                    "rollout_id": None,
+                    "metric_type": "error_rate",
+                    "timestamps": [],
+                    "values": [],
+                    "data_points": 0,
+                    "statistics": {},
+                }
+            return get_metrics_timeline(db, tenant_id, rollout_ids[0], minutes_back=60, metric_type="error_rate")
 
-    async def _broadcast_correlation_loop(self):
-        """Broadcast correlation matrix every 120 seconds."""
-        while self.is_running:
-            try:
-                correlation = await self._fetch_correlation()
-                await ws_manager.broadcast_correlation(self.tenant_id, correlation)
-                await asyncio.sleep(120)  # 120 second interval
-            except Exception as e:
-                logger.error(f"Error in correlation broadcast loop: {e}")
-                await asyncio.sleep(5)
+    def _fetch_alerts(self, tenant_id: str) -> dict:
+        with self.db_session_factory() as db:
+            return get_active_alerts(db, tenant_id, severity_filter=None, limit=50)
 
-    # Data fetching methods (run in sync context using run_in_executor or similar)
-    async def _fetch_summary(self) -> dict:
-        """Fetch dashboard summary."""
-        # In production, would call get_dashboard_summary with async support
-        return {}
+    def _fetch_comparison(self, tenant_id: str) -> dict:
+        with self.db_session_factory() as db:
+            rollout_ids = self._get_active_rollout_ids(db, tenant_id, limit=10)
+            if not rollout_ids:
+                return {"comparison": [], "count": 0}
+            return get_rollout_comparison(db, tenant_id, rollout_ids)
 
-    async def _fetch_metrics(self) -> dict:
-        """Fetch metrics timeline."""
-        return {}
+    def _fetch_anomalies(self, tenant_id: str) -> dict:
+        with self.db_session_factory() as db:
+            return get_anomaly_timeline(db, tenant_id, rollout_id=None, minutes_back=1440)
 
-    async def _fetch_alerts(self) -> dict:
-        """Fetch active alerts."""
-        return {}
+    def _fetch_correlation(self, tenant_id: str) -> dict:
+        with self.db_session_factory() as db:
+            rollout_ids = self._get_active_rollout_ids(db, tenant_id, limit=1)
+            if not rollout_ids:
+                return {
+                    "rollout_id": None,
+                    "correlation_matrix": {},
+                    "metric_count": 0,
+                    "time_window_minutes": 60,
+                }
+            return get_metric_correlation_matrix(db, tenant_id, rollout_ids[0], time_window_minutes=60)
 
-    async def _fetch_comparison(self) -> dict:
-        """Fetch rollout comparison."""
-        return {}
 
-    async def _fetch_anomalies(self) -> dict:
-        """Fetch anomaly timeline."""
-        return {}
-
-    async def _fetch_correlation(self) -> dict:
-        """Fetch correlation matrix."""
-        return {}
+# Global broadcaster instance started/stopped by app lifecycle
+dashboard_stream_broadcaster = DashboardStreamBroadcaster()
 
 
 # Connection lifecycle management

@@ -41,10 +41,23 @@ Current execution policy:
 ## Current Position
 
 - Branch: `main`
-- Last completed stage: `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-PERSISTENCE-023`
-- Latest stage implementation commit: `8727942`
+- Last completed stage: `FOUNDATION-038-REALTIME-BROADCAST-LIFECYCLE`
+- Latest stage implementation commit: `main` HEAD
 
 ## Stage Log (Newest First)
+
+- `HEAD` FOUNDATION-038-REALTIME-BROADCAST-LIFECYCLE
+  - Activated tenant-aware dashboard WebSocket broadcast loops in runtime lifecycle.
+  - Integrated broadcaster startup/shutdown with FastAPI app lifespan.
+  - Added broadcaster lifecycle and stream-loop tests.
+  - Migrated Monitoring page to hybrid realtime mode: removed interval polling, subscribe to streams, websocket-driven query invalidation.
+  - Report: `docs/reports/FOUNDATION-038-REALTIME-BROADCAST-LIFECYCLE-REPORT.md`
+
+- `multiple commits` FOUNDATION-024..037 (completed sequence)
+  - Governance/policy safety, rollout and enforcement chain, metrics polling/scheduler/infrastructure/analysis,
+    and dashboard stack (alerts, backend dashboard, frontend dashboard, websocket realtime) completed.
+  - Canonical stage reports: `docs/reports/PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-SAFETY-024-REPORT.md` ..
+    `docs/reports/FOUNDATION-037-WEBSOCKET-REALTIME-REPORT.md`.
 
 - `8727942` PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-PERSISTENCE-023
   - Added versioned DB persistence for runbook governance policy with startup/runtime reload into settings.
@@ -194,17 +207,17 @@ Current execution policy:
 - Track 1: PLATFORM-CORE
 
 ### Next recommended stage
-- `PLATFORM-CORE-ASYNC-CONSUMER-RUNBOOK-POLICY-SAFETY-024`
+- `FOUNDATION-039-FULL-PUSH-REALTIME-CACHE`
 
 Scope proposal:
-- Add runbook policy rollout safety controls: staged activation and optional dry-run validation mode for policy updates.
-- Add explicit runbook policy drift diagnostics at per-consumer level (effective policy decision trace).
-- Add guarded rollback endpoint for fast restore to previous policy version.
+- Replace websocket-triggered invalidation with direct cache updates (`setQueryData`) from stream payloads.
+- Add stream subscription filters for metric type/severity/window to reduce unnecessary payloads.
+- Add realtime E2E regression coverage for connect/subscribe/update flows.
 
 Exit criteria:
-- Runbook policy updates can be staged/validated before full activation.
-- Diagnostics expose per-consumer policy decision traceability.
-- Rollback path is deterministic, audited, and tested.
+- Monitoring dashboard can run without periodic REST polling in steady state.
+- Realtime payloads are scoped by filters and verified by tests.
+- CI has at least one E2E scenario validating end-to-end realtime updates.
 
 ## Stage Execution Template
 

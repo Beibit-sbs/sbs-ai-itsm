@@ -3,8 +3,8 @@
  * Displays system health, metrics, alerts, and anomalies
  */
 
-import { useState, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthContext'
 import AppShell from '../components/AppShell'
 import SystemHealthCard from '../components/monitoring/SystemHealthCard'
@@ -14,6 +14,7 @@ import RolloutComparisonTable from '../components/monitoring/RolloutComparisonTa
 import AnomalyTimelineCard from '../components/monitoring/AnomalyTimelineCard'
 import CorrelationMatrixCard from '../components/monitoring/CorrelationMatrixCard'
 import {
+  API_BASE_URL,
   fetchDashboardSummary,
   fetchMetricsTimeline,
   fetchActiveAlerts,
@@ -21,10 +22,12 @@ import {
   fetchAnomalyTimeline,
   fetchCorrelationMatrix,
 } from '../api/client'
+import { useDashboardWebSocket, type DashboardStreamListener } from '../api/websocket'
 
 export default function MonitoringPage() {
   const { session } = useAuth()
   const accessToken = session?.access_token ?? ''
+  const queryClient = useQueryClient()
 
   // State for filtering
   const [selectedMetric, setSelectedMetric] = useState('error_rate')
@@ -32,12 +35,20 @@ export default function MonitoringPage() {
   const [timeWindow, setTimeWindow] = useState(60) // minutes
   const [anomalyWindow, setAnomalyWindow] = useState(1440) // minutes (24h)
 
+  const websocketBaseUrl = useMemo(
+    () => API_BASE_URL.replace(/\/api\/v1\/?$/, ''),
+    []
+  )
+  const { client, isConnected: isRealtimeConnected, error: realtimeError } = useDashboardWebSocket(
+    websocketBaseUrl,
+    accessToken
+  )
+
   // Dashboard Summary Query
   const summaryQuery = useQuery({
     queryKey: ['monitoring-summary', accessToken],
     queryFn: () => fetchDashboardSummary(accessToken),
     enabled: !!accessToken,
-    refetchInterval: 30000, // Refresh every 30s
   })
 
   // Active Rollouts - needed for metrics and comparison
@@ -53,7 +64,6 @@ export default function MonitoringPage() {
     queryKey: ['monitoring-metrics', accessToken, primaryRollout, selectedMetric, timeWindow],
     queryFn: () => fetchMetricsTimeline(accessToken, primaryRollout, selectedMetric, timeWindow),
     enabled: !!accessToken && !!primaryRollout,
-    refetchInterval: 30000,
   })
 
   // Active Alerts Query
@@ -61,7 +71,6 @@ export default function MonitoringPage() {
     queryKey: ['monitoring-alerts', accessToken, alertSeverityFilter],
     queryFn: () => fetchActiveAlerts(accessToken, alertSeverityFilter, 50),
     enabled: !!accessToken,
-    refetchInterval: 30000,
   })
 
   // Rollout Comparison Query
@@ -69,7 +78,6 @@ export default function MonitoringPage() {
     queryKey: ['monitoring-comparison', accessToken, activeRollouts.join(',')],
     queryFn: () => fetchRolloutComparison(accessToken, activeRollouts),
     enabled: !!accessToken && activeRollouts.length > 0,
-    refetchInterval: 60000, // Refresh every 60s
   })
 
   // Anomaly Timeline Query
@@ -77,7 +85,6 @@ export default function MonitoringPage() {
     queryKey: ['monitoring-anomalies', accessToken, anomalyWindow],
     queryFn: () => fetchAnomalyTimeline(accessToken, undefined, anomalyWindow),
     enabled: !!accessToken,
-    refetchInterval: 60000,
   })
 
   // Correlation Matrix Query
@@ -85,8 +92,51 @@ export default function MonitoringPage() {
     queryKey: ['monitoring-correlation', accessToken, primaryRollout],
     queryFn: () => fetchCorrelationMatrix(accessToken, primaryRollout, timeWindow),
     enabled: !!accessToken && !!primaryRollout,
-    refetchInterval: 120000, // Refresh every 2min
   })
+
+  useEffect(() => {
+    if (!client || !accessToken) {
+      return
+    }
+
+    const listener: DashboardStreamListener = {
+      onSummaryUpdate: () => {
+        queryClient.invalidateQueries({ queryKey: ['monitoring-summary', accessToken] })
+      },
+      onMetricsUpdate: () => {
+        queryClient.invalidateQueries({ queryKey: ['monitoring-metrics', accessToken] })
+      },
+      onAlertsUpdate: () => {
+        queryClient.invalidateQueries({ queryKey: ['monitoring-alerts', accessToken] })
+      },
+      onComparisonUpdate: () => {
+        queryClient.invalidateQueries({ queryKey: ['monitoring-comparison', accessToken] })
+      },
+      onAnomaliesUpdate: () => {
+        queryClient.invalidateQueries({ queryKey: ['monitoring-anomalies', accessToken] })
+      },
+      onCorrelationUpdate: () => {
+        queryClient.invalidateQueries({ queryKey: ['monitoring-correlation', accessToken] })
+      },
+    }
+
+    client.addListener(listener)
+    return () => {
+      client.removeListener(listener)
+    }
+  }, [accessToken, client, queryClient])
+
+  useEffect(() => {
+    if (!client || !isRealtimeConnected) {
+      return
+    }
+
+    const streams = ['summary', 'metrics', 'alerts', 'comparison', 'anomalies', 'correlation'] as const
+    client.subscribe([...streams])
+    return () => {
+      client.unsubscribe([...streams])
+    }
+  }, [client, isRealtimeConnected])
 
   const summary = summaryQuery.data
   const metrics = metricsQuery.data
@@ -109,7 +159,8 @@ export default function MonitoringPage() {
     alertsQuery.error ||
     comparisonQuery.error ||
     anomaliesQuery.error ||
-    correlationQuery.error
+    correlationQuery.error ||
+    (realtimeError ? new Error(realtimeError) : null)
 
   return (
     <AppShell
@@ -127,7 +178,9 @@ export default function MonitoringPage() {
           </div>
           <div className="text-right text-xs text-gray-500">
             {summary?.timestamp && new Date(summary.timestamp).toLocaleTimeString()}
-            <p className="animate-pulse">● Updating...</p>
+            <p className={isRealtimeConnected ? 'animate-pulse text-emerald-600' : 'text-amber-600'}>
+              ● {isRealtimeConnected ? 'Real-time connected' : 'Real-time reconnecting'}
+            </p>
           </div>
         </div>
 
