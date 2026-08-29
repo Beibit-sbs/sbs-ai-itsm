@@ -1,6 +1,7 @@
 # SBS AI ITSM — Audited Backlog
 
-**Baseline:** 2026-08-29; Gate 0 evidence updated 2026-08-30  
+**Baseline:** 2026-08-29; Gate 0 closed 2026-08-30 on release source `abbced1e02d5be5f4394d96847feceaa9157f56b`
+
 **Priority scale:** P0 blocker/security/data loss; P1 critical business/release; P2 important; P3 improvement; P4 cosmetic.  
 **Rule:** `P0/P1` требуют evidence-backed closure до production launch. Gate 0 full regression не выявил активных P0 в его scope; это не заменяет Gate 1+ acceptance, DAST/pentest или проверку реальной серверной конфигурации.
 
@@ -11,27 +12,26 @@
 | STB-001 | `CLOSED` | One backend Ticket contract contains all 10 canonical states and the complete transition matrix; `OPEN`, `PENDING` and `WAITING` are rejected. |
 | STB-002 | `CLOSED` | REST, workflow, automation and bulk status paths use the canonical transition service with lock/version, history, audit, SLA, notifications and idempotency. The only business `ticket.status =` assignment is inside that service. |
 | STB-003 | `CLOSED` | The 10-by-10 matrix plus negative, security, concurrency, idempotency, workflow, automation and API tests pass in the 891-test full regression. |
-| REL-001 | `BLOCKED` | All 705 paths (`157` tracked + `548` untracked, `0` staged/deletions) are classified and pattern-scanned, but no release SHA exists. Tool safety requires explicit user approval before the classified worktree is staged/committed on `main`; no push is planned. |
-| REL-002 | `CLOSED` | Full result: 891 collected, 875 passed, 16 documented legacy skips, 0 failed/errors; 28/28 local release checks pass in 19.3 s with evidence SHA-256 `d8d37d0219b08e14b3fbee27a0e408629dc2dd15f0da3473b3d12c7d06b5f4b5`. |
+| REL-001 | `CLOSED` | Authorized local source `abbced1e02d5be5f4394d96847feceaa9157f56b` (tree `9d59a2c55027fc2d5d4de20e7a1667d0d9991b8d`) records exactly 705 paths: `548 A / 155 M / 2 D`, classes `383/68/88/164/2`. The two deletions are generated `*.tsbuildinfo` index removals retained locally and ignored. Manifest/path SHA-256: `16246fb733d01eae10b37f0df39ca163c3225a2b0dc108a95b936c6f1856c3f4` / `e0361c013cde6d68a4c9ec633b334ee22ba1d38b83226d8df7f80ad1062bae07`; no runtime/secret/operational data; no push. |
+| REL-002 | `CLOSED` | Full source regression: 891 collected, 875 passed, 16 documented legacy skips, 0 failed, 48 warnings in 1561.28 s; 28/28 local release checks pass with clean provenance and internal evidence SHA-256 `e0f788ade60439e75a6ff277d3d7c9e82762446f10457cd9662475806ccc13bd`. |
 | I18N-001 | `CLOSED` | RU/KK/EN catalogs and production page/component localization implemented; static inventory maps 4,562 of 4,562 visible candidates with zero unresolved findings. |
 | I18N-002 | `CLOSED` | Strict catalog/key/placeholder/visible-literal audit is wired into package and release/CI checks; recorded critical/other violations are 0/0. |
 | I18N-003 | `CLOSED` | Seven critical routes pass in RU/KK/EN without alert; every EN route has zero Cyrillic UI strings. `SD-3409` passes create/native validation, authoritative NEW actions, `NEW → CANCELLED`, terminal controls and final localized RU/EN/KK history. User/external values remain verbatim by design. |
 
-`CLOSED` means implemented and backed by the evidence in `docs/gates/GATE-0-REPORT.md`. It does not mean that Gate 1+ production-readiness work is complete.
+`CLOSED` means implemented and backed by the evidence in `docs/gates/GATE-0-REPORT.md`. Gate 1 is the next authorized gate but is `NOT STARTED`; overall production remains `NO-GO` until Gate 1+ and server-cutover evidence pass.
 
-## P1 — active critical/release blockers
+## P1 — active critical/external-readiness blockers
 
 | ID | Priority | Module | Problem | Required Change | Dependencies | Risk | Acceptance Criteria |
 |---|---|---|---|---|---|---|---|
-| REL-001 | P1 | Repository | The classified 705-path candidate is not represented by a release SHA | Obtain explicit user authorization, remove the two tracked generated `*.tsbuildinfo` paths from the index, create the coherent local commit and bind final evidence to it | user approval | unreproducible release/supply chain | final source and evidence resolve to one reviewed SHA; no secret/generated/runtime data is included |
-| ACC-001 | P1 | Acceptance | Only requester runtime route surface audited | Execute read/write UI/API acceptance for all seven roles | REL-001/002 | critical actions may fail or over-authorize | 7/7 role journeys and negative permission checks pass |
-| ACC-002 | P1 | Data/Acceptance | Most ITSM domains have zero representative records | Build repeatable acceptance dataset with services, assets, KB, SLA and workflows | REL-001 | false confidence from empty screens | dataset reproducible; each critical process has at least one lifecycle scenario |
-| ACC-003 | P1 | Tenant security | Application tenant isolation not accepted across all surfaces on current candidate | Run tenant isolation against API/search/export/websocket/files/jobs | ACC-002 | cross-tenant exposure | all positive/negative vectors pass and audit evidence exists |
+| ACC-001 | P1 | Acceptance | Only requester runtime route surface audited | Execute read/write UI/API acceptance for all seven roles | ACC-002 | critical actions may fail or over-authorize | 7/7 role journeys and negative permission checks pass |
+| ACC-002 | P1 | Data/Acceptance | Most ITSM domains have zero representative records | Build repeatable acceptance dataset with services, assets, KB, SLA and workflows | Gate 0 PASS | false confidence from empty screens | dataset reproducible; each critical process has at least one lifecycle scenario |
+| ACC-003 | P1 | Tenant security | Application tenant isolation not accepted across all surfaces on current source | Run tenant isolation against API/search/export/websocket/files/jobs | ACC-001/002 | cross-tenant exposure | all positive/negative vectors pass and audit evidence exists |
 | CAT-001 | P1 | Service Catalog | Runtime catalog items = 0 | Create governed university service portfolio data and owners | ACC-002, business owners | portal cannot deliver real services | approved published services visible by entitlement in RU/KK/EN |
 | SLA-001 | P1 | SLA/OLA | SLA policies and ticket SLA instances = 0 | Configure priority matrix, calendars, targets and escalation policies | CAT-001, business decisions | SLA UI/metrics not operational | reference cases produce approved deadlines/breaches/escalations |
 | INT-001 | P1 | Identity | OIDC disabled; production identity not accepted | Configure corporate OIDC, mappings and break-glass process | security/IdP owner | local-only login/identity lifecycle | login/logout/refresh/MFA/linking/provisioning acceptance passes |
 | INT-002 | P1 | Communications | SMTP/Graph/Teams/alert receivers not configured | Configure real sandbox channels with retry/DLQ/rotation/runbooks | credentials/security owners | notifications/operations cannot reach humans | real delivery and failure/replay evidence within SLO |
-| SEC-001 | P1 | Security/Release | No current DAST/pentest evidence for candidate | Run SAST/SCA/images/secrets/DAST and independent pentest | REL-001/002, staging | exploitable issue may be unknown | no open critical/high without approved exception/control |
+| SEC-001 | P1 | Security/Release | No current DAST/pentest evidence for release source | Run SAST/SCA/images/secrets/DAST and independent pentest | Gate 0 PASS, staging | exploitable issue may be unknown | no open critical/high without approved exception/control |
 
 ## P2 — important completeness and production work
 
@@ -63,14 +63,15 @@
 | NOT-001 | P2 | Notifications | Notification templates = 0 | Create versioned localized templates with owner/review/test | I18N, INT-002 | inconsistent/unlocalized messaging | template coverage for critical events in RU/KK/EN |
 | ANA-001 | P2 | Analytics | Demo terminology and compatibility export remain | Replace demo labels/routes with governed reports or clearly isolate | representative data | misleading executive view | no production screen labels operational data as demo |
 | ANA-002 | P2 | IT Director Dashboard | Network/server/service/license/change/security correlation incomplete | Define evidence-backed executive contract and drilldowns | CMDB/MON/CHG/SAM | incomplete management decisions | agreed KPIs reconcile with source DB and freshness SLO |
-| API-001 | P2 | API | Edge does not expose versioned OpenAPI artifact | Generate/sign/version spec in CI and publish controlled docs/SDK | REL-001 | integrator drift | spec diff gate; artifact linked to release SHA |
+| API-001 | P2 | API | Edge does not expose versioned OpenAPI artifact | Generate/sign/version spec in CI and publish controlled docs/SDK | Gate 0 PASS | integrator drift | spec diff gate; artifact linked to release SHA |
 | API-002 | P2 | API | Very large inline route schemas and manual frontend client | Introduce generated types/client gradually without breaking API | API-001 | contract mismatch | build uses versioned schema; breaking changes gated |
-| UI-001 | P2 | Frontend Tests | No active unit/component/E2E runner | Add Vitest/Testing Library/Playwright or equivalent | REL-001 | UI regressions invisible | package scripts/CI execute critical components/routes/roles/locales |
-| UI-002 | P2 | Frontend Lint | ESLint is installed, but there is no lint script or configuration | Define reviewed rules/config and add local/CI lint execution | REL-001 | code-quality regressions are not mechanically gated | lint is available from the package scripts and completes with documented zero-error policy |
-| UI-003 | P2 | Frontend Build | Main JavaScript chunk is 1,050.49 kB (289.18 kB gzip), above Vite's 500 kB warning threshold; Tickets chunk is 97.38 kB (20.97 kB gzip) | Split routes and stable vendor groups, then measure initial-route payload | UI-001 | slower first load/cache invalidation | production build has intentional chunks and agreed initial-route budget without behavior regression |
+| UI-001 | P2 | Frontend Tests | No active unit/component/E2E runner | Add Vitest/Testing Library/Playwright or equivalent | Gate 0 PASS | UI regressions invisible | package scripts/CI execute critical components/routes/roles/locales |
+| UI-002 | P2 | Frontend Lint | ESLint is installed, but there is no lint script or configuration | Define reviewed rules/config and add local/CI lint execution | Gate 0 PASS | code-quality regressions are not mechanically gated | lint is available from the package scripts and completes with documented zero-error policy |
+| UI-003 | P2 | Frontend Build | Main JavaScript chunk is 1,050.48 kB (289.17 kB gzip), above Vite's 500 kB warning threshold; Tickets chunk is 97.38 kB (20.97 kB gzip) | Split routes and stable vendor groups, then measure initial-route payload | UI-001 | slower first load/cache invalidation | production build has intentional chunks and agreed initial-route budget without behavior regression |
 | TST-001 | P2 | Backend Tests | 16 legacy Stage 026/027 contract tests are skipped after their endpoint/model contracts evolved | Migrate the 7 approval and 9 enforcement cases to current contracts or retire them with an approved trace | current policy owners | regression gaps can hide in permanently skipped suites | no unexplained skip remains; replacement coverage is linked to each retired case |
-| SEC-002 | P2 | Secrets Tooling | Candidate-specific pattern scan passes and CI includes Gitleaks, but Gitleaks is unavailable in the local release environment | Pin/document a local scanner path or import signed CI scan evidence into release provenance | REL-001, CI | local and CI release evidence diverge | final release record contains a successful tool-backed secret scan tied to the release SHA |
-| DEV-003 | P2 | Windows Build | Host Vite build hits Tailwind native-binding load failure and `spawn EPERM`; clean Docker build succeeds | Repair/pin the supported Windows Node/native dependency path and document Docker as fallback | package/runtime owners | local developer builds are unreliable | clean documented host install/typecheck/build passes without elevated/manual workarounds |
+| SEC-002 | P2 | Secrets Tooling | Source-specific pattern scan passes and CI includes Gitleaks, but Gitleaks is unavailable in the local release environment | Pin/document a local scanner path or import signed CI scan evidence into release provenance | Gate 0 PASS, CI | local and CI release evidence diverge | final release record contains a successful tool-backed secret scan tied to the release SHA |
+| DEV-003 | P2 | Build Tooling | The permitted direct Windows Vite build passes, but the restricted Codex sandbox/non-TTY package-manager path can stop before build (`spawn EPERM` or module-store confirmation) | Pin and document the supported non-interactive Node/pnpm clean-install and build path | package/runtime owners | automated local build evidence is harder to reproduce | clean documented non-interactive install/typecheck/build passes through the standard package script |
+| DOC-002 | P2 | Documentation/Evidence | Parent-to-release `git diff --check` has 121 formatting findings confined to Markdown (113) and versioned audit JSON (8); production-source findings are zero and clean-HEAD gate passes | Normalize versioned documentation/evidence whitespace without changing recorded facts | Gate 0 PASS | noisy review/evidence diffs | parent-delta formatting scan passes or has an explicitly approved bounded allowlist |
 | OPS-001 | P2 | Storage | Attachments use single Docker volume | Adopt S3-compatible encrypted/versioned storage and malware pipeline | server architecture | scale/HA/data loss limitation | signed upload/download, quarantine, integrity and backup tests pass |
 | OPS-002 | P2 | TLS/Edge | Compose endpoint is HTTP and assumes external TLS | Deploy governed TLS ingress/WAF/trusted proxy config | server target | transport/security failure | TLS scan, redirect/HSTS/trusted IP tests pass |
 | OPS-003 | P2 | DR | Tools exist, but current revision server restore/RPO/RTO not proven | Run encrypted off-host backup + isolated timed restore/PITR drill | server storage/DB | unrecoverable outage | approved RPO/RTO met; counts/hashes/auth/audit verified |
@@ -85,12 +86,12 @@
 | ARC-002 | P3 | Frontend | Admin/Tickets/Assets pages are very large | Extract feature panels/hooks with component tests | UI-001 | regression/maintainability | identical behavior/a11y; clear ownership boundaries |
 | ARC-003 | P3 | Schemas | Most Pydantic schemas inline in routes | Move stable shared contracts to domain schema modules | API-001 | duplication/cycles | OpenAPI diff proves compatibility |
 | ARC-004 | P3 | Lifecycle | State models duplicated across UI/API/services | Generate/display from canonical domain contracts where safe | STB-001 | future drift | one source for each lifecycle; contract tests |
-| DEV-001 | P3 | Local Tooling | pnpm wrapper hit non-TTY module-store mismatch | Pin/document package manager/runtime and clean install path | REL-001 | developer friction/non-reproducibility | fresh machine install/build scripts pass non-interactively |
-| DEV-002 | P3 | Test Hygiene | Many inaccessible `.pytest-tmp-*` directories pollute scans/status | Define safe test temp root/cleanup procedure and ignore policy | REL-001 | noisy audits/disk growth | tests leave bounded ignored artifacts; no permission warnings |
+| DEV-001 | P3 | Local Tooling | pnpm wrapper hit non-TTY module-store mismatch | Pin/document package manager/runtime and clean install path | Gate 0 PASS | developer friction/non-reproducibility | fresh machine install/build scripts pass non-interactively |
+| DEV-002 | P3 | Test Hygiene | Many inaccessible `.pytest-tmp-*` directories pollute scans/status | Define safe test temp root/cleanup procedure and ignore policy | Gate 0 PASS | noisy audits/disk growth | tests leave bounded ignored artifacts; no permission warnings |
 | UX-001 | P3 | Empty States | Critical domains are empty and usefulness is unclear | Add role-aware onboarding/config checklist without fake data | ACC-002 | user confusion | empty pages explain owner/next action and distinguish unavailable vs empty |
 | UX-002 | P3 | Admin | Configuration capabilities spread across admin/system/integrations | Add configuration readiness overview and deep links | Gate 1 | discovery/usability | admin can identify provider owner/status/test/action from one view |
 | UX-003 | P3 | Accessibility | Static baseline only; no manual screen reader/mobile acceptance | Run keyboard/screen reader/zoom/contrast/responsive audit by role | UI-001 | accessibility barriers | WCAG-targeted checklist passes; defects tracked |
-| DOC-001 | P3 | Documentation | Existing reports can become stale/contradictory | Add evidence date/SHA/status vocabulary and docs validation | REL-001 | false readiness | master/map/context update gate enforced in release checklist |
+| DOC-001 | P3 | Documentation | Existing reports can become stale/contradictory | Add evidence date/SHA/status vocabulary and docs validation | Gate 0 PASS | false readiness | master/map/context update gate enforced in release checklist |
 
 ## P4 — cosmetic/polish
 
@@ -103,11 +104,11 @@
 
 ## Recommended execution queue
 
-1. `I18N-003` and `REL-002` are closed. Obtain explicit user approval → create the local `REL-001` release SHA without push → bind final evidence/artifacts to it. Do not start Gate 1 while Gate 0 is blocked.
-2. After Gate 0 PASS: `ACC-002` → `ACC-001` → `ACC-003`.
-3. Service Desk/catalog/SLA rollout (`SD-*`, `CAT-001`, `REQ-001`, `SLA-001`).
-4. Integrations/CMDB/operations and optional governed AI follow the evidence-based Gates in `docs/ITSM-ROADMAP.md`.
-5. Schedule P2 engineering debt (`UI-001/002/003`, `TST-001`, `SEC-002`, `DEV-003`) without misrepresenting unavailable checks as PASS.
+1. Gate 0 is `PASS`; `REL-001`, `REL-002` and `I18N-003` are closed. Gate 1 is next and `NOT STARTED`: execute `ACC-002` → `ACC-001` → `ACC-003`.
+2. Service Desk/catalog/SLA rollout (`SD-*`, `CAT-001`, `REQ-001`, `SLA-001`).
+3. Integrations/CMDB/operations and optional governed AI follow the evidence-based Gates in `docs/ITSM-ROADMAP.md`.
+4. Schedule P2 engineering debt (`UI-001/002/003`, `TST-001`, `SEC-002`, `DEV-003`, `DOC-002`) without misrepresenting unavailable checks as PASS.
+5. Keep overall production `NO-GO` until the remaining acceptance, external-provider, security, scale and server-cutover gates pass.
 
 ## Closure record template
 

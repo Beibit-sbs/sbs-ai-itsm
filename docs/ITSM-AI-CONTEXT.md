@@ -6,15 +6,17 @@
 
 SBS AI ITSM is a multi-tenant, role-based university IT service management platform. It contains a React portal/admin workspace and a FastAPI modular monolith backed by PostgreSQL and Redis, plus workers, scheduler, monitoring, audit/security, integrations and governed AI capabilities.
 
-Current verdict: strong production-capable foundation with a locally verified Gate 0 candidate, **not yet a proven production release**. Gate 1+ and server cutover remain mandatory. See `docs/ITSM-SYSTEM-MASTER.md` for evidence.
+Current verdict: Gate 0 = `PASS` on an immutable, locally verified release source; the platform is a strong production-capable foundation, **not yet a proven production release**. Gate 1+ and server cutover remain mandatory. See `docs/ITSM-SYSTEM-MASTER.md` for evidence.
 
 ## Repository identity
 
 - Root: `C:\projects\sbs-ai-itsm-foundation-001`
 - Branch: `main`
-- Baseline HEAD: `0b04ada23744349f565b44d60d52182da7f6da38`
+- Gate 0 release source: `abbced1e02d5be5f4394d96847feceaa9157f56b`
+- Release parent / tree: `0b04ada23744349f565b44d60d52182da7f6da38` / `9d59a2c55027fc2d5d4de20e7a1667d0d9991b8d`
 - Origin: `https://github.com/Beibit-sbs/sbs-ai-itsm.git`
-- Important: the classified release candidate spans 705 files (157 tracked dirty + 548 untracked, 0 staged, 0 deletions); coherent commit is pending. Do not reset, clean, delete or overwrite user changes.
+- Release delta: exactly 705 paths (`548` added, `155` modified, `2` deleted), classes A/B/C/D/E = `383/68/88/164/2`; manifest SHA-256 `16246fb733d01eae10b37f0df39ca163c3225a2b0dc108a95b936c6f1856c3f4`; ordered path SHA-256 `e0361c013cde6d68a4c9ec633b334ee22ba1d38b83226d8df7f80ad1062bae07`.
+- The only Git deletions are `frontend/tsconfig.app.tsbuildinfo` and `frontend/tsconfig.node.tsbuildinfo`; both remain local and ignored. No push was performed. The later documentation/mode closure HEAD and its final evidence hash belong in ignored evidence/handoff, not as a self-reference here.
 - Runtime URL: `http://127.0.0.1:18080`
 - Compose project: `sbs-itsm-rehearsal`, env file `.env.rehearsal.local`, compose `docker-compose.prod.yml`.
 
@@ -55,12 +57,12 @@ Current verdict: strong production-capable foundation with a locally verified Ga
 - RBAC: 7 logical roles / 266 permission codes.
 - UI: login + 31 protected routes + wildcard fallback.
 - DB: 216 tables, 718 indexes, 654 foreign keys, 2 459 checks, 180 tenant-id tables, 0 PostgreSQL RLS policies.
-- Rehearsal data: 2 tenants, 7 users, 2 459 tickets, 22 797 audit events, 21 notifications, 9 job runs.
+- Rehearsal data: 2 tenants, 7 users, 2 459 tickets, 22 799 audit events, 21 notifications, 9 job runs.
 - Empty operational domains: assets, catalog items, requests, problems, changes, knowledge, SLA policies/instances, automation rules, workflows, AI corpus/evals/usage/actions, integration credentials/systems, event sources.
-- Audit chain verification: valid, 22 797 events, 3 chains, no failures.
+- Audit chain verification: valid, 22 799 events, 3 chains, no failures.
 - Readiness endpoint: postgres/redis/migrations/runtime/websocket all ready.
-- Gate 0 regression: 891 collected / 875 passed / 16 justified legacy skips / 0 failed.
-- Local release gate: 28/28 PASS in 19.3 s; evidence SHA-256 `d8d37d0219b08e14b3fbee27a0e408629dc2dd15f0da3473b3d12c7d06b5f4b5`; clean PostgreSQL 17 migration: 81 revisions, one base/head `20260829_0081`, 216 tables.
+- Gate 0 regression on the release source: 891 collected / 875 passed / 16 justified legacy skips / 0 failed / 48 warnings in 1561.28 s.
+- Local release gate: 28/28 PASS with clean source provenance; internal evidence SHA-256 `e0f788ade60439e75a6ff277d3d7c9e82762446f10457cd9662475806ccc13bd`; clean PostgreSQL 17 migration: 81 revisions, one base/head `20260829_0081`, 216 tables.
 - I18N: RU/KK/EN static source/UI coverage 4 562/4 562, unresolved 0; seven critical routes pass in every locale.
 
 ## Roles
@@ -151,12 +153,12 @@ Confirmed manual browser evidence on the final production build: seven critical 
 
 ## Test evidence
 
-- Full backend suite: **891 collected / 875 passed / 16 skipped / 0 failed** across 88 files.
+- Full backend suite: **891 collected / 875 passed / 16 skipped / 0 failed / 48 warnings in 1561.28 s** across 88 files.
 - The 16 skips are two explicitly marked legacy Stage 026/027 contract suites (`7 + 9`); review is documented.
 - Complete 10×10 ticket matrix, invalid/security/concurrency/idempotency and runtime race checks pass.
-- Local release gate: **28/28 PASS**; route auth contract and clean PostgreSQL 17 migration pass.
+- Local release gate: **28/28 PASS**, clean provenance for source `abbced1e02d5be5f4394d96847feceaa9157f56b`, internal evidence SHA-256 `e0f788ade60439e75a6ff277d3d7c9e82762446f10457cd9662475806ccc13bd`; route auth contract and clean PostgreSQL 17 migration pass.
 - Static frontend audits pass: i18n 4 562/4 562; accessibility 87 files/16 dialogs/0 issues; 681 buttons/39 links; `tsc -b` pass.
-- Production Docker smoke passes across frontend, auth, readiness, metrics and monitoring; 3 backend replicas are healthy.
+- Production Docker smoke passes all 8 checks across frontend, auth, readiness, metrics and monitoring; 3 backend replicas are healthy.
 - Manual browser evidence covers seven critical routes × three locales plus the complete `SD-3409` acceptance journey; it remains representative only, and Gate 1 still owns the full role journey matrix.
 - No active frontend unit/component/E2E package script.
 
@@ -164,9 +166,9 @@ Confirmed manual browser evidence on the final production build: seven critical 
 
 - `APP_ENV=production`, `DEMO_MODE=false`.
 - Redis job executor and realtime transport active.
-- Final frontend image: `sha256:4f80d483ec1c01a8e86d65e995991c8b8853c20aa9f35b0097e2d05e3f1d2215`, 152 modules. Main chunk: 1 050.49 kB / 289.18 kB gzip; Tickets chunk: 97.38 kB / 20.97 kB gzip.
-- Runtime smoke PASS; all containers healthy/running; 985 inspected log lines contain 0 errors and 0 HTTP 5xx.
-- Outbox: 12/12 published with zero pending/failures/locked/stale; 138 deliveries are DELIVERED; notification and automation consumers contain 69 records each and zero pending/failed/retryable/exhausted/unseen/lag.
+- Final frontend image: `sha256:4f80d483ec1c01a8e86d65e995991c8b8853c20aa9f35b0097e2d05e3f1d2215`, 152 modules. Main chunk: 1 050.48 kB / 289.17 kB gzip; Tickets chunk: 97.38 kB / 20.97 kB gzip.
+- Runtime smoke 8/8 PASS; all containers healthy/running and migrate exited `0`; 3 087 inspected log lines contain 0 errors and 0 HTTP 5xx.
+- Outbox: 12/12 published with zero pending/failures/locked; 138/138 deliveries are `DELIVERED`; notification and automation consumers contain 69 delivered records each and zero pending/failed.
 - OIDC disabled.
 - AI mock; OpenAI/Gemini keys absent.
 - SMTP/Slack/PagerDuty/custom alert receivers absent.
@@ -175,7 +177,7 @@ Confirmed manual browser evidence on the final production build: seven critical 
 
 ## Do not break
 
-1. Do not reset/clean/delete the dirty worktree or overwrite unrelated changes.
+1. Do not reset/clean/delete unreviewed work or overwrite unrelated user changes.
 2. Do not change architecture merely to reduce file size; modular monolith is the current target until measured need.
 3. Do not bypass backend RBAC/tenant/object-level filters.
 4. Do not expose passwords, API keys, OAuth secrets, refresh tokens or secret file content.
@@ -202,19 +204,19 @@ Confirmed manual browser evidence on the final production build: seven critical 
 
 ## Current blockers
 
-1. Candidate is not yet a coherent commit and CI/artifacts are not bound to a final SHA.
-2. No complete multi-role read/write browser acceptance.
-3. Empty representative business modules/data.
-4. External identity/AI/comms/integrations unconfigured.
-5. No server TLS/object storage/off-site DR/load/pentest evidence.
-6. No active frontend unit/component/E2E runner; main production bundle needs code splitting.
-7. Sixteen legacy Stage 026/027 contract tests remain explicitly skipped pending migration/removal/replacement.
+1. No complete multi-role read/write browser acceptance.
+2. Empty representative business modules/data.
+3. External identity/AI/comms/integrations unconfigured.
+4. No server TLS/object storage/off-site DR/load/pentest evidence.
+5. No active frontend unit/component/E2E runner; main production bundle needs code splitting.
+6. Sixteen legacy Stage 026/027 contract tests remain explicitly skipped pending migration/removal/replacement.
+7. Remote CI/tag/signing and server release provenance remain later Gate 8 work; they do not reopen local Gate 0.
 
 ## NEXT DEVELOPMENT GATE
 
-Gate 0 technical implementation and local validation are complete. Gate 0 remains `BLOCKED` solely by `REL-001`: the 705-path candidate has no approved coherent commit/release SHA. Formal closure requires explicit user approval, a local commit without push, and evidence/artifact binding to that SHA. Gate 1 remains `NO` until then.
+Gate 0 = `PASS`; `REL-001` is closed by authorized local source commit `abbced1e02d5be5f4394d96847feceaa9157f56b`, with clean local evidence and four image digests bound to it. No push was performed. Overall production remains `NO-GO` until the later gates pass.
 
-After that, execute **GATE 1 — Multi-Role Representative Acceptance** from `docs/ITSM-ROADMAP.md`:
+Gate 1 = `YES — next authorized gate, NOT STARTED`. When work begins, execute **GATE 1 — Multi-Role Representative Acceptance** from `docs/ITSM-ROADMAP.md`:
 
 1. create a versioned representative dataset and users for all seven roles;
 2. verify role navigation, positive/negative writes, object scope and tenant isolation;

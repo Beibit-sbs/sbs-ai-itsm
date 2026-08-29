@@ -8,8 +8,8 @@
 
 | Gate | Название | Основной результат | Блокирует запуск |
 |---|---|---|---|
-| 0 | Lifecycle Integrity, I18N and Release Baseline | безопасный канонический lifecycle, полные RU/KK/EN, проверенный локальный кандидат | **TECHNICAL PASS; FORMALLY BLOCKED solely by REL-001 commit/SHA** |
-| 1 | Multi-Role Representative Acceptance | все роли и основные процессы приняты на representative data | **NO — only after approved Gate 0 commit and evidence binding** |
+| 0 | Lifecycle Integrity, I18N and Release Baseline | безопасный канонический lifecycle, полные RU/KK/EN, проверенный локальный source | **PASS** |
+| 1 | Multi-Role Representative Acceptance | все роли и основные процессы приняты на representative data | **YES — NEXT AUTHORIZED GATE; NOT STARTED** |
 | 2 | Service Desk Productivity | macros, routing, rosters, shift-ready operation | Для Service Desk launch |
 | 3 | Service Portfolio, Requests and SLA | реальный каталог, approvals, SLA/OLA and escalation | Для self-service launch |
 | 4 | Assets, CMDB and Discovery | trusted CI/asset inventory and topology | Для impact/change/operations |
@@ -29,11 +29,11 @@
 - Ticket lifecycle centralized in `backend/app/services/ticket_lifecycle.py`; API, bulk, workflow, automation and event operations use the same authority.
 - Canonical states: `NEW/TRIAGE/ASSIGNED/IN_PROGRESS/WAITING_USER/WAITING_VENDOR/RESOLVED/CLOSED/REOPENED/CANCELLED`; invalid `OPEN/PENDING/WAITING` rejected, only `TRIAGED → TRIAGE` retained as historical alias.
 - RU/KK/EN strict static coverage: 4 562/4 562 visible candidates, unresolved/critical/other = 0; CI audit enabled. Seven critical routes × three locales pass without alert; every EN route contains zero Cyrillic UI strings.
-- Full backend: 891 collected / 875 passed / 16 reviewed legacy skips / 0 failed.
-- Local release gate: 28/28 PASS in 19.3 s, evidence SHA-256 `d8d37d0219b08e14b3fbee27a0e408629dc2dd15f0da3473b3d12c7d06b5f4b5`; clean PostgreSQL 17 upgrade: 81 revisions, one head `20260829_0081`, 216 tables.
-- Production-like Docker runtime, production smoke and live lifecycle race pass.
-- Final frontend image `sha256:4f80d483ec1c01a8e86d65e995991c8b8853c20aa9f35b0097e2d05e3f1d2215` contains 152 modules. Main chunk remains P2 at 1 050.49 kB / 289.18 kB gzip; Tickets chunk is 97.38 kB / 20.97 kB gzip.
-- Release candidate: 705 classified files (`157` tracked + `548` untracked, `0` staged/deletions); coherent commit and CI binding to final SHA still pending explicit user approval.
+- Full backend on release source: 891 collected / 875 passed / 16 reviewed legacy skips / 0 failed / 48 warnings in 1561.28 s.
+- Local release gate: 28/28 PASS with clean provenance for source `abbced1e02d5be5f4394d96847feceaa9157f56b`; internal evidence SHA-256 `e0f788ade60439e75a6ff277d3d7c9e82762446f10457cd9662475806ccc13bd`; clean PostgreSQL 17 upgrade: 81 revisions, one head `20260829_0081`, 216 tables.
+- Production-like Docker runtime, all 8 production-smoke checks and live lifecycle race pass. Latest DB: 2 tenants, 7 users, 2 459 tickets, 22 799 audit logs; runtime logs 3 087 with 0 errors/5xx; outbox 12/12 published and deliveries 138/138 (69 each) with no pending/failed work.
+- Final frontend image `sha256:4f80d483ec1c01a8e86d65e995991c8b8853c20aa9f35b0097e2d05e3f1d2215` contains 152 modules. Main chunk remains P2 at 1 050.48 kB / 289.17 kB gzip; Tickets chunk is 97.38 kB / 20.97 kB gzip.
+- Release source: authorized local commit `abbced1e02d5be5f4394d96847feceaa9157f56b`, tree `9d59a2c55027fc2d5d4de20e7a1667d0d9991b8d`, no push. Exact 705-path delta = `548 A / 155 M / 2 D`, classes `383/68/88/164/2`; manifest/path SHA-256 `16246fb733d01eae10b37f0df39ca163c3225a2b0dc108a95b936c6f1856c3f4` / `e0361c013cde6d68a4c9ec633b334ee22ba1d38b83226d8df7f80ad1062bae07`.
 - Frontend still has no active unit/component/E2E runner; this is documented P2 and does not replace Gate 1 acceptance.
 
 ## DELIVERED
@@ -43,14 +43,15 @@
 3. Complete 10×10 matrix plus negative/security/concurrency/idempotency regression and live runtime race tool.
 4. Strict three-locale catalog/parity/placeholder/literal audit and CI integration.
 5. Static RU/KK/EN source/UI coverage 4 562/4 562; seven critical routes × three locales and the final `SD-3409` create/validation/NEW-actions/CANCELLED/localized-history journey pass on the fresh production build. History rendering covers 27 current event types; eight producer files are AST-validated; user/external values remain verbatim.
-6. Safe worktree classification and `.gitignore` normalization without deletion of user data.
+6. Safe 705-path release classification and `.gitignore` normalization; only two generated `*.tsbuildinfo` index artifacts were removed, retained locally and ignored, with no user/runtime/secret/operational data deleted or committed.
 7. Full regression, TypeScript/i18n/a11y/control audits, production image build, smoke, route-auth and clean-migration checks.
 
-## RELEASE CLOSURE CONDITION
+## RELEASE CLOSURE RECORD
 
-- Create the explicitly approved coherent local commit without pushing.
-- Bind final gate report, CI and immutable artifact provenance to that SHA.
-- Do not label the complete product production-ready; Gate 1–8 remain independent acceptance gates.
+- Completed: the explicitly authorized local source commit was created without pushing.
+- Completed: clean local evidence and the four immutable image digests are bound to source SHA `abbced1e02d5be5f4394d96847feceaa9157f56b`.
+- The stable source SHA is recorded here; the later documentation/mode closure HEAD and final ignored-evidence hash are recorded after commit in the handoff, avoiding a self-reference.
+- Gate 0 closure does not label the complete product production-ready; Gate 1–8 remain independent acceptance gates and overall production is `NO-GO`.
 
 ## ACCEPTANCE EVIDENCE
 
@@ -60,16 +61,16 @@
 | Invalid legacy ticket statuses rejected | PASS |
 | History/audit/timestamps/SLA/notification/idempotency | PASS |
 | RU/KK/EN static UI coverage | PASS — 4 562/4 562; seven routes × three locales |
-| Full backend regression | PASS — 875 passed / 16 justified skips |
-| Local release gate | PASS — 28/28 in 19.3 s; evidence `d8d37d0219b0…f4b5` |
+| Full backend regression | PASS — 875 passed / 16 justified skips / 0 failed / 48 warnings in 1561.28 s |
+| Local release gate | PASS — 28/28; clean source provenance; evidence `e0f788ade604…13bd` |
 | Clean PostgreSQL 17 upgrade | PASS — 81 revisions / head 0081 / 216 tables |
-| Production Docker runtime/smoke | PASS |
+| Production Docker runtime/smoke | PASS — 8/8 smoke checks; healthy/running; migrate exit 0 |
 | Representative browser lifecycle | PASS — seven routes in RU/KK/EN, EN Cyrillic 0, `SD-3409` terminal lifecycle and localized history |
-| Coherent final commit + CI/artifacts bound to SHA | PENDING explicit commit approval |
+| Coherent local release source + local evidence/artifact manifest bound to source SHA | PASS — `abbced1e02d5…f56b`; no push |
 
 ## DEFINITION OF DONE
 
-Технические criteria Gate 0 выполнены. `I18N-003` и `REL-002` закрыты. Формальный Gate 0 остаётся `BLOCKED` исключительно по `REL-001`: release closure наступает после явного разрешения пользователя, записи final commit SHA без push и привязки связанных CI/artifact evidence в gate report. До этого Gate 1 = `NO`.
+Gate 0 = `PASS`; `REL-001`, `REL-002` и `I18N-003` закрыты evidence-backed source commit. Gate 1 = `YES — next authorized gate, NOT STARTED`. Production rollout остаётся `NO-GO` до многоролевой acceptance и последующих domain/integration/security/scale/server gates.
 
 # GATE 1 — Multi-Role Representative Acceptance
 
@@ -79,6 +80,7 @@
 
 ## CURRENT STATE
 
+- Gate 1 is authorized as the next development gate but is `NOT STARTED`.
 - Requester baseline browser audit: 8 accessible routes, 23 expected denied, console clean.
 - Organization-admin browser evidence подтверждает ticket list/detail/history и backend-authoritative transition options; это не полная role acceptance.
 - Manager/agent/security/knowledge и полная admin read/write matrix ещё не проверены.
@@ -95,7 +97,7 @@
 
 ## DEPENDENCIES
 
-Gate 0 must be formally closed; stable repeatable environment; approved role definitions.
+Gate 0 dependency is satisfied (`PASS`). Remaining dependencies: stable repeatable environment and approved role definitions.
 
 ## ACCEPTANCE CRITERIA
 
@@ -350,7 +352,7 @@ Approved evaluation report, model/prompt versions, cost limits, rollback plan, o
 
 ## CURRENT STATE
 
-Production-like compose healthy; local release gate 28/28, production smoke and clean PostgreSQL 17 migration pass. Нет committed-candidate CI evidence, external TLS/SSO/connectors, current DAST/pentest, representative scale and server DR proof.
+Production-like compose healthy; committed local Gate 0 source, source-bound 28/28 evidence, production smoke and clean PostgreSQL 17 migration pass. Нет remote/GitHub Actions or server-release evidence, external TLS/SSO/connectors, current DAST/pentest, representative scale and server DR proof.
 
 ## WHAT TO BUILD
 
@@ -386,6 +388,6 @@ Go/No-Go board has objective evidence for every criterion. Only a GO decision al
 
 ## NEXT DEVELOPMENT GATE
 
-> После явно одобренного coherent Gate 0 release commit и привязки evidence к его SHA следующим этапом выполнить **GATE 1 — Multi-Role Representative Acceptance**. До этого Gate 1 = `NO`.
+> Gate 0 = `PASS`. Следующий разрешённый этап — **GATE 1 — Multi-Role Representative Acceptance**; Gate 1 = `NOT STARTED`.
 
-Порядок Gate 1: подготовить repeatable representative dataset, затем пройти позитивные и негативные read/write journeys всех семи ролей, tenant/object isolation и audit evidence. Gate 0 нельзя трактовать как production launch approval; внешние providers, реальные business domains и server cutover закрываются последующими gates.
+Когда Gate 1 начнётся: подготовить repeatable representative dataset, затем пройти позитивные и негативные read/write journeys всех семи ролей, tenant/object isolation и audit evidence. Gate 0 нельзя трактовать как production launch approval; внешние providers, реальные business domains и server cutover закрываются последующими gates, поэтому overall production остаётся `NO-GO`.

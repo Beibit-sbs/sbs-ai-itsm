@@ -1,6 +1,7 @@
 # SBS AI ITSM — Compact System Map
 
-**Baseline:** 2026-08-30, current HEAD `0b04ada23744349f565b44d60d52182da7f6da38`, classified 705-file candidate (`157` tracked + `548` untracked, `0` staged/deletions); coherent commit pending  
+**Baseline:** 2026-08-30, Gate 0 release source `abbced1e02d5be5f4394d96847feceaa9157f56b` (parent `0b04ada23744349f565b44d60d52182da7f6da38`, tree `9d59a2c55027fc2d5d4de20e7a1667d0d9991b8d`); exact 705-path delta = `548 A / 155 M / 2 D`, classes `383/68/88/164/2`; manifest/path SHA-256 `16246fb733d01eae10b37f0df39ca163c3225a2b0dc108a95b936c6f1856c3f4` / `e0361c013cde6d68a4c9ec633b334ee22ba1d38b83226d8df7f80ad1062bae07`
+
 **Назначение:** быстрый контекст для разработчика/AI; подробности и readiness — в [ITSM-SYSTEM-MASTER.md](ITSM-SYSTEM-MASTER.md).
 
 ## Runtime topology
@@ -78,14 +79,14 @@ Status vocabulary: `ACTIVE` = runtime data/behavior observed; `IMPLEMENTED` = co
 | Event Ops | sources/receipts/normalize/correlate/suppress | monitoring/IT | event_sources, receipts, normalized events, policies/groups | `event-operations` 20 | `/events` | IMPLEMENTED/EMPTY |
 | Analytics | operational/executive KPIs | manager/admin/security | live aggregates | `analytics` 10 | `/dashboard`, `/analytics` | IMPLEMENTED; data gaps |
 | Reports | saved/snapshot/export | report roles | saved_reports, report_snapshots | `reports` 11 | `/analytics` | IMPLEMENTED/EMPTY; demo labels |
-| Audit | tamper-evident log/verify | admin/security | audit_logs, audit_chain_heads | `admin`, `security` | `/admin` | ACTIVE/VERIFIED: 22 797 valid events |
+| Audit | tamper-evident log/verify | admin/security | audit_logs, audit_chain_heads | `admin`, `security` | `/admin` | ACTIVE/VERIFIED: 22 799 valid events |
 | Data Governance | retention/legal hold/deletion/evidence | data/admin/security | retention, deletion, hold, evidence | `data-governance` 13 | `/admin/data-governance` | IMPLEMENTED |
 | Configuration | settings/revisions/guidance | admin | system_settings, setting revisions | `configuration-center` 4 | `/admin`, `/admin/system` | ACTIVE/PARTIAL |
 | Configuration | packages/deployments | config admin | packages, versions, deployments | `configuration-packages` 17 | `/admin/configuration-packages` | IMPLEMENTED |
 | Custom Fields | sets/versions/values | config/admin | custom_field_sets/versions/values | `custom-fields` 18 | `/admin/custom-fields` | IMPLEMENTED |
 | Tenant Experience | branding/profile/revisions/assets | tenant admin | experience profiles/revisions/assets | `tenant-experience` 6 | shared shell/admin | IMPLEMENTED |
 | Localization | localized content lifecycle | translator/reviewer/admin | localized_content_variants | `localized-content` 6 | shared/admin panel | VERIFIED: RU/KK/EN 4 562/4 562; seven critical routes × three locales PASS |
-| Jobs | queue/outbox/retry/DLQ | system/admin/security | job_runs, queue_outbox, lifecycle_events | `system` 68 aggregate | `/admin/system` | ACTIVE: outbox 12/12; 138 delivered; two consumers × 69, no pending/failure/retry/lag |
+| Jobs | queue/outbox/retry/DLQ | system/admin/security | job_runs, queue_outbox, lifecycle_events | `system` 68 aggregate | `/admin/system` | ACTIVE: outbox 12/12 published, no pending/failure/locked; deliveries 138/138; two consumers × 69, no pending/failed |
 
 ## Frontend route/access map
 
@@ -172,9 +173,9 @@ Ticket matrix: `NEW → TRIAGE | ASSIGNED | CANCELLED`; `TRIAGE → ASSIGNED | W
 
 1. Canonical ticket lifecycle centralized; invalid `OPEN/PENDING/WAITING` rejected; matrix, side effects, authorization, version conflict and idempotency tests pass.
 2. RU/KK/EN static coverage is 4 562/4 562 with zero unresolved candidates; strict audit is part of CI. History rendering covers all 27 current event types, the AST validator checks eight producer files, and user/external values remain verbatim.
-3. Full backend: 891 collected / 875 passed / 16 justified legacy skips / 0 failed.
-4. Local release gate: 28/28 PASS in 19.3 s, evidence SHA-256 `d8d37d0219b08e14b3fbee27a0e408629dc2dd15f0da3473b3d12c7d06b5f4b5`; clean PostgreSQL 17 migration: 81 revisions, one head `20260829_0081`, 216 tables. Final frontend image: `sha256:4f80d483ec1c01a8e86d65e995991c8b8853c20aa9f35b0097e2d05e3f1d2215`, 152 modules.
-5. Production-like Docker runtime and smoke pass. Seven critical routes pass in RU/KK/EN without alert, EN contains zero Cyrillic UI strings, and `SD-3409` passes create/native validation, authoritative NEW actions, `NEW → CANCELLED`, terminal-state controls and localized RU/EN/KK history. User-authored RU text remains verbatim by design.
-6. Runtime logs: 985 lines, zero errors and zero HTTP 5xx. Formal release closure still requires the approved coherent commit and CI/artifact binding to its SHA.
+3. Full backend on the release source: 891 collected / 875 passed / 16 justified legacy skips / 0 failed / 48 warnings in 1561.28 s.
+4. Local release gate: 28/28 PASS with clean provenance for source `abbced1e02d5be5f4394d96847feceaa9157f56b`; internal evidence SHA-256 `e0f788ade60439e75a6ff277d3d7c9e82762446f10457cd9662475806ccc13bd`. Clean PostgreSQL 17 migration: 81 revisions, one head `20260829_0081`, 216 tables. Final frontend image: `sha256:4f80d483ec1c01a8e86d65e995991c8b8853c20aa9f35b0097e2d05e3f1d2215`, 152 modules.
+5. Production-like Docker runtime and smoke pass 8/8 checks. Seven critical routes pass in RU/KK/EN without alert, EN contains zero Cyrillic UI strings, and `SD-3409` passes create/native validation, authoritative NEW actions, `NEW → CANCELLED`, terminal-state controls and localized RU/EN/KK history. User-authored RU text remains verbatim by design.
+6. Runtime logs: 3 087 lines, zero errors and zero HTTP 5xx. Outbox is 12/12 published with zero pending/fail/locked; deliveries are 138/138 (69 per consumer) with zero pending/failed. Gate 0 = `PASS`; the source, local evidence and four image digests are bound without a push.
 
-**NEXT DEVELOPMENT GATE AFTER APPROVED RELEASE COMMIT AND EVIDENCE BINDING:** [GATE 1 — Multi-Role Representative Acceptance](ITSM-ROADMAP.md#gate-1--multi-role-representative-acceptance). Until then Gate 1 = `NO`.
+**NEXT DEVELOPMENT GATE — YES, NOT STARTED:** [GATE 1 — Multi-Role Representative Acceptance](ITSM-ROADMAP.md#gate-1--multi-role-representative-acceptance). Gate 0 closure does not authorize production rollout; overall production remains `NO-GO` through the later acceptance and server-cutover gates.

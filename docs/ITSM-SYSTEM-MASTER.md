@@ -10,7 +10,7 @@
 
 | Маркер | Что подтверждает |
 |---|---|
-| `CODE` | Реализация обнаружена в исполняемом коде текущего worktree |
+| `CODE` | Реализация обнаружена в исполняемом коде release source |
 | `DB` | Схема или данные подтверждены read-only запросом к локальной PostgreSQL |
 | `API` | Маршрут обнаружен динамической introspection FastAPI/OpenAPI |
 | `RUNTIME` | Сервис, health check или конфигурация подтверждены в работающем compose-контуре |
@@ -23,11 +23,10 @@
 
 SBS AI ITSM сегодня — крупная модульная ITSM-платформа, а не прототип интерфейса: 216 PostgreSQL-таблиц, 621 OpenAPI path, 738 API-операций, 266 permission-кодов, 31 защищённый UI-маршрут и 891 собранный backend-тест. Реализованы Service Desk, requests, problem/change/release, CMDB/assets, SLA, knowledge, automation/workflow, AI governance/RAG/actions, integration platform, audit/security, tenant experience и production-like observability.
 
-Gate 0 технически устранил два ранее подтверждённых дефекта: все ticket status mutations теперь проходят через один lifecycle service, а статический RU/KK/EN-контракт покрывает 4 562 из 4 562 видимых строк. Полный backend suite и локальный release gate прошли без ошибок; production-like Docker runtime, финальная трёхъязычная browser-проверка и чистая миграция PostgreSQL 17 также подтверждены.
+Gate 0 устранил два ранее подтверждённых дефекта: все ticket status mutations теперь проходят через один lifecycle service, а статический RU/KK/EN-контракт покрывает 4 562 из 4 562 видимых строк. Полный backend suite и локальный release gate прошли; production-like Docker runtime, финальная трёхъязычная browser-проверка, чистая миграция PostgreSQL 17 и clean provenance локального release source также подтверждены. Gate 0 = `PASS` на source commit `abbced1e02d5be5f4394d96847feceaa9157f56b`.
 
-Однако текущий worktree всё ещё нельзя выпускать пользователям как доказанный production release. Главные причины:
+Этот локальный Gate 0 baseline всё ещё нельзя выпускать пользователям как доказанный production release. Главные причины:
 
-- `P1/RELEASE`: классифицированный кандидат состоит из 705 файлов (`157` tracked dirty + `548` untracked, `0` staged, без удалений), но coherent local commit ещё не создан и CI не привязан к его SHA.
 - `P1/ACCEPTANCE`: текущая сессия не заменяет многоролевую read/write-приёмку admin/manager/agent/security/knowledge/requester на representative data.
 - `P1/CONFIG`: OpenAI/Gemini, OIDC, внешняя доставка alerts, каталоги, SLA policies, workflow definitions и основные enterprise connectors в rehearsal не настроены и/или не наполнены.
 - `P1/SERVER`: нет server TLS, external secrets/object storage, off-host DR, capacity/soak и актуального pentest evidence.
@@ -41,15 +40,16 @@ Gate 0 технически устранил два ранее подтверж�
 | Workspace | `C:\projects\sbs-ai-itsm-foundation-001` | CODE |
 | Проект | `sbs-ai-itsm-backend` / `sbs-ai-itsm-frontend`, version `0.1.0` | CODE |
 | Git branch | `main` | CODE |
-| Start/current HEAD аудита | `0b04ada23744349f565b44d60d52182da7f6da38`; release commit pending | CODE |
-| Commit date | `2026-07-14T00:34:03+05:00` | CODE |
+| Audit start / release parent | `0b04ada23744349f565b44d60d52182da7f6da38` | CODE |
+| Release source SHA / tree | `abbced1e02d5be5f4394d96847feceaa9157f56b` / `9d59a2c55027fc2d5d4de20e7a1667d0d9991b8d` | CODE |
+| Release source commit date | `2026-08-30T01:16:29+05:00` | CODE |
 | Origin | `https://github.com/Beibit-sbs/sbs-ai-itsm.git` | CODE |
-| Release candidate worktree | 705 classified files: 157 tracked dirty + 548 untracked; 0 staged; 0 deletions; commit pending | CODE |
+| Release source delta | 705 paths: 548 added + 155 modified + 2 deleted; classes `383/68/88/164/2`; manifest SHA-256 `16246fb733d01eae10b37f0df39ca163c3225a2b0dc108a95b936c6f1856c3f4`; path SHA-256 `e0361c013cde6d68a4c9ec633b334ee22ba1d38b83226d8df7f80ad1062bae07` | CODE |
 | Runtime environment | `APP_ENV=production`, `DEMO_MODE=false` | RUNTIME |
 | Public local URL | `http://127.0.0.1:18080` | RUNTIME |
 | DB migration | clean PostgreSQL 17 upgrade: 81 revisions, one head `20260829_0081`, 216 tables | DB/RUNTIME |
 
-Вывод: кандидат классифицирован и локально проверен, но репозиторий не станет воспроизводимым release source до coherent commit и CI-подтверждения нового SHA/tag.
+Вывод: воспроизводимый локальный release source зафиксирован и проверен. Push не выполнялся; remote CI/tag/signing и server release provenance остаются отдельными более поздними требованиями, а closure HEAD и финальный ignored-evidence hash фиксируются после closure commit в handoff без самоссылки в документе.
 
 # 3. System Architecture
 
@@ -273,7 +273,7 @@ PostgreSQL 17.10: 216 base tables, 718 indexes, 654 foreign keys, 149 unique con
 - operations: job runs/outbox/lifecycle/events/consumer state, monitoring/event correlation, alerts/metrics/policy state;
 - governance: system/configuration/custom-field/localization/tenant-experience revisions, data retention/deletion/legal hold/evidence, tamper-evident audit.
 
-Фактические финальные rehearsal counts: 2 tenants, 7 users, 13 role rows, 266 permissions, 2 459 tickets, 22 797 audit events, 21 notifications, 9 job runs. Assets, articles, problems, changes, requests, catalog items, automation rules, workflow definitions, AI datasets/usage/actions, SLA policies/instances, integrations и event sources — `0`.
+Фактические финальные rehearsal counts: 2 tenants, 7 users, 13 role rows, 266 permissions, 2 459 tickets, 22 799 audit events, 21 notifications, 9 job runs. Assets, articles, problems, changes, requests, catalog items, automation rules, workflow definitions, AI datasets/usage/actions, SLA policies/instances, integrations и event sources — `0`.
 
 # 12. Service Desk
 
@@ -349,7 +349,7 @@ Canonical matrix: `NEW → TRIAGE | ASSIGNED | CANCELLED`; `TRIAGE → ASSIGNED 
 
 # 25. Notifications
 
-Есть in-app events, preferences, templates, unread count, email logs, notification outbox integration, Teams и webhook delivery paths. 21 notification существует; templates = 0. Финальная диагностика: outbox `12/12` published, pending/failures/locked/stale = `0`; `138` deliveries имеют статус `DELIVERED`; notification и automation consumers содержат по `69` записей, а pending/failed/retryable/exhausted/unseen/lag у обоих равны `0`. Runtime SMTP/Slack/PagerDuty/custom alert webhook не настроены, поэтому internal delivery integrity подтверждена, но real external receiver acceptance ещё отсутствует.
+Есть in-app events, preferences, templates, unread count, email logs, notification outbox integration, Teams и webhook delivery paths. 21 notification существует; templates = 0. Финальная диагностика: outbox `12/12` published, pending/failures/locked = `0`; deliveries `138/138` имеют статус `DELIVERED`; notification и automation consumers содержат по `69` delivered записей, а pending/failed у обоих равны `0`. Runtime SMTP/Slack/PagerDuty/custom alert webhook не настроены, поэтому internal delivery integrity подтверждена, но real external receiver acceptance ещё отсутствует.
 
 # 26. Integrations
 
@@ -363,13 +363,13 @@ Dashboard и Analytics показывают ticket/SLA/assets/knowledge/AI/secur
 
 # 28. Audit
 
-Audit log tenant-scoped, содержит actor/action/entity/IP/user-agent/metadata, monotonic sequence, previous hash/event hash и separate chain heads. Read-only verification на финальной rehearsal БД: `valid=true`, 22 797 events, 3 chains, 0 failures. Это сильная сторона. Требуются external immutable retention/export и periodic verification alarm для server production.
+Audit log tenant-scoped, содержит actor/action/entity/IP/user-agent/metadata, monotonic sequence, previous hash/event hash и separate chain heads. Read-only verification на финальной rehearsal БД: `valid=true`, 22 799 events, 3 chains, 0 failures. Это сильная сторона. Требуются external immutable retention/export и periodic verification alarm для server production.
 
 # 29. Security
 
 Подтверждены PBKDF2-SHA256 600k production hashes, password policy, short access/rotating refresh sessions, HttpOnly/Secure/Lax refresh cookie, revoke/replacement chain, login abuse controls, MFA encryption/TOTP/recovery, OIDC PKCE/nonce/asymmetric algorithm allowlist, SCIM rotating bearer tokens, RBAC, tenant filters, body/edge rate limits, security headers/CSP, secret files, read-only containers/cap-drop, CI dependency/image/secret scans и DAST workflow.
 
-Ограничения: tenant isolation только application layer (RLS=0); OIDC off; production TLS находится вне compose; нет актуального external pentest/DAST evidence; dirty worktree мешает supply-chain provenance; локальный attachment volume не соответствует multi-node/immutable storage target.
+Ограничения: tenant isolation только application layer (RLS=0); OIDC off; production TLS находится вне compose; нет актуального external pentest/DAST evidence; локальный attachment volume не соответствует multi-node/immutable storage target.
 
 # 30. Localization
 
@@ -383,15 +383,15 @@ Audit log tenant-scoped, содержит actor/action/entity/IP/user-agent/meta
 
 | Evidence | Результат |
 |---|---|
-| Full backend suite | 891 collected / 875 passed / 16 skipped / 0 failed; 88 files |
+| Full backend suite | 891 collected / 875 passed / 16 skipped / 0 failed / 48 warnings in 1561.28 s; 88 files |
 | Route auth contract | 746 total / 739 protected / 7 governed public, PASS |
 | Ticket lifecycle | complete 10×10 matrix, negative/security/concurrency/idempotency regression, PASS |
-| Local release gate | 28/28 PASS in 19.3 s; evidence SHA-256 `d8d37d0219b08e14b3fbee27a0e408629dc2dd15f0da3473b3d12c7d06b5f4b5` |
+| Local release gate | 28/28 PASS; clean provenance for source `abbced1e02d5be5f4394d96847feceaa9157f56b`; internal evidence SHA-256 `e0f788ade60439e75a6ff277d3d7c9e82762446f10457cd9662475806ccc13bd` |
 | Clean migration | PostgreSQL 17, 81 revisions, one base/head `20260829_0081`, 216 tables, PASS |
 | TypeScript / i18n | `tsc -b` PASS; RU/KK/EN 4 562/4 562; unresolved 0 |
 | Static accessibility | 87 source files, 16 dialogs, 0 issues, PASS |
 | Interactive controls | 681 buttons, 39 links, PASS |
-| Production runtime smoke | liveness/readiness/frontend/auth/metrics/Grafana/Alertmanager PASS; 3 backend replicas healthy |
+| Production runtime smoke | 8/8 PASS: liveness/readiness/frontend/auth/metrics/Grafana/Alertmanager; 3 backend replicas healthy |
 | Runtime lifecycle race | anonymous 401, invalid transition rejected, idempotent replay once, concurrent winner + 409 loser, final CLOSED |
 | Browser lifecycle evidence | Seven critical routes × RU/KK/EN PASS/no alert; EN Cyrillic count 0; `SD-3409` create/validation/NEW actions/CANCELLED/final localized history PASS |
 | Frontend unit/component/E2E runner | Not configured in package scripts; one TS test file exists but no active test command |
@@ -402,28 +402,28 @@ Audit log tenant-scoped, содержит actor/action/entity/IP/user-agent/meta
 
 Есть CI compose validation, backend lint/tests/migration graph, clean PostgreSQL migration, frontend build, pip/npm audits, Bandit, Trivy, Gitleaks; release workflow строит immutable images, scans, cosign/OIDC signatures, provenance attestations и release manifest; staging DAST использует OWASP ZAP baseline. Есть production preflight, smoke, tenant isolation, resilience, performance, authorization and release-gate scripts.
 
-Локальный release gate текущего кандидата прошёл `28/28` за 19,3 с; `ruff`, compileall, TypeScript, i18n/a11y/controls, route auth, migration graph, compose и release validators прошли. Evidence SHA-256: `d8d37d0219b08e14b3fbee27a0e408629dc2dd15f0da3473b3d12c7d06b5f4b5`. Текущий audit не подтверждает GitHub Actions для этого dirty worktree: до coherent commit/tag CI capability не является immutable release evidence. Финальный pattern scan охватил все 705 candidate paths: один private-key marker и шесть credential-like literals находятся только в test fixtures, production review-required = `0`. Gitleaks локально недоступен, хотя включён в CI.
+Локальный release gate прошёл `28/28`; `ruff`, compileall, TypeScript, i18n/a11y/controls, route auth, migration graph, compose и release validators прошли. Ignored source evidence имеет clean provenance для SHA `abbced1e02d5be5f4394d96847feceaa9157f56b`, четыре image digest и internal SHA-256 `e0f788ade60439e75a6ff277d3d7c9e82762446f10457cd9662475806ccc13bd`. Release delta содержит ровно 705 paths (`548 A / 155 M / 2 D`), manifest SHA-256 `16246fb733d01eae10b37f0df39ca163c3225a2b0dc108a95b936c6f1856c3f4` и path SHA-256 `e0361c013cde6d68a4c9ec633b334ee22ba1d38b83226d8df7f80ad1062bae07`; runtime/secret/operational data нет, credential-like matches ограничены fake test fixtures. Clean-HEAD `diff-check` PASS; parent-to-release scan имеет 121 P2 formatting finding только в Markdown (113) и versioned audit JSON (8), production-source findings = `0`. Gitleaks локально недоступен, хотя включён в CI; remote CI/tag/signing остаются требованиями Gate 8, а не блокером Gate 0.
 
 # 33. Deployment
 
-Compose содержит PostgreSQL, Redis, one-shot migration, 3 backend replicas, worker, scheduler, frontend/NGINX, Prometheus, Alertmanager и Grafana. Candidate production images собраны; frontend image `sha256:4f80d483ec1c01a8e86d65e995991c8b8853c20aa9f35b0097e2d05e3f1d2215`, 152 modules. Migrate завершился с кодом 0. Все containers healthy/running; readiness HTTP 200: postgres/redis/migrations/runtime/websocket all ready. Production smoke подтвердил liveness, readiness, frontend, anonymous API denial, authenticated metrics, Grafana, Alertmanager и login/me/logout. В 985 runtime log lines обнаружено `0` errors и `0` HTTP 5xx. Transactional outbox: 12/12 published, pending/failures/locked/stale = 0; deliveries: 138 `DELIVERED`; оба event consumer содержат по 69 записей и имеют pending/failed/retryable/exhausted/unseen/lag = 0.
+Compose содержит PostgreSQL, Redis, one-shot migration, 3 backend replicas, worker, scheduler, frontend/NGINX, Prometheus, Alertmanager и Grafana. Release-source production images собраны; frontend image `sha256:4f80d483ec1c01a8e86d65e995991c8b8853c20aa9f35b0097e2d05e3f1d2215`, 152 modules. Migrate завершился с кодом 0. Все containers healthy/running; readiness HTTP 200: postgres/redis/migrations/runtime/websocket all ready. Production smoke прошёл 8/8 checks: liveness, readiness, frontend, anonymous API denial, authenticated metrics, Grafana, Alertmanager и login/me/logout. В 3 087 runtime log lines обнаружено `0` errors и `0` HTTP 5xx. Transactional outbox: 12/12 published, pending/failures/locked = 0; deliveries: 138/138 `DELIVERED`; оба event consumer содержат по 69 delivered записей и имеют pending/failed = 0.
 
 Есть encrypted DB + runtime-data backup/restore tooling, retention, alerting и runbook. В этом аудите destructive restore не выполнялся. Server cutover требует внешний TLS, DNS/certificates, secret manager, off-host backups/object storage, external receivers, load/capacity and rollback drill.
 
 # 34. Known Problems
 
-1. `P1` Проверенный кандидат ещё не зафиксирован coherent commit и не имеет CI evidence, привязанного к final SHA.
-2. `P1` Нет полной многоролевой read/write browser acceptance на representative dataset.
-3. `P1` Rehearsal не содержит representative data для catalog/request/problem/change/release/CMDB/SLA/AI/workflow/integrations.
-4. `P1` External AI/identity/communications/integration providers не настроены.
-5. `P1` Нет server TLS/object storage/off-host DR/load/soak/current pentest evidence.
-6. `P2` Нет active frontend unit/component/E2E test runner.
-7. `P2` 16 legacy Stage 026/027 contract tests обоснованно skipped, но требуют отдельного решения: migration/removal/replacement.
-8. `P2` Production frontend main chunk `1 050.49 kB` (`289.18 kB` gzip) превышает порог Vite 500 kB и требует code splitting; отдельный Tickets chunk имеет `97.38 kB` (`20.97 kB` gzip).
-9. `P2` Нет PostgreSQL RLS defense-in-depth.
-10. `P2` OpenAPI spec не опубликован через edge как versioned artifact.
-11. `P2` Attachment storage — локальный Docker volume.
-12. `P2` Analytics содержит demo terminology/compat endpoints.
+1. `P1` Нет полной многоролевой read/write browser acceptance на representative dataset.
+2. `P1` Rehearsal не содержит representative data для catalog/request/problem/change/release/CMDB/SLA/AI/workflow/integrations.
+3. `P1` External AI/identity/communications/integration providers не настроены.
+4. `P1` Нет server TLS/object storage/off-host DR/load/soak/current pentest evidence.
+5. `P2` Нет active frontend unit/component/E2E test runner.
+6. `P2` 16 legacy Stage 026/027 contract tests обоснованно skipped, но требуют отдельного решения: migration/removal/replacement.
+7. `P2` Production frontend main chunk `1 050.48 kB` (`289.17 kB` gzip) превышает порог Vite 500 kB и требует code splitting; отдельный Tickets chunk имеет `97.38 kB` (`20.97 kB` gzip).
+8. `P2` Нет PostgreSQL RLS defense-in-depth.
+9. `P2` OpenAPI spec не опубликован через edge как versioned artifact.
+10. `P2` Attachment storage — локальный Docker volume.
+11. `P2` Analytics содержит demo terminology/compat endpoints.
+12. `P2` Parent-to-release formatting scan имеет 121 finding только в Markdown (113) и versioned audit JSON (8); production-source findings = 0, clean-HEAD gate проходит.
 
 # 35. Technical Debt
 
@@ -461,7 +461,8 @@ Compose содержит PostgreSQL, Redis, one-shot migration, 3 backend replic
 | Ticket lifecycle | VERIFIED | расширять multi-role operational scenarios в Gate 1 |
 | RU/KK/EN UI source contract | VERIFIED 4 562/4 562; seven routes × three locales PASS | full role matrix и будущий business content |
 | Backend regression | VERIFIED 875 pass / 16 justified skips | решить судьбу legacy skipped suites |
-| Local release gate | VERIFIED 28/28 | привязать CI/artifacts к coherent commit SHA |
+| Local release source | VERIFIED — commit `abbced1e…`, 705-path manifest/path hashes | remote CI/tag/signing остаются Gate 8 |
+| Local release gate | VERIFIED 28/28 — source-bound evidence `e0f788a…` | повторять после изменений |
 | Clean DB migration | VERIFIED on PostgreSQL 17 | server migration/rollback rehearsal позже |
 | Local Docker operations | VERIFIED healthy + smoke PASS | external TLS/secrets/storage/DR/load/on-call |
 | Multi-role/business acceptance | NOT VERIFIED | Gate 1 и representative data |
@@ -471,7 +472,7 @@ Compose содержит PostgreSQL, Redis, one-shot migration, 3 backend replic
 
 # 38. Development Roadmap
 
-Техническая реализация и локальные проверки Gate 0 завершены; формальное закрытие требует coherent release commit и привязки evidence к его SHA. Следующий development gate после этой фиксации — **GATE 1: Multi-Role Representative Acceptance**. Затем: Service Desk productivity; live catalog/SLA; CMDB/discovery; enterprise integrations; AI activation; server production gate. Полные criteria находятся в `docs/ITSM-ROADMAP.md`.
+Gate 0 = `PASS`: локальный release source зафиксирован, классифицирован и связан с clean evidence/artifact manifest. **Gate 1: Multi-Role Representative Acceptance** — следующий разрешённый development gate, `NOT STARTED`. Затем: Service Desk productivity; live catalog/SLA; CMDB/discovery; enterprise integrations; AI activation; server production gate. Полные criteria находятся в `docs/ITSM-ROADMAP.md`.
 
 # 39. Recommended Target Architecture
 
@@ -495,6 +496,6 @@ Compose содержит PostgreSQL, Redis, one-shot migration, 3 backend replic
 
 # 40. Final Verdict
 
-Проект имеет сильную глубину и уже превосходит обычную MVP ITSM: schema/API/security/governance/operations foundation впечатляюще широки. Технический scope Gate 0 подтвердил lifecycle integrity, полный статический и browser RU/KK/EN contract, regression, clean migration и production-like runtime. Но полнота кода и локальный baseline не равны готовности к пользователям. На 2026-08-30 система — **production-capable foundation with a technically verified Gate 0 candidate**, а не доказанный production release: Gate 0 формально `BLOCKED` исключительно по `REL-001`, потому что approved release commit/SHA ещё отсутствует.
+Проект имеет сильную глубину и уже превосходит обычную MVP ITSM: schema/API/security/governance/operations foundation впечатляюще широки. Gate 0 подтвердил lifecycle integrity, полный статический и browser RU/KK/EN contract, regression, clean migration, production-like runtime и воспроизводимый локальный source provenance. На 2026-08-30 Gate 0 = `PASS`, а `REL-001` закрыт source commit `abbced1e02d5be5f4394d96847feceaa9157f56b` без push. Но полнота кода и локальный baseline не равны готовности к пользователям: система остаётся **production-capable foundation**, а overall production rollout = **NO-GO** до последующих gates.
 
-**NEXT DEVELOPMENT GATE:** сейчас Gate 1 = `NO`. После явно одобренного coherent release commit и привязки evidence к его SHA выполнить **Gate 1 — Multi-Role Representative Acceptance**: read/write journeys всех семи ролей, tenant isolation и representative ITSM dataset. Только после последующих domain/configuration/security gates подключать внешние providers и идти к server cutover.
+**NEXT DEVELOPMENT GATE:** Gate 1 = `YES — next authorized gate, NOT STARTED`. Выполнить **Gate 1 — Multi-Role Representative Acceptance**: read/write journeys всех семи ролей, tenant isolation и representative ITSM dataset. Только после последующих domain/configuration/security gates подключать внешние providers и идти к server cutover.
