@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import AppShell from '../components/AppShell'
 import {
@@ -8,6 +8,7 @@ import {
   fetchIntegrationImportJobs,
   fetchIntegrationMappings,
   fetchIntegrationProviders,
+  fetchIntegrationRuntimeCapabilities,
   fetchIntegrationSystems,
   fetchIntegrationWebhooks,
   runIntegrationHealthCheck,
@@ -20,8 +21,16 @@ import {
   simulateIntegrationWebhook,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import IntegrationPlatformPanel from '../components/IntegrationPlatformPanel'
+import QueryFailureNotice from '../components/QueryFailureNotice'
+import LocalizedContent from '../experience/LocalizedContent'
+import { useTenantExperience } from '../experience/TenantExperienceContext'
 
-const tabs = [
+const productionTabs = [
+  { key: 'control-plane', label: 'Production API & Webhooks' },
+] as const
+
+const legacyTabs = [
   { key: 'overview', label: 'Overview' },
   { key: 'systems', label: 'Системы' },
   { key: 'providers', label: 'Провайдеры' },
@@ -29,65 +38,124 @@ const tabs = [
   { key: 'webhooks', label: 'Webhooks' },
   { key: 'events', label: 'Events' },
   { key: 'mappings', label: 'Mappings' },
-  { key: 'mock', label: 'Mock Actions' },
+  { key: 'mock', label: 'Legacy Demo / Mock' },
 ] as const
 
-type TabKey = (typeof tabs)[number]['key']
-
-function formatDateTime(value: string | null) {
-  if (!value) return '—'
-  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
-}
+type TabKey =
+  | (typeof productionTabs)[number]['key']
+  | (typeof legacyTabs)[number]['key']
 
 function statusBadge(status: string) {
-  if (['ok', 'completed', 'accepted', 'demo', 'planned', 'logged_only', 'mocked'].includes(status)) return 'badge-positive'
-  if (['degraded', 'running', 'warning'].includes(status)) return 'badge-warning'
+  if (['active', 'ok', 'completed', 'accepted', 'delivered', 'healthy', 'succeeded', 'success'].includes(status)) return 'badge-positive'
+  if (['degraded', 'running', 'warning', 'simulated', 'mock', 'demo', 'planned', 'future', 'logged_only', 'mocked'].includes(status)) return 'badge-warning'
   return 'badge-danger'
 }
 
 export default function IntegrationsPage() {
   const { session } = useAuth()
+  const { formatDateTime, translate } = useTenantExperience()
   const queryClient = useQueryClient()
-  const [activeTab, setActiveTab] = useState<TabKey>('overview')
+  const [activeTab, setActiveTab] = useState<TabKey>('control-plane')
   const [typeFilter, setTypeFilter] = useState('ALL')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [previewResult, setPreviewResult] = useState('')
   const [actionError, setActionError] = useState('')
+  const root = session?.user.role === 'saas_root'
+  const permissions = new Set(session?.user.permissions ?? [])
+  const has = (permission: string) => root || permissions.has(permission)
+  const canReadControlPlane = root
+    || Array.from(permissions).some((permission) => permission.startsWith('integration.platform.'))
+  const canAccessLegacy = root
+    || Array.from(permissions).some((permission) => permission.startsWith('integrations.'))
+  const canReadLegacy = has('integrations.read')
+  const canReadAnalytics = has('analytics.read')
+  const canReadJobs = has('integrations.import_jobs.read')
+  const canRunJobs = has('integrations.import_jobs.run')
+  const canReadWebhooks = has('integrations.webhooks.read')
+  const canManageWebhooks = has('integrations.webhooks.manage')
+  const canReadEvents = has('integrations.events.read')
+  const canReadMappings = has('integrations.mappings.read')
+  const canRunHealthCheck = has('integrations.health_check')
+  const runtimeCapabilitiesQuery = useQuery({
+    queryKey: ['integration-runtime-capabilities', session?.access_token],
+    queryFn: () => fetchIntegrationRuntimeCapabilities(session?.access_token ?? ''),
+    enabled: Boolean(session?.access_token) && canAccessLegacy,
+  })
+  const legacyDemoEnabled = runtimeCapabilitiesQuery.data?.legacy_demo_enabled === true
+  const tabs = useMemo(() => {
+    const available: Array<{ key: TabKey; label: string }> = []
+    if (canReadControlPlane) available.push(...productionTabs)
+    if (!legacyDemoEnabled) return available
+    for (const tab of legacyTabs) {
+      if (tab.key === 'overview' && canReadAnalytics) available.push(tab)
+      else if ((tab.key === 'systems' || tab.key === 'providers') && canReadLegacy) available.push(tab)
+      else if (tab.key === 'jobs' && canReadJobs) available.push(tab)
+      else if (tab.key === 'webhooks' && canReadWebhooks) available.push(tab)
+      else if (tab.key === 'events' && canReadEvents) available.push(tab)
+      else if (tab.key === 'mappings' && canReadMappings) available.push(tab)
+      else if (tab.key === 'mock' && (canRunJobs || canManageWebhooks)) available.push(tab)
+    }
+    return available
+  }, [
+    canManageWebhooks,
+    canAccessLegacy,
+    canReadAnalytics,
+    canReadControlPlane,
+    canReadEvents,
+    canReadJobs,
+    canReadLegacy,
+    canReadMappings,
+    canReadWebhooks,
+    canRunJobs,
+    legacyDemoEnabled,
+  ])
+
+  useEffect(() => {
+    if (tabs.some((tab) => tab.key === activeTab)) return
+    if (tabs[0]) setActiveTab(tabs[0].key)
+  }, [activeTab, tabs])
 
   const overviewQuery = useQuery({
     queryKey: ['integration-analytics-overview', session?.access_token],
     queryFn: () => fetchAnalyticsOverview(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && legacyDemoEnabled && canReadAnalytics)
+      && activeTab === 'overview',
   })
   const systemsQuery = useQuery({
     queryKey: ['integration-systems', session?.access_token, typeFilter, statusFilter],
     queryFn: () => fetchIntegrationSystems(session?.access_token ?? '', { system_type: typeFilter, status: statusFilter }),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && legacyDemoEnabled && canReadLegacy)
+      && activeTab === 'systems',
   })
   const providersQuery = useQuery({
     queryKey: ['integration-providers', session?.access_token],
     queryFn: () => fetchIntegrationProviders(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && legacyDemoEnabled && canReadLegacy)
+      && activeTab === 'providers',
   })
   const jobsQuery = useQuery({
     queryKey: ['integration-jobs', session?.access_token],
     queryFn: () => fetchIntegrationImportJobs(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && legacyDemoEnabled && canReadJobs)
+      && activeTab === 'jobs',
   })
   const eventsQuery = useQuery({
     queryKey: ['integration-events', session?.access_token],
     queryFn: () => fetchIntegrationEvents(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && legacyDemoEnabled && canReadEvents)
+      && activeTab === 'events',
   })
   const webhooksQuery = useQuery({
     queryKey: ['integration-webhooks', session?.access_token],
     queryFn: () => fetchIntegrationWebhooks(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && legacyDemoEnabled && canReadWebhooks)
+      && activeTab === 'webhooks',
   })
   const mappingsQuery = useQuery({
     queryKey: ['integration-mappings', session?.access_token],
     queryFn: () => fetchIntegrationMappings(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && legacyDemoEnabled && canReadMappings)
+      && activeTab === 'mappings',
   })
 
   const refetchCore = async () => {
@@ -100,6 +168,9 @@ export default function IntegrationsPage() {
   const healthMutation = useMutation({
     mutationFn: async (systemId: string) => {
       if (!session?.access_token) throw new Error('No session')
+      if (!legacyDemoEnabled || !canRunHealthCheck) {
+        throw new Error('Legacy demo action is unavailable')
+      }
       return runIntegrationHealthCheck(session.access_token, systemId)
     },
     onSuccess: async (data) => {
@@ -113,6 +184,9 @@ export default function IntegrationsPage() {
   const testMutation = useMutation({
     mutationFn: async (systemId: string) => {
       if (!session?.access_token) throw new Error('No session')
+      if (!legacyDemoEnabled || !canRunHealthCheck) {
+        throw new Error('Legacy demo action is unavailable')
+      }
       return runIntegrationTestConnection(session.access_token, systemId)
     },
     onSuccess: async (data) => {
@@ -126,6 +200,9 @@ export default function IntegrationsPage() {
   const importMutation = useMutation({
     mutationFn: async (payload: { external_system_id: string; job_type: string }) => {
       if (!session?.access_token) throw new Error('No session')
+      if (!legacyDemoEnabled || !canRunJobs) {
+        throw new Error('Legacy demo action is unavailable')
+      }
       return createIntegrationImportJob(session.access_token, payload)
     },
     onSuccess: async (data) => {
@@ -139,6 +216,9 @@ export default function IntegrationsPage() {
   const simulateMutation = useMutation({
     mutationFn: async (webhookId: string) => {
       if (!session?.access_token) throw new Error('No session')
+      if (!legacyDemoEnabled || !canManageWebhooks) {
+        throw new Error('Legacy demo action is unavailable')
+      }
       return simulateIntegrationWebhook(session.access_token, webhookId, { payload: { source: 'ui-demo', severity: 'high' }, create_demo_ticket: true })
     },
     onSuccess: async (data) => {
@@ -152,6 +232,10 @@ export default function IntegrationsPage() {
   const mockActionMutation = useMutation({
     mutationFn: async (action: 'ldap' | 'zimbra' | 'platonus' | 'moodle' | 'webhook') => {
       if (!session?.access_token) throw new Error('No session')
+      const canRunAction = action === 'webhook' ? canManageWebhooks : canRunJobs
+      if (!legacyDemoEnabled || !canRunAction) {
+        throw new Error('Legacy demo action is unavailable')
+      }
       if (action === 'ldap') return runMockLdapPullUsers(session.access_token)
       if (action === 'zimbra') return runMockZimbraPullMailboxes(session.access_token, true)
       if (action === 'platonus') return runMockPlatonusPullUsers(session.access_token)
@@ -178,20 +262,48 @@ export default function IntegrationsPage() {
   const statusTypes = useMemo(() => ['ALL', ...Array.from(new Set(systems.map((item) => item.status)))], [systems])
 
   return (
-    <AppShell title="Интеграции" subtitle="Подключение внешних систем, mock providers, webhooks, import jobs и журнал событий.">
+    <LocalizedContent><AppShell
+      title="Интеграции"
+      subtitle={legacyDemoEnabled
+        ? 'Production control plane и локальные demo/mock-сценарии.'
+        : 'Production API, service accounts, webhooks, delivery history и DLQ.'}
+    >
       <nav className="module-subnav" aria-label="Integrations navigation">
         {tabs.map((tab) => (
           <button type="button" className={`module-subnav-tab ${activeTab === tab.key ? 'active' : ''}`} key={tab.key} onClick={() => setActiveTab(tab.key)}>
-            {tab.label}
+            {translate(tab.label)}
           </button>
         ))}
       </nav>
 
+      {!runtimeCapabilitiesQuery.isPending && !legacyDemoEnabled ? (
+        <p className="state-panel state-panel-neutral">
+          Legacy demo/mock-коннекторы отключены. Production API, service
+          accounts, исходящие webhooks, delivery history и DLQ доступны в
+          рабочей панели.
+        </p>
+      ) : null}
+
+      <QueryFailureNotice
+        title="Часть данных Integration Operations недоступна."
+        sources={[
+          { label: 'runtime capabilities', query: runtimeCapabilitiesQuery },
+          { label: translate('оперативная сводка'), query: overviewQuery },
+          { label: translate('системы'), query: systemsQuery },
+          { label: translate('провайдеры'), query: providersQuery },
+          { label: 'import jobs', query: jobsQuery },
+          { label: 'integration events', query: eventsQuery },
+          { label: 'webhooks', query: webhooksQuery },
+          { label: 'field mappings', query: mappingsQuery },
+        ]}
+      />
       {actionError ? <p className="error-state">{actionError}</p> : null}
 
       <section className="module-content">
 
-      {activeTab === 'overview' ? (
+      {activeTab === 'control-plane' ? <IntegrationPlatformPanel /> : null}
+
+      {legacyDemoEnabled && activeTab === 'overview' ? (
         <>
         <section className="module-overview-grid">
           <article className="metric-card"><span>Активные системы</span><strong>{overviewQuery.isPending ? '…' : overview?.enabled_systems ?? 0}</strong><p>Активные connectors.</p></article>
@@ -232,7 +344,7 @@ export default function IntegrationsPage() {
         </>
       ) : null}
 
-      {activeTab === 'systems' ? (
+      {legacyDemoEnabled && activeTab === 'systems' ? (
         <>
           <section className="foundation-card table-toolbar">
             <div className="tickets-toolbar-group">
@@ -266,14 +378,14 @@ export default function IntegrationsPage() {
                       <td>{item.capabilities.join(', ')}</td>
                       <td>
                         <div className="analytics-actions">
-                          <button type="button" className="ghost-button" onClick={() => healthMutation.mutate(item.id)} disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}>Health check</button>
-                          <button type="button" className="ghost-button" onClick={() => testMutation.mutate(item.id)} disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}>Тест подключения</button>
-                          {(item.system_type === 'ldap' || item.system_type === 'zimbra' || item.system_type === 'platonus' || item.system_type === 'moodle') ? (
+                          {canRunHealthCheck ? <button type="button" className="ghost-button" onClick={() => healthMutation.mutate(item.id)} disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}>Health check</button> : null}
+                          {canRunHealthCheck ? <button type="button" className="ghost-button" onClick={() => testMutation.mutate(item.id)} disabled={healthMutation.isPending || testMutation.isPending || importMutation.isPending}>Тест подключения</button> : null}
+                          {canRunJobs && (item.system_type === 'ldap' || item.system_type === 'zimbra' || item.system_type === 'platonus' || item.system_type === 'moodle') ? (
                             <button
                               type="button"
                               className="ghost-button"
                               onClick={() => {
-                                const confirmed = window.confirm(`Запустить import preview для ${item.name}?`)
+                                const confirmed = window.confirm(`${item.name}: ${translate('Запустить import preview?')}`)
                                 if (!confirmed) return
                                 importMutation.mutate({ external_system_id: item.id, job_type: `${item.system_type}_preview` })
                               }}
@@ -293,7 +405,7 @@ export default function IntegrationsPage() {
         </>
       ) : null}
 
-      {activeTab === 'providers' ? (
+      {legacyDemoEnabled && activeTab === 'providers' ? (
         <section className="section-card dashboard-split">
           <div>
             <p className="eyebrow">PROVIDER REGISTRY</p>
@@ -328,7 +440,7 @@ export default function IntegrationsPage() {
         </section>
       ) : null}
 
-      {activeTab === 'jobs' ? (
+      {legacyDemoEnabled && activeTab === 'jobs' ? (
         <section className="section-card">
           <div className="ticket-table-wrap">
             <table className="ticket-table">
@@ -354,7 +466,7 @@ export default function IntegrationsPage() {
         </section>
       ) : null}
 
-      {activeTab === 'webhooks' ? (
+      {legacyDemoEnabled && activeTab === 'webhooks' ? (
         <section className="section-card">
           <div className="ticket-table-wrap">
             <table className="ticket-table">
@@ -369,11 +481,11 @@ export default function IntegrationsPage() {
                     <td>{item.target_system}</td>
                     <td><span className={`badge ${item.is_active ? 'badge-positive' : 'badge-danger'}`}>{item.is_active ? 'active' : 'inactive'}</span></td>
                     <td>{item.secret_ref ?? '—'}</td>
-                    <td><button type="button" className="ghost-button" onClick={() => {
-                      const confirmed = window.confirm(`Симулировать webhook ${item.name}?`)
+                    <td>{canManageWebhooks ? <button type="button" className="ghost-button" onClick={() => {
+                      const confirmed = window.confirm(`${item.name}: ${translate('Симулировать webhook?')}`)
                       if (!confirmed) return
                       simulateMutation.mutate(item.id)
-                    }} disabled={simulateMutation.isPending}>Simulate</button></td>
+                    }} disabled={simulateMutation.isPending}>Simulate</button> : null}</td>
                   </tr>
                 ))}
               </tbody>
@@ -382,7 +494,7 @@ export default function IntegrationsPage() {
         </section>
       ) : null}
 
-      {activeTab === 'events' ? (
+      {legacyDemoEnabled && activeTab === 'events' ? (
         <section className="section-card">
           <div className="ticket-table-wrap">
             <table className="ticket-table">
@@ -407,7 +519,7 @@ export default function IntegrationsPage() {
         </section>
       ) : null}
 
-      {activeTab === 'mappings' ? (
+      {legacyDemoEnabled && activeTab === 'mappings' ? (
         <section className="section-card">
           <div className="ticket-table-wrap">
             <table className="ticket-table">
@@ -430,17 +542,17 @@ export default function IntegrationsPage() {
         </section>
       ) : null}
 
-      {activeTab === 'mock' ? (
+      {legacyDemoEnabled && activeTab === 'mock' ? (
         <section className="section-card dashboard-split">
           <div>
             <p className="eyebrow">MOCK ACTIONS</p>
             <h2>Preview сценарии</h2>
             <div className="analytics-actions">
-              <button type="button" onClick={() => mockActionMutation.mutate('ldap')} disabled={mockActionMutation.isPending}>Pull LDAP users</button>
-              <button type="button" onClick={() => mockActionMutation.mutate('zimbra')} disabled={mockActionMutation.isPending}>Pull Zimbra mailboxes</button>
-              <button type="button" onClick={() => mockActionMutation.mutate('platonus')} disabled={mockActionMutation.isPending}>Pull Platonus users</button>
-              <button type="button" onClick={() => mockActionMutation.mutate('moodle')} disabled={mockActionMutation.isPending}>Pull Moodle users</button>
-              <button type="button" onClick={() => mockActionMutation.mutate('webhook')} disabled={mockActionMutation.isPending}>Simulate webhook event</button>
+              {canRunJobs ? <button type="button" onClick={() => mockActionMutation.mutate('ldap')} disabled={mockActionMutation.isPending}>Pull LDAP users</button> : null}
+              {canRunJobs ? <button type="button" onClick={() => mockActionMutation.mutate('zimbra')} disabled={mockActionMutation.isPending}>Pull Zimbra mailboxes</button> : null}
+              {canRunJobs ? <button type="button" onClick={() => mockActionMutation.mutate('platonus')} disabled={mockActionMutation.isPending}>Pull Platonus users</button> : null}
+              {canRunJobs ? <button type="button" onClick={() => mockActionMutation.mutate('moodle')} disabled={mockActionMutation.isPending}>Pull Moodle users</button> : null}
+              {canManageWebhooks ? <button type="button" onClick={() => mockActionMutation.mutate('webhook')} disabled={mockActionMutation.isPending}>Simulate webhook event</button> : null}
             </div>
           </div>
           <div>
@@ -451,6 +563,6 @@ export default function IntegrationsPage() {
         </section>
       ) : null}
       </section>
-    </AppShell>
+    </AppShell></LocalizedContent>
   )
 }

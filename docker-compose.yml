@@ -36,11 +36,15 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://sbs_itsm:change_me_before_production@postgres:5432/sbs_itsm}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       JOBS_EXECUTOR_MODE: ${JOBS_EXECUTOR_MODE:-redis}
       JOBS_QUEUE_NAME: ${JOBS_QUEUE_NAME:-jobs:queue}
       JOBS_DEAD_LETTER_QUEUE_NAME: ${JOBS_DEAD_LETTER_QUEUE_NAME:-jobs:dead-letter}
       JOBS_RETRY_BASE_SECONDS: ${JOBS_RETRY_BASE_SECONDS:-0.5}
       JOBS_RETRY_MAX_SECONDS: ${JOBS_RETRY_MAX_SECONDS:-15}
+      EMAIL_ATTACHMENT_STORAGE_PATH: /var/lib/sbs-ai-itsm/email-attachments
+    volumes:
+      - email_attachment_data:/var/lib/sbs-ai-itsm/email-attachments
     ports:
       - "8000:8000"
     depends_on:
@@ -68,6 +72,9 @@ services:
       JOBS_DEAD_LETTER_QUEUE_NAME: ${JOBS_DEAD_LETTER_QUEUE_NAME:-jobs:dead-letter}
       JOBS_RETRY_BASE_SECONDS: ${JOBS_RETRY_BASE_SECONDS:-0.5}
       JOBS_RETRY_MAX_SECONDS: ${JOBS_RETRY_MAX_SECONDS:-15}
+      EMAIL_ATTACHMENT_STORAGE_PATH: /var/lib/sbs-ai-itsm/email-attachments
+    volumes:
+      - email_attachment_data:/var/lib/sbs-ai-itsm/email-attachments
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,6 +88,8 @@ services:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
     ports:
       - "5173:8080"
+    environment:
+      TLS_PROXY_CIDR: ${TLS_PROXY_CIDR:-127.0.0.1/32}
     depends_on:
       backend:
         condition: service_healthy
@@ -88,3 +97,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  email_attachment_data:

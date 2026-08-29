@@ -1,0 +1,223 @@
+{
+  "schema_version": "2026.07.1",
+  "release_blocking_severities": ["CRITICAL", "HIGH"],
+  "controls": [
+    {
+      "id": "SEC-DEPENDENCY-PYTHON",
+      "type": "SCA",
+      "owner": "Application Security",
+      "command": "pip-audit",
+      "acceptance": "zero unresolved critical/high findings"
+    },
+    {
+      "id": "SEC-DEPENDENCY-FRONTEND",
+      "type": "SCA",
+      "owner": "Application Security",
+      "command": "npm audit --omit=dev --audit-level=high",
+      "acceptance": "zero unresolved critical/high findings"
+    },
+    {
+      "id": "SEC-SAST-PYTHON",
+      "type": "SAST",
+      "owner": "Application Security",
+      "command": "bandit -r app -x tests -ll -ii",
+      "acceptance": "zero unresolved high-confidence medium-or-higher findings"
+    },
+    {
+      "id": "SEC-IMAGE-BACKEND",
+      "type": "IMAGE",
+      "owner": "Platform Security",
+      "command": "anchore/scan-action",
+      "acceptance": "zero unresolved critical/high findings"
+    },
+    {
+      "id": "SEC-IMAGE-FRONTEND",
+      "type": "IMAGE",
+      "owner": "Platform Security",
+      "command": "anchore/scan-action",
+      "acceptance": "zero unresolved critical/high findings"
+    },
+    {
+      "id": "SEC-SECRETS",
+      "type": "SECRET",
+      "owner": "Application Security",
+      "command": "gitleaks detect --redact",
+      "acceptance": "zero verified secrets in Git history or worktree"
+    },
+    {
+      "id": "SEC-BODY-LIMIT",
+      "type": "ABUSE",
+      "owner": "Application Operations",
+      "command": "pytest tests/test_request_body_limits.py",
+      "acceptance": "declared and streamed oversize requests return 413"
+    },
+    {
+      "id": "SEC-RATE-LIMIT",
+      "type": "ABUSE",
+      "owner": "Platform Operations",
+      "command": "Nginx rate/connection acceptance",
+      "acceptance": "sustained per-IP excess returns 429 without backend saturation"
+    },
+    {
+      "id": "SEC-TENANT-CONCURRENCY",
+      "type": "ISOLATION",
+      "owner": "Application Security",
+      "command": "concurrent cross-tenant regression",
+      "acceptance": "zero cross-tenant reads, writes, search hits, events, or websocket data"
+    },
+    {
+      "id": "SEC-PRIVILEGE-DELEGATION",
+      "type": "AUTHORIZATION",
+      "owner": "Application Security",
+      "command": "pytest tests/test_admin_security.py -k amplify_or_delegate",
+      "acceptance": "non-root role managers cannot grant or assign any permission they do not currently hold"
+    },
+    {
+      "id": "SEC-SYSTEM-ROLE-INTEGRITY",
+      "type": "AUTHORIZATION",
+      "owner": "Application Security",
+      "command": "pytest tests/test_admin_security.py -k system_tenant_roles",
+      "acceptance": "non-root administrators cannot mutate built-in global or tenant system roles"
+    },
+    {
+      "id": "SEC-TENANT-ADMIN-CONTINUITY",
+      "type": "AUTHORIZATION",
+      "owner": "Identity Operations",
+      "command": "pytest tests/test_admin_security.py -k last_active_organization_admin",
+      "acceptance": "every active tenant retains at least one active organization administrator during role and account lifecycle changes"
+    },
+    {
+      "id": "SEC-MULTI-ROLE-EFFECTIVE-UNION",
+      "type": "AUTHORIZATION",
+      "owner": "Identity Operations",
+      "command": "pytest tests/test_admin_security.py -k effective_permission_union",
+      "acceptance": "creation and reassignment preserve the exact ordered multi-role set, primary role, and deduplicated effective permission union"
+    },
+    {
+      "id": "SEC-ROUTE-AUTHENTICATION-CONTRACT",
+      "type": "AUTHORIZATION",
+      "owner": "Application Security",
+      "command": "python scripts/validate_route_authentication.py",
+      "acceptance": "every API route is authenticated by a governed identity or integration credential unless present in the bounded public allowlist"
+    },
+    {
+      "id": "SEC-EDGE-HOST-BOUNDARY",
+      "type": "EDGE",
+      "owner": "Platform Security",
+      "command": "python scripts/validate_edge_security.py",
+      "acceptance": "the API accepts only explicit production Host values and rejects wildcard trust"
+    },
+    {
+      "id": "SEC-FORWARDED-IDENTITY-CHAIN",
+      "type": "EDGE",
+      "owner": "Platform Security",
+      "command": "python scripts/validate_edge_security.py",
+      "acceptance": "the TLS gateway, frontend proxy, and backend use distinct bounded network identities and sanitize forwarded client addresses"
+    },
+    {
+      "id": "SEC-REFRESH-TOKEN-FAMILY",
+      "type": "SESSION",
+      "owner": "Application Security",
+      "command": "python scripts/validate_session_security.py",
+      "acceptance": "refresh rotation is row-locked and replay of a replaced token revokes its full descendant session chain"
+    },
+    {
+      "id": "SEC-SELF-SERVICE-SESSIONS",
+      "type": "SESSION",
+      "owner": "Identity Operations",
+      "command": "python scripts/validate_session_security.py",
+      "acceptance": "every user can inspect and revoke only their own sessions with current-session-safe logout behavior"
+    },
+    {
+      "id": "SEC-SELF-PASSWORD-CHANGE",
+      "type": "SESSION",
+      "owner": "Identity Operations",
+      "command": "python scripts/validate_session_security.py",
+      "acceptance": "local users can change a policy-compliant password after current-password proof, all sessions are revoked, and external identities remain provider-managed"
+    },
+    {
+      "id": "SEC-REQUIRED-PASSWORD-CHANGE",
+      "type": "SESSION",
+      "owner": "Identity Operations",
+      "command": "python scripts/validate_session_security.py",
+      "acceptance": "administrator-issued passwords are temporary, all existing sessions are mandatorily revoked, and server-side access remains restricted until the user changes the password"
+    },
+    {
+      "id": "SEC-LOGIN-CREDENTIAL-ABUSE",
+      "type": "ABUSE",
+      "owner": "Application Security",
+      "command": "python scripts/validate_session_security.py",
+      "acceptance": "login input is bounded, unknown identities receive equivalent password-verification work, and rolling email plus sanitized-IP limits use indexed audit windows"
+    },
+    {
+      "id": "SEC-CANARY-EVIDENCE-INTEGRITY",
+      "type": "AUTOMATION",
+      "owner": "Release Engineering",
+      "command": "python scripts/validate_canary_evidence.py",
+      "acceptance": "policy canary progression and completion require root-attributed metrics evidence, missing or unavailable telemetry fails closed, and metrics destinations cannot be selected by API callers"
+    },
+    {
+      "id": "SEC-ALERT-DELIVERY-INTEGRITY",
+      "type": "INTEGRATION",
+      "owner": "Platform Operations",
+      "command": "python scripts/validate_alert_delivery.py",
+      "acceptance": "direct alert execution is root-only and audited, destinations are deployment-fixed, and SMTP, Slack, PagerDuty, or webhook delivery succeeds only after transport confirmation"
+    },
+    {
+      "id": "SEC-LEGACY-INTEGRATION-SIMULATION-BOUNDARY",
+      "type": "INTEGRATION",
+      "owner": "Integration Operations",
+      "command": "python scripts/validate_legacy_integration_boundary.py",
+      "acceptance": "legacy mock providers and previews are production-disabled, never create confirmed-delivery or imported-record evidence, and remain visibly distinct from the production integration control plane"
+    },
+    {
+      "id": "SEC-AUTOMATION-EXECUTION-INTEGRITY",
+      "type": "AUTOMATION",
+      "owner": "Automation Operations",
+      "command": "python scripts/validate_automation_execution_integrity.py",
+      "acceptance": "automation success is reserved for confirmed internal side effects, simulated and skipped actions remain explicit, ticket/rule/runbook/retry execution is tenant isolated, and manual runbooks cannot complete before every governed checklist step"
+    },
+    {
+      "id": "SEC-EMAIL-DELIVERY-INTEGRITY",
+      "type": "INTEGRATION",
+      "owner": "Messaging Operations",
+      "command": "python scripts/validate_email_delivery_integrity.py",
+      "acceptance": "mock email is production-disabled and remains explicit simulation without transport IDs, delivery timestamps, accepted counts, healthy readiness, or retry eligibility; Microsoft Graph acceptance and delivery stay separately evidenced"
+    },
+    {
+      "id": "SEC-TEAMS-DELIVERY-INTEGRITY",
+      "type": "INTEGRATION",
+      "owner": "Collaboration Operations",
+      "command": "python scripts/validate_teams_delivery_integrity.py",
+      "acceptance": "mock Teams connectors are production-disabled and remain explicit simulation without HTTP status, provider reference, delivery timestamp, attempts, success counters, healthy readiness, or production major-incident routing"
+    },
+    {
+      "id": "SEC-AI-PROVIDER-EVIDENCE-INTEGRITY",
+      "type": "AI_GOVERNANCE",
+      "owner": "AI Platform Operations",
+      "command": "python scripts/validate_ai_provider_evidence.py",
+      "acceptance": "local AI simulation and external-provider fallback never claim a live connection or external success; requested/effective provider, model, execution mode, and fallback evidence remain visible across runtime ledgers, APIs, and operator interfaces"
+    },
+    {
+      "id": "SEC-PERMISSION-AWARE-UI",
+      "type": "AUTHORIZATION",
+      "owner": "Application Security",
+      "command": "python scripts/validate_permission_aware_ui.py",
+      "acceptance": "custom and multi-role users receive navigation, direct-route access, dashboard requests, metrics, ticket/request visibility scopes, Asset operations, Event Operations, Major Incident access, and actions only from their effective permission union; unscoped record reads fail closed, requester ticket read never implies tenant-wide operational-event access, and denied UI state is explicit while backend authorization remains authoritative"
+    },
+    {
+      "id": "UX-OPERATIONAL-UI-STATES",
+      "type": "UX_RESILIENCE",
+      "owner": "Service Experience",
+      "command": "python scripts/validate_operational_ui_states.py",
+      "acceptance": "operator consoles distinguish loading, empty, stale, denied, and failed data; failed APIs never appear as valid zero metrics or empty queues, affected sources are identified, and retry remains explicit and accessible"
+    },
+    {
+      "id": "SEC-DAST",
+      "type": "DAST",
+      "owner": "Application Security",
+      "command": "authenticated OWASP ZAP staging scan",
+      "acceptance": "zero unresolved critical/high findings"
+    }
+  ]
+}

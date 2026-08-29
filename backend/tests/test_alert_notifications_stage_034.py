@@ -10,14 +10,14 @@ Test Categories:
 """
 
 import pytest
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-import json
 
 from app.services.jobs.alert_notifications import (
     NotificationService,
     NotificationChannelType,
     AlertSeverity,
+    MetricsCollectionError,
     PrometheusMetricsCollector,
     CloudWatchMetricsCollector,
     determine_routing,
@@ -36,7 +36,12 @@ def notification_service():
     return NotificationService(
         smtp_host="localhost",
         smtp_port=25,
+        smtp_from_address="alerts@example.com",
+        smtp_starttls=False,
+        email_recipients=["admin@example.com"],
         slack_webhook_url="https://hooks.slack.com/services/TEST",
+        pagerduty_routing_key="r" * 32,
+        webhook_url="https://example.com/webhook",
         timeout_seconds=5,
     )
 
@@ -44,13 +49,17 @@ def notification_service():
 @pytest.mark.asyncio
 async def test_send_email_notification(notification_service):
     """Test email notification sending."""
-    result = await notification_service.send_notification(
-        channel=NotificationChannelType.EMAIL,
-        title="High Error Rate",
-        message="Error rate exceeded 1.0%",
-        severity=AlertSeverity.HIGH,
-        recipients=["admin@example.com"],
-    )
+    with patch(
+        "app.services.jobs.alert_notifications.smtplib.SMTP"
+    ) as smtp:
+        smtp.return_value.__enter__.return_value.send_message.return_value = {}
+        result = await notification_service.send_notification(
+            channel=NotificationChannelType.EMAIL,
+            title="High Error Rate",
+            message="Error rate exceeded 1.0%",
+            severity=AlertSeverity.HIGH,
+            recipients=["admin@example.com"],
+        )
     
     assert result["channel"] == "email"
     assert result["sent"] is True
@@ -65,6 +74,7 @@ async def test_send_slack_notification(notification_service):
     with patch("aiohttp.ClientSession.post") as mock_post:
         mock_response = AsyncMock()
         mock_response.status = 200
+        mock_response.headers = {"x-slack-req-id": "slack-request-1"}
         mock_post.return_value.__aenter__.return_value = mock_response
         
         result = await notification_service.send_notification(
@@ -87,6 +97,7 @@ async def test_send_webhook_notification(notification_service):
     with patch("aiohttp.ClientSession.post") as mock_post:
         mock_response = AsyncMock()
         mock_response.status = 200
+        mock_response.headers = {"x-request-id": "webhook-request-1"}
         mock_post.return_value.__aenter__.return_value = mock_response
         
         result = await notification_service.send_notification(
@@ -104,13 +115,19 @@ async def test_send_webhook_notification(notification_service):
 @pytest.mark.asyncio
 async def test_send_pagerduty_notification(notification_service):
     """Test PagerDuty notification sending."""
-    result = await notification_service.send_notification(
-        channel=NotificationChannelType.PAGERDUTY,
-        title="Critical System Error",
-        message="System in degraded state",
-        severity=AlertSeverity.CRITICAL,
-        recipients=["on-call@example.com"],
-    )
+    with patch("aiohttp.ClientSession.post") as mock_post:
+        mock_response = AsyncMock()
+        mock_response.status = 202
+        mock_response.json = AsyncMock(
+            return_value={"status": "success", "dedup_key": "pd-event-1"}
+        )
+        mock_post.return_value.__aenter__.return_value = mock_response
+        result = await notification_service.send_notification(
+            channel=NotificationChannelType.PAGERDUTY,
+            title="Critical System Error",
+            message="System in degraded state",
+            severity=AlertSeverity.CRITICAL,
+        )
     
     assert result["channel"] == "pagerduty"
     assert result["sent"] is True
@@ -119,7 +136,8 @@ async def test_send_pagerduty_notification(notification_service):
 @pytest.mark.asyncio
 async def test_notification_without_webhook_url(notification_service):
     """Test webhook notification without URL configured."""
-    result = await notification_service.send_notification(
+    unconfigured_service = NotificationService()
+    result = await unconfigured_service.send_notification(
         channel=NotificationChannelType.WEBHOOK,
         title="Test",
         message="Test message",
@@ -127,7 +145,21 @@ async def test_notification_without_webhook_url(notification_service):
     )
     
     assert result["sent"] is False
-    assert "not provided" in result["error"]
+    assert "not configured" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_request_cannot_override_configured_webhook(notification_service):
+    """A caller cannot turn notification delivery into an SSRF primitive."""
+    result = await notification_service.send_notification(
+        channel=NotificationChannelType.WEBHOOK,
+        title="Test",
+        message="Test message",
+        custom_url="https://attacker.example/webhook",
+    )
+
+    assert result["sent"] is False
+    assert "deployment-configured" in result["error"]
 
 
 # ============================================================================
@@ -172,7 +204,7 @@ async def test_prometheus_collection_success(prometheus_collector):
 
 @pytest.mark.asyncio
 async def test_prometheus_empty_result(prometheus_collector):
-    """Test Prometheus with empty results."""
+    """Empty Prometheus evidence fails closed."""
     with patch("aiohttp.ClientSession.get") as mock_get:
         mock_response = AsyncMock()
         mock_response.status = 200
@@ -182,30 +214,26 @@ async def test_prometheus_empty_result(prometheus_collector):
         })
         mock_get.return_value.__aenter__.return_value = mock_response
         
-        metrics = await prometheus_collector.collect_metrics(
-            "crl-123",
-            "consumer-1",
-        )
-        
-        assert metrics["error_rate"] is None
-        assert metrics["latency_p99_ms"] is None
+        with pytest.raises(MetricsCollectionError):
+            await prometheus_collector.collect_metrics(
+                "crl-123",
+                "consumer-1",
+            )
 
 
 @pytest.mark.asyncio
 async def test_prometheus_http_error(prometheus_collector):
-    """Test Prometheus collection with HTTP error."""
+    """Prometheus HTTP failures cannot become nullable safe metrics."""
     with patch("aiohttp.ClientSession.get") as mock_get:
         mock_response = AsyncMock()
         mock_response.status = 500
         mock_get.return_value.__aenter__.return_value = mock_response
         
-        metrics = await prometheus_collector.collect_metrics(
-            "crl-123",
-            "consumer-1",
-        )
-        
-        assert metrics["error_rate"] is None
-        assert metrics["latency_p99_ms"] is None
+        with pytest.raises(MetricsCollectionError):
+            await prometheus_collector.collect_metrics(
+                "crl-123",
+                "consumer-1",
+            )
 
 
 # ============================================================================
@@ -240,7 +268,7 @@ async def test_cloudwatch_collection_stub():
     mock_client.get_metric_statistics.return_value = {
         "Datapoints": [
             {
-                "Timestamp": datetime.utcnow(),
+                "Timestamp": datetime.now(UTC),
                 "Average": 0.5,
             }
         ]
@@ -313,17 +341,29 @@ def test_route_info_alert():
 async def test_execute_alert_successful(notification_service):
     """Test successful alert execution."""
     db = MagicMock()
-    
-    result = await execute_alert(
-        db=db,
-        alert_rule_id="rule-123",
-        rollout_id="crl-456",
-        title="Error Rate Alert",
-        message="Error rate exceeded 1.0%",
-        severity=AlertSeverity.HIGH,
-        notification_service=notification_service,
-        metadata={"current_value": 1.2, "threshold": 1.0},
-    )
+
+    async def confirmed_delivery(*, channel, **_kwargs):
+        return {
+            "channel": channel.value,
+            "sent": True,
+            "message_id": f"{channel.value}-confirmed",
+        }
+
+    with patch.object(
+        notification_service,
+        "send_notification",
+        new=AsyncMock(side_effect=confirmed_delivery),
+    ):
+        result = await execute_alert(
+            db=db,
+            alert_rule_id="rule-123",
+            rollout_id="crl-456",
+            title="Error Rate Alert",
+            message="Error rate exceeded 1.0%",
+            severity=AlertSeverity.HIGH,
+            notification_service=notification_service,
+            metadata={"current_value": 1.2, "threshold": 1.0},
+        )
     
     assert result["alert_id"] is not None
     assert result["rule_id"] == "rule-123"
@@ -342,16 +382,27 @@ async def test_execute_alert_with_metadata(notification_service):
         "trend": "increasing",
     }
     
-    result = await execute_alert(
-        db=db,
-        alert_rule_id="rule-789",
-        rollout_id="crl-999",
-        title="Complex Alert",
-        message="Multiple anomalies detected",
-        severity=AlertSeverity.CRITICAL,
-        notification_service=notification_service,
-        metadata=metadata,
-    )
+    with patch.object(
+        notification_service,
+        "send_notification",
+        new=AsyncMock(
+            return_value={
+                "channel": "configured",
+                "sent": True,
+                "message_id": "confirmed-1",
+            }
+        ),
+    ):
+        result = await execute_alert(
+            db=db,
+            alert_rule_id="rule-789",
+            rollout_id="crl-999",
+            title="Complex Alert",
+            message="Multiple anomalies detected",
+            severity=AlertSeverity.CRITICAL,
+            notification_service=notification_service,
+            metadata=metadata,
+        )
     
     assert result["alert_id"] is not None
     assert result["sent_at"] is not None
@@ -389,16 +440,23 @@ def test_alert_severity_levels():
 async def test_multi_channel_alert_execution(notification_service):
     """Test alert execution with multiple notification channels."""
     db = MagicMock()
-    
-    result = await execute_alert(
-        db=db,
-        alert_rule_id="rule-multi",
-        rollout_id="crl-multi",
-        title="Multi-Channel Alert",
-        message="Testing multiple channels",
-        severity=AlertSeverity.CRITICAL,
-        notification_service=notification_service,
-    )
+
+    with patch.object(
+        notification_service,
+        "send_notification",
+        new=AsyncMock(
+            return_value={"channel": "configured", "sent": False, "error": "offline"}
+        ),
+    ):
+        result = await execute_alert(
+            db=db,
+            alert_rule_id="rule-multi",
+            rollout_id="crl-multi",
+            title="Multi-Channel Alert",
+            message="Testing multiple channels",
+            severity=AlertSeverity.CRITICAL,
+            notification_service=notification_service,
+        )
     
     # Critical should go to multiple channels
     assert result["channels_attempted"] >= 2
@@ -427,6 +485,8 @@ async def test_alert_routing_and_execution():
     
     assert result["alert_id"] is not None
     assert result["channels_attempted"] > 0
+    assert result["channels_succeeded"] == 0
+    assert result["error"] == "No notification channel confirmed delivery"
 
 
 # ============================================================================
@@ -437,6 +497,9 @@ async def test_alert_routing_and_execution():
 @pytest.mark.asyncio
 async def test_notification_with_special_characters(notification_service):
     """Test notification with special characters in message."""
+    notification_service._send_email = AsyncMock(
+        return_value={"channel": "email", "sent": True, "message_id": "smtp-confirmed"}
+    )
     result = await notification_service.send_notification(
         channel=NotificationChannelType.EMAIL,
         title="Alert: 🚨 Critical Error!",
@@ -459,7 +522,8 @@ async def test_notification_with_empty_recipients(notification_service):
         recipients=[],
     )
     
-    assert result["sent"] is True  # Email still sends
+    assert result["sent"] is False
+    assert result["error"] == "Email recipients are not configured"
 
 
 def test_routing_with_staging_rollout():

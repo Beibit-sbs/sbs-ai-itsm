@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-14T12:50:00+05:00",
+  "status": "PASS",
+  "scope": "isolated_local_production_like_rehearsal",
+  "project": "sbs-itsm-rehearsal",
+  "source_revision": "0b04ada23744349f565b44d60d52182da7f6da38",
+  "source_worktree_dirty": true,
+  "primary_local_database_changed": false,
+  "secrets_exposed": false,
+  "configuration_preflight": {
+    "ok": 66,
+    "warning_count": 2,
+    "failures": 0,
+    "warnings": [
+      "direct alert delivery disabled; Alertmanager routing remains primary",
+      "MFA enforcement remains monitor-only pending privileged enrollment"
+    ]
+  },
+  "runtime": {
+    "alembic_revision": "20260729_0072",
+    "migration_exit_code": 0,
+    "running_services": 8,
+    "expected_exited_services": 1,
+    "backend_healthy": true,
+    "frontend_healthy": true,
+    "postgres_healthy": true,
+    "redis_healthy": true,
+    "runtime_error_signature_lines": 0
+  },
+  "database": {
+    "tenants": 2,
+    "users": 4,
+    "system_tenant_roles": 12,
+    "non_privileged_smoke_requesters": 1
+  },
+  "production_smoke": {
+    "liveness": "PASS",
+    "readiness": "PASS",
+    "frontend": "PASS",
+    "anonymous_api_rejection": "PASS",
+    "authenticated_metrics": "PASS",
+    "grafana": "PASS",
+    "alertmanager": "PASS",
+    "login_identity_logout": "PASS"
+  },
+  "images": {
+    "backend": "sha256:da1e3fcbe87b812c9dd5970e8d4e5717ff2f2589b51d8ceea25c75f8806aed63",
+    "worker": "sha256:e15d46f1d1b8330c3a6c654844a65735117429913c6831e45069c0df9c4cbf1c",
+    "migrate": "sha256:e040f31345adb61f760f1a0f6f7f2e21e76c3591aacd520b49b959013c12ea8e",
+    "frontend": "sha256:68e154e508fcac0cc13325ed7b1bbccced56c8c34e95ca960a12848b0cc5e561"
+  },
+  "focused_regression": {
+    "deployment_tooling": "PASS",
+    "production_safety": "PASS",
+    "security_and_upload_tests": "130 passed",
+    "full_backend_regression": "723 passed, 16 skipped, 0 failed, 0 errors",
+    "frontend_build": "PASS",
+    "frontend_accessibility_and_controls": "PASS",
+    "m1_local_static_gate": "27/27 PASS",
+    "ruff": "PASS"
+  },
+  "security_gate": {
+    "status": "PASS_LOCAL_CURRENT_REVISION",
+    "critical_open": 0,
+    "high_open": 0,
+    "passive_dast_fail": 0,
+    "evidence": "docs/audit/evidence/P0-SECURITY-GATE-2026-08-14.json"
+  },
+  "residual_external_gates": [
+    "server DNS and TLS",
+    "real identity provider and MFA enrollment",
+    "real external AI, email, Teams, monitoring and discovery providers",
+    "public TLS active scan and independent penetration test",
+    "ClamAV quarantine and rate-limit stress acceptance",
+    "current-revision timed backup restore and load acceptance"
+  ]
+}

@@ -21,6 +21,7 @@ class AuthUser:
     full_name: str
     tenant_id: str | None
     role: str
+    must_change_password: bool = False
 
 
 @dataclass(frozen=True)
@@ -40,13 +41,24 @@ def _b64url_decode(value: str) -> bytes:
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
     salt = salt or secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
-    return f"pbkdf2_sha256${_b64url_encode(salt)}${_b64url_encode(digest)}"
+    # Production uses the hardened work factor. Demo/test mode remains fast enough
+    # for local seeding while retaining compatibility with previously issued hashes.
+    iterations = 120_000 if get_settings().demo_mode else 600_000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${_b64url_encode(salt)}${_b64url_encode(digest)}"
 
 
 def verify_password(password: str, password_hash: str) -> bool:
     try:
-        algorithm, salt_b64, digest_b64 = password_hash.split("$", 2)
+        parts = password_hash.split("$")
+        if len(parts) == 3:
+            algorithm, salt_b64, digest_b64 = parts
+            iterations = 120_000  # Compatibility with hashes created before session hardening.
+        elif len(parts) == 4:
+            algorithm, iterations_raw, salt_b64, digest_b64 = parts
+            iterations = int(iterations_raw)
+        else:
+            return False
     except ValueError:
         return False
 
@@ -55,7 +67,9 @@ def verify_password(password: str, password_hash: str) -> bool:
 
     salt = _b64url_decode(salt_b64)
     expected = _b64url_decode(digest_b64)
-    candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
+    if iterations < 1 or iterations > 2_000_000:
+        return False
+    candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
     return hmac.compare_digest(candidate, expected)
 
 

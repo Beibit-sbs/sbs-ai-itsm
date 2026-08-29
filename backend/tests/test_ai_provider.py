@@ -11,10 +11,13 @@ from app.services.ai.provider import (
     GeminiLLMProvider,
     MockLLMProvider,
     OpenAILLMProvider,
+    _validated_https_provider_url,
     _clamp_priority,
+    _finalize_from_json,
     _safe_parse_json_object,
     describe_provider_status,
     get_provider,
+    check_provider_configuration,
 )
 
 
@@ -70,6 +73,26 @@ def test_safe_parse_json_object_returns_none_for_garbage() -> None:
     assert _safe_parse_json_object("not json at all") is None
 
 
+def test_invalid_external_response_is_explicit_mock_fallback() -> None:
+    result = _finalize_from_json("openai", "gpt-test", None)
+
+    assert result.provider == "mock"
+    assert result.model == "keyword-rules-v1"
+    assert result.rationale == "openai:invalid_response_fallback"
+
+
+def test_incomplete_external_object_is_explicit_mock_fallback() -> None:
+    result = _finalize_from_json(
+        "gemini",
+        "gemini-test",
+        {"category": "Network", "unexpected": "not-a-contract"},
+    )
+
+    assert result.provider == "mock"
+    assert result.model == "keyword-rules-v1"
+    assert result.rationale == "gemini:invalid_response_fallback"
+
+
 def test_mock_provider_returns_expected_category_for_network_keyword() -> None:
     provider = MockLLMProvider()
     result = asyncio.run(provider.classify_ticket("У меня не работает интернет и wifi"))
@@ -100,6 +123,25 @@ def test_openai_provider_direct_instantiation() -> None:
     assert provider.is_mock is False
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.openai.com/v1/chat/completions",
+        "file:///etc/passwd",
+        "https://user:password@api.openai.com/v1/chat/completions",
+        "https://api.openai.com:8443/v1/chat/completions",
+    ],
+)
+def test_ai_provider_rejects_nonstandard_or_credentialed_destinations(url: str) -> None:
+    with pytest.raises(ValueError, match="HTTPS endpoint"):
+        _validated_https_provider_url(url)
+
+
+def test_ai_provider_allows_https_destination_and_gemini_query_key() -> None:
+    url = "https://generativelanguage.googleapis.com/v1/models/x?key=secret"
+    assert _validated_https_provider_url(url) == url
+
+
 def test_gemini_provider_direct_instantiation() -> None:
     provider = GeminiLLMProvider(api_key="test-gemini-key", model="gemini-2.0-flash-exp", timeout=5.0)
     assert provider.name == "gemini"
@@ -115,18 +157,83 @@ def test_get_provider_returns_mock_by_default(app) -> None:  # noqa: ARG001
 
 def test_describe_provider_status_reports_mock_by_default(app) -> None:  # noqa: ARG001
     info = describe_provider_status()
+    assert info.configured_provider == "mock"
     assert info.active_provider == "mock"
-    assert info.ready is True
+    assert info.ready is False
+    assert info.external_configured is False
+    assert info.execution_mode == "LOCAL_SIMULATION"
     assert info.api_key_configured is False
-    assert info.reason is None
+    assert info.reason == "local_mock_simulation"
     assert info.fallback_provider is None
 
 
-def test_provider_status_endpoint_requires_admin(app) -> None:
+def test_mock_configuration_test_is_simulation_not_connection_success() -> None:
+    result = asyncio.run(
+        check_provider_configuration(
+            provider="mock",
+            sample_text="network connection is unavailable",
+        )
+    )
+
+    assert result.requested_provider == "mock"
+    assert result.effective_provider == "mock"
+    assert result.success is False
+    assert result.simulation is True
+    assert result.reason == "local_mock_simulation"
+
+
+def test_external_configuration_test_rejects_incomplete_payload(monkeypatch) -> None:
+    async def _incomplete_response(*args, **kwargs):  # noqa: ANN002, ANN003
+        return 200, {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"category":"Network","unexpected":"value"}'
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        OpenAILLMProvider,
+        "_http_post_json",
+        _incomplete_response,
+    )
+    result = asyncio.run(
+        check_provider_configuration(
+            provider="openai",
+            sample_text="network connection is unavailable",
+            openai_api_key="sk-test-only",
+        )
+    )
+
+    assert result.success is False
+    assert result.simulation is False
+    assert result.effective_provider == "mock"
+    assert result.model == "keyword-rules-v1"
+    assert result.reason == "invalid_classification_response"
+    assert result.response_status == 200
+
+
+def test_provider_status_endpoint_requires_authentication(app) -> None:
+    with TestClient(app) as client:
+        response = client.get("/api/v1/ai/provider-status")
+    assert response.status_code == 401
+
+
+def test_provider_status_endpoint_allows_rag_entitled_requester(app) -> None:
     with TestClient(app) as client:
         token = _login(client, "requester@sbs.local", "Sbs!2026")
         response = client.get("/api/v1/ai/provider-status", headers=_headers(token))
-    assert response.status_code == 403
+    assert response.status_code == 200
+
+
+def test_provider_status_endpoint_allows_ai_entitled_operator(app) -> None:
+    with TestClient(app) as client:
+        token = _login(client, "agent.network@sbs.local", "Sbs!2026")
+        response = client.get("/api/v1/ai/provider-status", headers=_headers(token))
+    assert response.status_code == 200
+    assert response.json()["execution_mode"] == "LOCAL_SIMULATION"
 
 
 def test_provider_status_endpoint_returns_mock_defaults(app) -> None:
@@ -135,9 +242,13 @@ def test_provider_status_endpoint_returns_mock_defaults(app) -> None:
         response = client.get("/api/v1/ai/provider-status", headers=_headers(token))
     assert response.status_code == 200
     payload = response.json()
+    assert payload["configured_provider"] == "mock"
     assert payload["active_provider"] == "mock"
-    assert payload["ready"] is True
+    assert payload["ready"] is False
+    assert payload["external_configured"] is False
+    assert payload["execution_mode"] == "LOCAL_SIMULATION"
     assert payload["api_key_configured"] is False
+    assert payload["reason"] == "local_mock_simulation"
     assert "mock" in payload["supported_providers"]
     assert "openai" in payload["supported_providers"]
     assert "gemini" in payload["supported_providers"]
@@ -150,7 +261,7 @@ def test_provider_status_endpoint_returns_mock_defaults(app) -> None:
 
 def test_classify_endpoint_creates_suggestion_with_mock(app) -> None:
     with TestClient(app) as client:
-        token = _login(client, "root@sbs.local", "Root!2026")
+        token = _login(client, "manager@sbs.local", "Sbs!2026")
         response = client.post(
             "/api/v1/ai/classify",
             headers=_headers(token),
@@ -162,6 +273,12 @@ def test_classify_endpoint_creates_suggestion_with_mock(app) -> None:
     assert payload["recommended_category"]
     assert payload["confidence_value"] is not None
     assert payload["rationale"].startswith("mock:")
+    assert payload["requested_provider"] == "mock"
+    assert payload["provider"] == "mock"
+    assert payload["model"] == "keyword-rules-v1"
+    assert payload["provider_mock"] is True
+    assert payload["fallback_used"] is False
+    assert payload["execution_mode"] == "LOCAL_SIMULATION"
 
 
 def test_classify_endpoint_requires_permission(app) -> None:

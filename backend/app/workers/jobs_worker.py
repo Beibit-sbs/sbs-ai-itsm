@@ -3,16 +3,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import signal
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import FrameType
 from typing import Callable
+from urllib.parse import urlsplit
 
 from redis import Redis
 from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import select
 
 from app.core.config import get_settings
+from app.core.observability import configure_logging
 from app.db.session import SessionLocal
 from app.models.job_event_consumer_delivery import JobEventConsumerDelivery
 from app.models.job_event_consumer_offset import JobEventConsumerOffset
@@ -23,6 +28,21 @@ from app.models.audit_log import AuditLog
 from app.services.automation import trigger_automation_event
 from app.services.audit import log_audit
 from app.services.notifications import create_domain_event_notification
+from app.services.event_operations import evaluate_escalations
+from app.services.enterprise_sla import evaluate_tenant_sla
+from app.services.scim_provisioning import process_due_provisioning_retries
+from app.services.email_operations import run_email_operations_cycle
+from app.services.teams_collaboration import run_teams_delivery_cycle
+from app.services.monitoring_connectors import run_monitoring_receipt_cycle
+from app.services.asset_discovery import run_asset_discovery_cycle
+from app.services.integration_platform import (
+    cleanup_integration_platform_records,
+    run_outbound_webhook_cycle,
+)
+from app.services.workflow_engine import (
+    cleanup_workflow_executions,
+    run_workflow_cycle,
+)
 from app.services.jobs import (
     create_job_lifecycle_event,
     execute_job,
@@ -36,6 +56,18 @@ from app.services.jobs.policy_state import load_policy_into_settings, save_polic
 from app.services.jobs import tasks as _job_tasks  # noqa: F401 - registers built-in tasks
 
 logger = logging.getLogger("app.jobs.worker")
+_WORKER_HEARTBEAT_KEY = "sbs:jobs:worker:heartbeat"
+_last_event_escalation_scan_at = 0.0
+_last_sla_evaluation_scan_at = 0.0
+_last_identity_retry_scan_at = 0.0
+_last_email_operations_scan_at = 0.0
+_last_teams_delivery_scan_at = 0.0
+_last_monitoring_receipt_scan_at = 0.0
+_last_asset_discovery_scan_at = 0.0
+_last_outbound_webhook_scan_at = 0.0
+_last_integration_platform_cleanup_at = 0.0
+_last_workflow_scan_at = 0.0
+_last_workflow_cleanup_at = 0.0
 
 
 def _uuid() -> str:
@@ -46,6 +78,7 @@ def _event_stream_payload(event: JobLifecycleEvent) -> dict[str, str]:
     return {
         "event_id": event.id,
         "job_id": event.job_id,
+        "sequence": str(event.sequence),
         "event_type": event.event_type,
         "task_name": event.task_name,
         "tenant_id": event.tenant_id or "",
@@ -713,8 +746,354 @@ def _run_single_job(job_id: str, *, redis_client: Redis, queue_name: str) -> Non
         db.close()
 
 
+def _run_event_escalation_cycle(*, minimum_interval_seconds: int = 30) -> int:
+    global _last_event_escalation_scan_at
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_event_escalation_scan_at < minimum_interval_seconds:
+        return 0
+    _last_event_escalation_scan_at = monotonic_now
+    db = SessionLocal()
+    changed_count = 0
+    try:
+        from app.models.event_operations import EventCorrelationGroup
+
+        now = datetime.now(UTC)
+        tenant_ids = db.scalars(
+            select(EventCorrelationGroup.tenant_id)
+            .where(
+                EventCorrelationGroup.status == "OPEN",
+                EventCorrelationGroup.acknowledged_at.is_(None),
+                EventCorrelationGroup.next_escalation_at.is_not(None),
+                EventCorrelationGroup.next_escalation_at <= now,
+            )
+            .distinct()
+        ).all()
+        for tenant_id in tenant_ids:
+            changed = evaluate_escalations(db, tenant_id)
+            for group in changed:
+                log_audit(
+                    db,
+                    action="event_group.escalated",
+                    entity_type="event_group",
+                    entity_id=group.id,
+                    actor_email="event-operations@sbs.local",
+                    tenant_id=group.tenant_id,
+                    metadata={"level": group.escalation_level, "automated": True},
+                )
+            changed_count += len(changed)
+        db.commit()
+        if changed_count:
+            logger.info(
+                "event_groups_escalated",
+                extra={"count": changed_count},
+            )
+        return changed_count
+    except Exception:
+        db.rollback()
+        logger.exception("event_escalation_cycle_failed")
+        return changed_count
+    finally:
+        db.close()
+
+
+def _run_sla_evaluation_cycle(*, minimum_interval_seconds: int = 30) -> int:
+    global _last_sla_evaluation_scan_at
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_sla_evaluation_scan_at < minimum_interval_seconds:
+        return 0
+    _last_sla_evaluation_scan_at = monotonic_now
+    db = SessionLocal()
+    changed_count = 0
+    try:
+        changed = evaluate_tenant_sla(db)
+        for target in changed:
+            log_audit(
+                db,
+                action="sla.target_evaluated",
+                entity_type="sla_target",
+                entity_id=target.id,
+                actor_email="sla-engine@sbs.local",
+                tenant_id=target.tenant_id,
+                metadata={
+                    "status": target.status,
+                    "target_type": target.target_type,
+                    "escalation_level": target.escalation_level,
+                    "automated": True,
+                },
+            )
+        changed_count = len(changed)
+        db.commit()
+        if changed_count:
+            logger.info(
+                "sla_targets_evaluated",
+                extra={"count": changed_count},
+            )
+        return changed_count
+    except Exception:
+        db.rollback()
+        logger.exception("sla_evaluation_cycle_failed")
+        return changed_count
+    finally:
+        db.close()
+
+
+def _run_identity_provisioning_retry_cycle(
+    *,
+    minimum_interval_seconds: int = 15,
+) -> int:
+    global _last_identity_retry_scan_at
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_identity_retry_scan_at < minimum_interval_seconds:
+        return 0
+    _last_identity_retry_scan_at = monotonic_now
+    db = SessionLocal()
+    try:
+        result = process_due_provisioning_retries(
+            db,
+            base_url="/api/v1/scim/v2",
+            limit=50,
+        )
+        db.commit()
+        if result["processed"]:
+            logger.info(
+                "identity_provisioning_retries_processed",
+                extra=result,
+            )
+        return result["processed"]
+    except Exception:
+        db.rollback()
+        logger.exception("identity_provisioning_retry_cycle_failed")
+        return 0
+    finally:
+        db.close()
+
+
+def _run_email_operations_cycle(
+    *,
+    minimum_interval_seconds: int = 5,
+) -> int:
+    global _last_email_operations_scan_at
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_email_operations_scan_at < minimum_interval_seconds:
+        return 0
+    _last_email_operations_scan_at = monotonic_now
+    db = SessionLocal()
+    try:
+        result = run_email_operations_cycle(db)
+        db.commit()
+        processed = int(result["outbound"]["processed"]) + int(
+            result["webhooks"]["processed"]
+        ) + int(result["polling"]["processed"])
+        if processed:
+            logger.info(
+                "email_operations_processed",
+                extra={"result": result},
+            )
+        return processed
+    except Exception:
+        db.rollback()
+        logger.exception("email_operations_cycle_failed")
+        return 0
+    finally:
+        db.close()
+
+
+def _run_teams_delivery_cycle(
+    *,
+    minimum_interval_seconds: int = 5,
+) -> int:
+    global _last_teams_delivery_scan_at
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_teams_delivery_scan_at < minimum_interval_seconds:
+        return 0
+    _last_teams_delivery_scan_at = monotonic_now
+    db = SessionLocal()
+    try:
+        result = run_teams_delivery_cycle(db)
+        db.commit()
+        processed = int(result["processed"])
+        if processed:
+            logger.info("teams_delivery_cycle_completed", extra=result)
+        return processed
+    except Exception:
+        db.rollback()
+        logger.exception("teams_delivery_cycle_failed")
+        return 0
+    finally:
+        db.close()
+
+
+def _run_monitoring_receipt_cycle(
+    *,
+    minimum_interval_seconds: int = 3,
+) -> int:
+    global _last_monitoring_receipt_scan_at
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_monitoring_receipt_scan_at < minimum_interval_seconds:
+        return 0
+    _last_monitoring_receipt_scan_at = monotonic_now
+    db = SessionLocal()
+    try:
+        result = run_monitoring_receipt_cycle(db)
+        db.commit()
+        received = int(result["received"])
+        if received:
+            logger.info("monitoring_receipt_cycle_completed", extra=result)
+        return received
+    except Exception:
+        db.rollback()
+        logger.exception("monitoring_receipt_cycle_failed")
+        return 0
+    finally:
+        db.close()
+
+
+def _run_asset_discovery_cycle(
+    *,
+    minimum_interval_seconds: float = 5.0,
+) -> None:
+    global _last_asset_discovery_scan_at
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_asset_discovery_scan_at < minimum_interval_seconds:
+        return
+    _last_asset_discovery_scan_at = monotonic_now
+    db = SessionLocal()
+    try:
+        result = run_asset_discovery_cycle(db)
+        if any(result.values()):
+            logger.info("asset_discovery_cycle_completed", extra=result)
+    except Exception:
+        db.rollback()
+        logger.exception("asset_discovery_cycle_failed")
+    finally:
+        db.close()
+
+
+def _run_outbound_webhook_cycle(
+    *,
+    minimum_interval_seconds: float = 2.0,
+) -> None:
+    global _last_outbound_webhook_scan_at
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_outbound_webhook_scan_at < minimum_interval_seconds:
+        return
+    _last_outbound_webhook_scan_at = monotonic_now
+    db = SessionLocal()
+    try:
+        result = run_outbound_webhook_cycle(db)
+        if any(result.values()):
+            logger.info("outbound_webhook_cycle_completed", extra=result)
+    except Exception:
+        db.rollback()
+        logger.exception("outbound_webhook_cycle_failed")
+    finally:
+        db.close()
+
+
+def _run_integration_platform_cleanup(
+    *,
+    minimum_interval_seconds: float = 3_600.0,
+) -> None:
+    global _last_integration_platform_cleanup_at
+    monotonic_now = time.monotonic()
+    if (
+        monotonic_now - _last_integration_platform_cleanup_at
+        < minimum_interval_seconds
+    ):
+        return
+    _last_integration_platform_cleanup_at = monotonic_now
+    db = SessionLocal()
+    try:
+        result = cleanup_integration_platform_records(db)
+        if any(result.values()):
+            logger.info("integration_platform_cleanup_completed", extra=result)
+    except Exception:
+        db.rollback()
+        logger.exception("integration_platform_cleanup_failed")
+    finally:
+        db.close()
+
+
+def _run_workflow_cycle(
+    *,
+    minimum_interval_seconds: float = 1.0,
+) -> None:
+    global _last_workflow_scan_at
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_workflow_scan_at < minimum_interval_seconds:
+        return
+    _last_workflow_scan_at = monotonic_now
+    db = SessionLocal()
+    try:
+        result = run_workflow_cycle(db)
+        if any(result.values()):
+            logger.info("workflow_cycle_completed", extra=result)
+    except Exception:
+        db.rollback()
+        logger.exception("workflow_cycle_failed")
+    finally:
+        db.close()
+
+
+def _run_workflow_cleanup(
+    *,
+    minimum_interval_seconds: float = 3_600.0,
+) -> None:
+    global _last_workflow_cleanup_at
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_workflow_cleanup_at < minimum_interval_seconds:
+        return
+    _last_workflow_cleanup_at = monotonic_now
+    db = SessionLocal()
+    try:
+        deleted = cleanup_workflow_executions(db)
+        if deleted:
+            logger.info(
+                "workflow_cleanup_completed",
+                extra={"deleted_executions": deleted},
+            )
+    except Exception:
+        db.rollback()
+        logger.exception("workflow_cleanup_failed")
+    finally:
+        db.close()
+
+
+def run_periodic_cycles() -> None:
+    """Run due periodic operations while isolating failures by cycle.
+
+    Production invokes this from the leader-elected scheduler process. Keeping
+    the function available here preserves the single-process local development
+    mode without duplicating the actual periodic job definitions.
+    """
+
+    cycles: tuple[tuple[str, Callable[[], object]], ...] = (
+        ("auto_remediation", _run_auto_remediation_cycle),
+        ("event_escalation", _run_event_escalation_cycle),
+        ("sla_evaluation", _run_sla_evaluation_cycle),
+        ("identity_provisioning_retry", _run_identity_provisioning_retry_cycle),
+        ("email_operations", _run_email_operations_cycle),
+        ("teams_delivery", _run_teams_delivery_cycle),
+        ("monitoring_receipt", _run_monitoring_receipt_cycle),
+        ("asset_discovery", _run_asset_discovery_cycle),
+        ("outbound_webhook", _run_outbound_webhook_cycle),
+        ("integration_platform_cleanup", _run_integration_platform_cleanup),
+        ("workflow", _run_workflow_cycle),
+        ("workflow_cleanup", _run_workflow_cleanup),
+    )
+    for cycle_name, cycle in cycles:
+        try:
+            cycle()
+        except Exception:
+            logger.exception(
+                "periodic_cycle_failed",
+                extra={"cycle": cycle_name},
+            )
+
+
 def run_worker_forever() -> None:
     settings = get_settings()
+    configure_logging(settings.log_level)
     redis_client = Redis.from_url(
         settings.redis_url,
         decode_responses=True,
@@ -722,17 +1101,43 @@ def run_worker_forever() -> None:
         socket_connect_timeout=5,
         health_check_interval=30,
     )
+    shutdown_requested = False
+
+    def request_shutdown(signum: int, _frame: FrameType | None) -> None:
+        nonlocal shutdown_requested
+        if shutdown_requested:
+            return
+        shutdown_requested = True
+        logger.info("jobs_worker_draining", extra={"signal": signal.Signals(signum).name})
+
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
     logger.info(
         "jobs_worker_started",
         extra={
             "queue": settings.jobs_queue_name,
             "dead_letter_queue": settings.jobs_dead_letter_queue_name,
-            "redis_url": settings.redis_url,
+            "redis_host": urlsplit(settings.redis_url).hostname,
             "executor": settings.jobs_executor_mode,
         },
     )
+    worker_instance = f"{os.getenv('HOSTNAME', 'local')}:{os.getpid()}"
     try:
-        while True:
+        while not shutdown_requested:
+            redis_client.set(
+                _WORKER_HEARTBEAT_KEY,
+                f"{time.time():.6f}",
+                ex=30,
+            )
+            redis_client.hset(
+                "sbs:jobs:worker:metadata",
+                mapping={
+                    "instance": worker_instance,
+                    "queue": settings.jobs_queue_name,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                },
+            )
+            redis_client.expire("sbs:jobs:worker:metadata", 30)
             _relay_job_events_batch(redis_client)
             _consume_event_stream_batch(
                 redis_client,
@@ -752,7 +1157,8 @@ def run_worker_forever() -> None:
                 consumer_name=settings.jobs_event_automation_consumer_name,
                 handler=_process_automation_consumer,
             )
-            _run_auto_remediation_cycle()
+            if settings.jobs_periodic_cycles_enabled:
+                run_periodic_cycles()
             _publish_outbox_batch(redis_client)
             _drain_scheduled_jobs(redis_client, settings.jobs_queue_name)
             try:
@@ -766,9 +1172,10 @@ def run_worker_forever() -> None:
             _, job_id = item
             _run_single_job(str(job_id), redis_client=redis_client, queue_name=settings.jobs_queue_name)
     except KeyboardInterrupt:
-        logger.info("jobs_worker_stopped")
+        shutdown_requested = True
     finally:
         redis_client.close()
+        logger.info("jobs_worker_stopped", extra={"graceful": shutdown_requested})
 
 
 if __name__ == "__main__":

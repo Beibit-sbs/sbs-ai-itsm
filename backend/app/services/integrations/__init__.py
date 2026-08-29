@@ -58,6 +58,32 @@ def _parse_json(value: str | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _provider_outcome(
+    provider: BaseIntegrationProvider,
+    result: dict[str, Any],
+) -> str:
+    """Classify provider evidence without treating demo capture as success."""
+    provider_mode = provider.descriptor.status.strip().lower()
+    response_status = str(result.get("status") or "").strip().lower()
+    if provider_mode in {"mock", "demo"} or response_status in {
+        "logged_only",
+        "mocked",
+        "simulated",
+    }:
+        return "simulated"
+    if response_status in {"not_configured", "not_supported", "planned", "future"}:
+        return "skipped"
+    if provider_mode == "production" and response_status in {
+        "accepted",
+        "delivered",
+        "healthy",
+        "ok",
+        "success",
+    }:
+        return "success"
+    return "failed"
+
+
 def _trigger_automation(
     db: Session,
     tenant_id: str | None,
@@ -91,17 +117,29 @@ def check_system_health(db: Session, system_id: str, current_user: User | None =
     now = _now()
     if failed:
         result = {"status": "down", "message": "Mock health check failure simulated."}
+        outcome = "failed"
         system.health_status = "down"
         system.status = "error"
         system.last_error_at = now
         system.last_error_message = str(result["message"])
     else:
         result = provider.health_check()
-        raw_status = str(result.get("status", "unknown"))
-        system.health_status = "healthy" if raw_status in {"ok", "healthy", "accepted"} else raw_status
-        system.status = "active" if system.is_enabled else system.status
-        system.last_success_at = now
-        system.last_error_message = None
+        outcome = _provider_outcome(provider, result)
+        if outcome == "success":
+            system.health_status = "healthy"
+            system.status = "active" if system.is_enabled else system.status
+            system.last_success_at = now
+            system.last_error_message = None
+        elif outcome == "simulated":
+            system.health_status = "simulated"
+            system.last_error_message = None
+        elif outcome == "skipped":
+            system.health_status = "unknown"
+            system.last_error_message = None
+        else:
+            system.health_status = "degraded"
+            system.last_error_at = now
+            system.last_error_message = "Provider health was not confirmed"
     system.last_health_check_at = now
     system.last_health_status = system.health_status
     system.last_health_checked_at = now
@@ -111,7 +149,7 @@ def check_system_health(db: Session, system_id: str, current_user: User | None =
         event_type="integration_health_check",
         payload={"system_id": system.id, "system_type": system.system_type},
         external_system_id=system.id,
-        status="failed" if failed else "success",
+        status=outcome,
         response_payload=result,
         error_message=system.last_error_message,
     )
@@ -189,17 +227,25 @@ def create_event_log(
     return event
 
 
-def process_inbound_webhook(db: Session, endpoint: WebhookEndpoint, payload: dict[str, Any], current_user: User | None = None) -> IntegrationEventLog:
+def process_inbound_webhook(
+    db: Session,
+    endpoint: WebhookEndpoint,
+    payload: dict[str, Any],
+    current_user: User | None = None,
+    *,
+    simulated: bool = False,
+) -> IntegrationEventLog:
     now = _now()
-    status = "success"
+    status = "simulated" if simulated else "success"
     error_message = None
-    try:
-        endpoint.last_received_at = now
-        endpoint.success_count += 1
-    except Exception as exc:  # noqa: BLE001
-        endpoint.failure_count += 1
-        status = "failed"
-        error_message = str(exc)
+    if not simulated:
+        try:
+            endpoint.last_received_at = now
+            endpoint.success_count += 1
+        except Exception as exc:  # noqa: BLE001
+            endpoint.failure_count += 1
+            status = "failed"
+            error_message = str(exc)
     event = create_event_log(
         db,
         direction="inbound",
@@ -214,7 +260,7 @@ def process_inbound_webhook(db: Session, endpoint: WebhookEndpoint, payload: dic
     )
     log_audit(
         db,
-        action="integration_webhook_received",
+        action="integration_webhook_simulated" if simulated else "integration_webhook_received",
         entity_type="webhook_endpoint",
         entity_id=endpoint.id,
         actor_user=current_user,
@@ -222,6 +268,8 @@ def process_inbound_webhook(db: Session, endpoint: WebhookEndpoint, payload: dic
         tenant_id=endpoint.tenant_id,
         metadata={"event_type": endpoint.event_type, "status": status, "event_id": event.id},
     )
+    if simulated:
+        return event
     create_domain_event_notification(
         db,
         tenant_id=endpoint.tenant_id,
@@ -288,7 +336,11 @@ def retry_integration_event(db: Session, event_id: str, current_user: User) -> I
     if event.status not in {"failed", "retrying"}:
         raise ValueError("Only failed/retrying events can be retried")
     system = db.get(ExternalSystem, event.external_system_id) if event.external_system_id else None
-    provider = get_provider(system.system_type if system else "webhook")
+    if system is None:
+        raise ValueError("Integration event has no external system")
+    if not system.is_enabled:
+        raise ValueError("External system is disabled")
+    provider = get_provider(system.system_type)
     payload = _parse_json(event.payload_json)
     config = _parse_json(system.config_json) if system else {}
     event.attempt_count = int(event.attempt_count or 0) + 1
@@ -321,13 +373,33 @@ def retry_integration_event(db: Session, event_id: str, current_user: User) -> I
             actor_email=current_user.email,
         )
     else:
-        response = provider.send_notification(payload) if hasattr(provider, "send_notification") else {"status": "success"}
-        event.status = "success"
+        response = provider.send_notification(payload)
+        outcome = _provider_outcome(provider, response)
+        event.status = outcome if outcome != "skipped" else "failed"
         event.response_payload_json = _json(response)
         event.response_summary = _json(response)
-        event.error_message = None
-        event.next_retry_at = None
-        event.processed_at = now
+        if outcome in {"success", "simulated"}:
+            event.error_message = None
+            event.next_retry_at = None
+            event.processed_at = now
+        else:
+            event.error_message = "Provider did not confirm external delivery"
+            event.next_retry_at = None
+            create_domain_event_notification(
+                db,
+                tenant_id=system.tenant_id,
+                event_type="integration_event_failed",
+                title="Integration event retry failed",
+                message=f"Event {event.event_type} retry was not delivered.",
+                recipient_name=current_user.full_name,
+                recipient_email=current_user.email,
+                recipient_user_id=current_user.id,
+                severity="warning",
+                entity_type="integration_event",
+                entity_id=event.id,
+                action_url="/integrations",
+                metadata={"attempt_count": event.attempt_count},
+            )
 
     log_audit(
         db,
@@ -358,21 +430,32 @@ def run_import_job(db: Session, job_id: str, dry_run: bool = False, current_user
         payload = provider.pull_users()
     total_rows = int(payload.get("records_total", 0))
     failed_rows = 0
-    success_rows = total_rows
+    preview_rows = total_rows
+    success_rows = 0
     if should_simulate_failure(_parse_json(system.config_json) if system else {}, f"import_{job.job_type}"):
         failed_rows = max(1, total_rows // 2) if total_rows else 1
-        success_rows = max(0, total_rows - failed_rows)
+        preview_rows = max(0, total_rows - failed_rows)
     job.total_rows = total_rows
     job.success_rows = success_rows
     job.failed_rows = failed_rows
     job.records_total = total_rows
-    job.records_success = success_rows
+    job.records_success = 0
     job.records_failed = failed_rows
-    job.dry_run = dry_run
+    job.dry_run = True
     job.finished_at = _now()
-    job.status = "dry_run" if dry_run else ("completed_with_errors" if failed_rows else "completed")
-    job.error_report_json = _json({"failed_rows": failed_rows, "errors": ["mock_failure"] if failed_rows else []})
-    job.error_message = "Mock import failure" if failed_rows else None
+    job.status = (
+        "dry_run"
+        if dry_run
+        else ("simulated_with_errors" if failed_rows else "simulated")
+    )
+    job.error_report_json = _json(
+        {
+            "failed_rows": failed_rows,
+            "preview_rows": preview_rows,
+            "errors": ["demo_failure"] if failed_rows else [],
+        }
+    )
+    job.error_message = "Demo import preview failure" if failed_rows else None
 
     create_event_log(
         db,
@@ -382,8 +465,13 @@ def run_import_job(db: Session, job_id: str, dry_run: bool = False, current_user
         external_system_id=job.external_system_id,
         entity_type="import_job",
         entity_id=job.id,
-        status="failed" if failed_rows else "success",
-        response_payload={"total_rows": total_rows, "success_rows": success_rows, "failed_rows": failed_rows},
+        status="simulated_failed" if failed_rows else "simulated",
+        response_payload={
+            "total_rows": total_rows,
+            "preview_rows": preview_rows,
+            "imported_rows": 0,
+            "failed_rows": failed_rows,
+        },
         error_message=job.error_message,
         processed_at=job.finished_at,
     )
@@ -403,8 +491,8 @@ def run_import_job(db: Session, job_id: str, dry_run: bool = False, current_user
             db,
             tenant_id=job.tenant_id,
             event_type="integration_event_failed",
-            title="Import job failed",
-            message=f"Import job {job.job_type} completed with errors.",
+            title="Import preview failed",
+            message=f"Import preview {job.job_type} completed with errors.",
             recipient_name=current_user.full_name if current_user else "Integration Operator",
             recipient_email=_user_email(current_user),
             recipient_user_id=current_user.id if current_user else None,
@@ -418,9 +506,9 @@ def run_import_job(db: Session, job_id: str, dry_run: bool = False, current_user
         create_domain_event_notification(
             db,
             tenant_id=job.tenant_id,
-            event_type="import_job_completed",
-            title="Import job completed",
-            message=f"Import job {job.job_type} completed successfully.",
+            event_type="import_job_simulated",
+            title="Import preview completed",
+            message=f"Import preview {job.job_type} examined {preview_rows} rows.",
             recipient_name=current_user.full_name if current_user else "Integration Operator",
             recipient_email=_user_email(current_user),
             recipient_user_id=current_user.id if current_user else None,
@@ -428,12 +516,12 @@ def run_import_job(db: Session, job_id: str, dry_run: bool = False, current_user
             entity_type="import_job",
             entity_id=job.id,
             action_url="/integrations",
-            metadata={"total_rows": total_rows, "dry_run": dry_run},
+            metadata={"preview_rows": preview_rows, "dry_run": True},
         )
         _trigger_automation(
             db,
             tenant_id=job.tenant_id,
-            trigger_type="import_job_completed",
+            trigger_type="import_job_simulated",
             context={"entity_type": "import_job", "entity_id": job.id, "job": {"id": job.id, "job_type": job.job_type, "status": job.status}},
             actor_email=_user_email(current_user),
         )
@@ -504,6 +592,8 @@ def validate_mapping(mapping: IntegrationMapping, payload: dict[str, Any]) -> tu
 def export_entity_mock(db: Session, system_id: str, entity_type: str, entity_id: str, current_user: User) -> dict[str, Any]:
     system = _find_system(db, system_id)
     provider = get_provider(system.system_type)
+    if "export_entity" not in provider.descriptor.capabilities:
+        raise ValueError("Provider does not support export preview")
     payload = {"entity_type": entity_type, "entity_id": entity_id, "dry_run": True, "system_code": system.code}
     response = provider.export_entity(payload)
     event = create_event_log(
@@ -514,16 +604,16 @@ def export_entity_mock(db: Session, system_id: str, entity_type: str, entity_id:
         external_system_id=system.id,
         entity_type=entity_type,
         entity_id=entity_id,
-        status="success",
+        status="simulated",
         response_payload=response,
         processed_at=_now(),
     )
     create_domain_event_notification(
         db,
         tenant_id=system.tenant_id,
-        event_type="export_completed",
-        title="Integration export completed",
-        message=f"Export {entity_type}:{entity_id} completed (mock-safe).",
+        event_type="export_simulated",
+        title="Integration export preview completed",
+        message=f"Export preview {entity_type}:{entity_id} was captured locally.",
         recipient_name=current_user.full_name,
         recipient_email=current_user.email,
         recipient_user_id=current_user.id,
@@ -543,7 +633,7 @@ def export_entity_mock(db: Session, system_id: str, entity_type: str, entity_id:
         tenant_id=system.tenant_id,
         metadata={"external_system_id": system.id, "event_id": event.id, "dry_run": True},
     )
-    return {"event_id": event.id, "status": "success", "response": response}
+    return {"event_id": event.id, "status": "simulated", "response": response}
 
 
 __all__ = [

@@ -1,0 +1,200 @@
+{
+  "schema_version": "2026.07.1",
+  "gate": "M1_LOCAL_STATIC",
+  "status": "PASS",
+  "runtime_acceptance": "NOT_EXECUTED",
+  "started_at": "2026-08-13T09:59:23.486924+00:00",
+  "finished_at": "2026-08-13T09:59:40.424960+00:00",
+  "checks": [
+    {
+      "name": "ruff",
+      "exit_code": 0,
+      "duration_seconds": 0.062,
+      "output_sha256": "f0d0b1081d9d3ebb26c4c93543053ecdc0a58998f22c071dc4ddb26021b57645",
+      "passed": true
+    },
+    {
+      "name": "compileall",
+      "exit_code": 0,
+      "duration_seconds": 0.067,
+      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "passed": true
+    },
+    {
+      "name": "observability-contract",
+      "exit_code": 0,
+      "duration_seconds": 0.035,
+      "output_sha256": "78ff19ce7b272167f8cb2858de97ce782a61cc0a800978bf419004343ead4fb5",
+      "passed": true
+    },
+    {
+      "name": "prg006-contract",
+      "exit_code": 0,
+      "duration_seconds": 0.036,
+      "output_sha256": "1a75e2ad9239c16680bc80b4286530e81955b3593c5d8c79b65df5ab51bbcd88",
+      "passed": true
+    },
+    {
+      "name": "m1-contract",
+      "exit_code": 0,
+      "duration_seconds": 0.035,
+      "output_sha256": "cf0702c768c3df8b264ab3a0685d2387a9451379e352b9293315b8a71e94243a",
+      "passed": true
+    },
+    {
+      "name": "m2-m8-stage-matrix",
+      "exit_code": 0,
+      "duration_seconds": 0.038,
+      "output_sha256": "b5f1dbfa8e5799cddbd5a25de1189ea8d194d06257504d39156db0311662b0ff",
+      "passed": true
+    },
+    {
+      "name": "authorization-acceptance",
+      "exit_code": 0,
+      "duration_seconds": 0.036,
+      "output_sha256": "792411649a02de787a3ce51826b5de7fe8e81489033f29f2dc6a641cb1afaba5",
+      "passed": true
+    },
+    {
+      "name": "route-authentication",
+      "exit_code": 0,
+      "duration_seconds": 0.767,
+      "output_sha256": "6ac8d6f25026b69a69e797b124025b3af252706f58b9c3cf2b4e304dd8bc7bf1",
+      "passed": true
+    },
+    {
+      "name": "edge-security",
+      "exit_code": 0,
+      "duration_seconds": 0.038,
+      "output_sha256": "8dd0a51a8b1b5fc891ca0ff62a5a05d6b0fdabcd5687c84b70c09fdb4531538c",
+      "passed": true
+    },
+    {
+      "name": "session-security",
+      "exit_code": 0,
+      "duration_seconds": 0.04,
+      "output_sha256": "4c4a78bedac53d55fcf6d1c204a33645420c74635b799718e4365500b9016951",
+      "passed": true
+    },
+    {
+      "name": "canary-evidence",
+      "exit_code": 0,
+      "duration_seconds": 0.038,
+      "output_sha256": "c0bd01c296e40c837d46cb8641f82928d6c0e7770a7776034c94daf17d977de4",
+      "passed": true
+    },
+    {
+      "name": "alert-delivery",
+      "exit_code": 0,
+      "duration_seconds": 0.042,
+      "output_sha256": "0dde8257dbad0a03a40fc0ff26a84afac257ed3696041da643c4839578a2b16a",
+      "passed": true
+    },
+    {
+      "name": "legacy-integration-boundary",
+      "exit_code": 0,
+      "duration_seconds": 0.062,
+      "output_sha256": "1f9f3cadd910bf45a423655298e729aee343b113a183bdd95dcba2832dba63a8",
+      "passed": true
+    },
+    {
+      "name": "automation-execution-integrity",
+      "exit_code": 0,
+      "duration_seconds": 0.164,
+      "output_sha256": "edcf90f0a47955ca0bfc83cf435205b7e2d8af97f57977f2faa526074556f749",
+      "passed": true
+    },
+    {
+      "name": "email-delivery-integrity",
+      "exit_code": 0,
+      "duration_seconds": 0.104,
+      "output_sha256": "7328f0b22c5b47d5e05b65cd0f6d2b977f6f01bcff0a4c7023e74b79cb7d464a",
+      "passed": true
+    },
+    {
+      "name": "teams-delivery-integrity",
+      "exit_code": 0,
+      "duration_seconds": 0.073,
+      "output_sha256": "2761c182d114d2a169ad9b1982d0f8bf9fcff980bb3ab806d365bceafa3c5cf0",
+      "passed": true
+    },
+    {
+      "name": "ai-provider-evidence-integrity",
+      "exit_code": 0,
+      "duration_seconds": 0.061,
+      "output_sha256": "dd429a11ebdc729fa49603ee6d97cc919f1bc0ff8f0ee2a1994e35a72326c91f",
+      "passed": true
+    },
+    {
+      "name": "permission-aware-ui",
+      "exit_code": 0,
+      "duration_seconds": 0.041,
+      "output_sha256": "892f2a2932c318c525723c521f5ce15a8526c34ce1c302362726d565cc399a38",
+      "passed": true
+    },
+    {
+      "name": "operational-ui-states",
+      "exit_code": 0,
+      "duration_seconds": 0.038,
+      "output_sha256": "2cbe5a3d4db8932c7bc07848509f76cd79fd4d2fe52e12b2fd9149878179f744",
+      "passed": true
+    },
+    {
+      "name": "typescript",
+      "exit_code": 0,
+      "duration_seconds": 7.975,
+      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "passed": true
+    },
+    {
+      "name": "accessibility",
+      "exit_code": 0,
+      "duration_seconds": 0.061,
+      "output_sha256": "4d4da786d3bab16474fd035f79c491b41b5c9f48d4deb88e384d6fbc1d72b0a7",
+      "passed": true
+    },
+    {
+      "name": "interactive-controls",
+      "exit_code": 0,
+      "duration_seconds": 0.374,
+      "output_sha256": "18ec926fa4d40b3e91b1f292b354dacf488939592363033f96347b8fdb12d4d5",
+      "passed": true
+    },
+    {
+      "name": "compose-production",
+      "exit_code": 0,
+      "duration_seconds": 0.162,
+      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "passed": true
+    },
+    {
+      "name": "compose-bootstrap",
+      "exit_code": 0,
+      "duration_seconds": 0.153,
+      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "passed": true
+    },
+    {
+      "name": "openapi",
+      "exit_code": 0,
+      "duration_seconds": 5.441,
+      "output_sha256": "60f070e3393291d6f836bf0acdca6138eadc4dd1d168ccaf03ab17cf0464f81b",
+      "passed": true
+    },
+    {
+      "name": "alembic-heads",
+      "exit_code": 0,
+      "duration_seconds": 0.903,
+      "output_sha256": "3c771e8584cb163cf1c53319d8d1118e6481ca2bd8fccc2a687cb8942cf24486",
+      "passed": true
+    },
+    {
+      "name": "diff-check",
+      "exit_code": 0,
+      "duration_seconds": 0.091,
+      "output_sha256": "40117f79e1fc2e0958f529a2ba9013c4e210fcb96e9aca0e47e93b8b074bfa05",
+      "passed": true
+    }
+  ],
+  "evidence_sha256": "17a683fba3138f7f6083183f97fe6f76d49aa6a2739b109be823bbefa49d2107"
+}

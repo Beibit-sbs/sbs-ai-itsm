@@ -8,7 +8,7 @@
 ### Backend
 - Провайдер-слой `app/services/ai/provider.py`:
   - `BaseLLMProvider` — абстрактный интерфейс `classify_ticket(text) -> ClassificationResult`.
-  - `MockLLMProvider` — детерминированные keyword-rules RU-домен (сеть, принтер, доступы, почта, ИБ). Всегда готов, не требует ключа.
+  - `MockLLMProvider` — детерминированные keyword-rules RU-домен (сеть, принтер, доступы, почта, ИБ). Доступен как локальная симуляция без ключа, но не считается готовым внешним AI.
   - `OpenAILLMProvider` — вызов `POST {base_url}/chat/completions` с `response_format=json_object`. `Authorization: Bearer`.
   - `GeminiLLMProvider` — `POST /v1beta/models/{model}:generateContent?key=` с `responseMimeType=application/json` и `systemInstruction`.
   - Оба HTTP-провайдера используют `urllib.request` через `asyncio.to_thread` — **новых внешних зависимостей нет**.
@@ -34,6 +34,16 @@
 ### Frontend
 - Тип `AiProviderStatus` + функция `fetchAiProviderStatus` в `frontend/src/api/client.ts`.
 - Карточка **AI Provider** на `/admin/system` показывает: активный провайдер, модель, ready-badge, api_key_configured (bool), pii redaction, timeout, supported providers, reason/fallback если fallback активен.
+- В `/admin` → **Настройки** добавлена отдельная рабочая панель конфигурации:
+  - выбор Mock / OpenAI / Gemini;
+  - маскированный ввод API-ключей без обратной сериализации;
+  - модель, OpenAI-compatible base URL, timeout и PII redaction;
+  - проверка соединения до активации;
+  - явные статусы наличия ключа и безопасное удаление с возвратом на Mock;
+  - прямые ссылки на официальные страницы выпуска ключей.
+- Общая таблица settings теперь показывает одно эффективное значение на ключ вместо одновременного
+  вывода global и tenant overrides.
+- Операторская инструкция: `docs/operations/AI-PROVIDER-CONFIGURATION.md`.
 
 ### Tests
 - `backend/tests/test_ai_provider.py` — 15 тестов:
@@ -57,14 +67,19 @@
 | Frontend `npm run build` | PASS (~556 kB gzip 133 kB — только vite chunk-size warning) |
 | `docker compose config` | PASS |
 | `docker compose -f docker-compose.prod.yml config` | PASS |
-| Runtime `GET /ai/provider-status` | 200, `active=mock`, `ready=true`, `api_key_configured=false`, `supported=[mock, openai, gemini]`, `reason=null` |
+| Runtime `GET /ai/provider-status` | Historical result superseded: current mock contract is `configured=mock`, `active=mock`, `ready=false`, `external_configured=false`, `execution_mode=LOCAL_SIMULATION`, `reason=local_mock_simulation` |
 | Runtime `POST /ai/classify` (text «Не работает интернет и wifi ... email test@example.com») | 200, `category="Сеть и интернет"`, `priority=HIGH`, `confidence=72%`, `rationale=mock:keyword-rules-v1` |
 | Runtime `/ai/provider-status` под requester | 403 |
 | Runtime `/ai/classify` без токена | 401 |
-| Browser smoke `/admin/system` | Карточка «AI Provider» рендерится: Active `mock`, Model `keyword-rules-v1`, Ready `true`, API key configured `false`, PII redaction `true`, Timeout `15 s`, Supported `mock, openai, gemini` |
+| Browser smoke `/admin/system` | Исторический результат заменён: текущий UI маркирует mock как локальную симуляцию и не показывает его как live/ready внешний AI |
 | Secret-leak check | Регекс `/sk-|jwt_secret|"database_url"|change_me_before_production|password_hash/` не срабатывает в DOM |
 
 ## How to Enable Real Provider
+
+Предпочтительный интерактивный путь: `/admin` → **Настройки** → **AI Provider** → выбрать
+OpenAI/Gemini → ввести ключ и модель → **Проверить подключение** → **Сохранить и активировать**.
+
+Для production automation остаётся конфигурация через env-переменные:
 
 Без изменения кода — только env-переменные в `.env.production` (или Docker Compose environment):
 
@@ -83,7 +98,11 @@ GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-2.0-flash-exp
 ```
 
-После рестарта backend `GET /ai/provider-status` вернёт `active_provider=openai|gemini`, `ready=true`, `api_key_configured=true`. `POST /ai/classify` начнёт делать реальные HTTP-вызовы. Ошибки транспорта/HTTP авто-падают на mock — endpoint никогда не 500-ит по вине провайдера.
+После рестарта backend `GET /ai/provider-status` показывает внешний провайдер
+как configured при наличии credential. Это признак конфигурации, а не
+непрерывной доступности. `POST /ai/classify` сохраняет запрошенный и фактический
+провайдер. При transport/HTTP/policy/shape/invalid-JSON fallback ответ содержит
+`provider=mock`, `fallback_used=true` и `execution_mode=LOCAL_SIMULATION`.
 
 ## Security Notes
 - Значения API-ключей никогда не сериализуются в ответ (`describe_provider_status` возвращает только `api_key_configured: bool`).
@@ -102,6 +121,19 @@ GEMINI_MODEL=gemini-2.0-flash-exp
 - RAG над Knowledge Base пока не реализован (только keyword-based related-articles). Следующий stage `AI-REAL-RAG-KNOWLEDGE-002` добавит pgvector и семантический поиск.
 - Нет rate-limiting per tenant (по объёму LLM-запросов и токенов). Следующий stage `AI-REAL-GUARDRAILS-003`.
 - Auto-classification при создании тикета не подключена (сохраняется как ручной вызов `/ai/classify`). Следующий stage `AI-REAL-AUTOCLASSIFY-004`.
+
+## 2026-07-20 Admin UI Completion Addendum
+
+- Focused admin/provider regression: **36 passed**.
+- Ruff validation: PASS.
+- Frontend TypeScript project build: PASS.
+- Historical live API verification covered 8 effective settings / 8 unique
+  keys. Its mock connection-success wording is superseded: current mock tests
+  return `simulation=true` and `success=false`.
+- The production Vite bundle and automated localhost browser pass were not repeated in this
+  session because the execution environment rejected those two actions after its usage quota
+  was reached. The running development UI and backend were restarted with the new code for
+  immediate manual verification.
 
 ## Next Stage
 `PLATFORM-CORE-ASYNC-WORKER-002` — arq worker + переезд AI-классификации + отправки email + integration retries в фон. Даст видимый speed-up UI под нагрузкой + retry policy + dead-letter.

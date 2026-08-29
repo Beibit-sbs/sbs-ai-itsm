@@ -3,7 +3,9 @@
  * Shows Pearson correlation coefficients between metrics for root cause analysis
  */
 
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
+import { localizeTree } from '../../experience/LocalizedContent'
+import { useTenantExperience } from '../../experience/TenantExperienceContext'
 
 interface CorrelationMatrixCardProps {
   rolloutId: string
@@ -22,6 +24,8 @@ export default function CorrelationMatrixCard({
   isLoading = false,
   error,
 }: CorrelationMatrixCardProps) {
+  const { translate } = useTenantExperience()
+  const localize = (node: ReactNode) => localizeTree(node, translate)
   const metrics = useMemo(() => {
     return Object.keys(correlationMatrix).sort()
   }, [correlationMatrix])
@@ -43,11 +47,11 @@ export default function CorrelationMatrixCard({
   }
 
   const getCorrelationLabel = (value: number) => {
-    if (value > 0.5) return 'Strong Positive'
-    if (value > 0) return 'Weak Positive'
-    if (value < -0.5) return 'Strong Negative'
-    if (value < 0) return 'Weak Negative'
-    return 'No Correlation'
+    if (value > 0.5) return translate('Strong Positive')
+    if (value > 0) return translate('Weak Positive')
+    if (value < -0.5) return translate('Strong Negative')
+    if (value < 0) return translate('Weak Negative')
+    return translate('No Correlation')
   }
 
   const getMetricLabel = (metric: string) => {
@@ -58,11 +62,11 @@ export default function CorrelationMatrixCard({
       cpu: 'CPU',
       memory: 'Memory',
     }
-    return labels[metric] || metric
+    return translate(labels[metric] || metric)
   }
 
   if (isLoading) {
-    return (
+    return localize(
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <h3 className="mb-4 text-lg font-semibold">Metric Correlation Matrix</h3>
         <div className="animate-pulse space-y-2">
@@ -75,7 +79,7 @@ export default function CorrelationMatrixCard({
   }
 
   if (error) {
-    return (
+    return localize(
       <div className="rounded-lg border border-red-200 bg-red-50 p-6">
         <h3 className="mb-2 text-lg font-semibold text-red-900">Metric Correlation Matrix</h3>
         <p className="text-sm text-red-700">{error}</p>
@@ -83,7 +87,7 @@ export default function CorrelationMatrixCard({
     )
   }
 
-  return (
+  return localize(
     <div className="rounded-lg border border-gray-200 bg-white p-6">
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-lg font-semibold">Metric Correlation Matrix</h3>
@@ -121,7 +125,7 @@ export default function CorrelationMatrixCard({
                         <td
                           key={`${metric1}-${metric2}`}
                           className={`${getCorrelationColor(value)} ${getCorrelationTextColor(value)} relative px-2 py-1 text-center font-semibold`}
-                          title={`${getMetricLabel(metric1)} vs ${getMetricLabel(metric2)}: ${value.toFixed(2)} - ${getCorrelationLabel(value)}`}
+                          title={`${getMetricLabel(metric1)} ${translate('vs')} ${getMetricLabel(metric2)}: ${value.toFixed(2)} - ${getCorrelationLabel(value)}`}
                         >
                           {value.toFixed(2)}
                         </td>

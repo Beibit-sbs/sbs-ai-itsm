@@ -1,8 +1,7 @@
 """Unit tests for Stage 032: Real Metrics Infrastructure."""
-from datetime import UTC, datetime, timedelta
-from unittest.mock import Mock, MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import Mock, patch
 
-import pytest
 
 from app.services.jobs.metrics_infrastructure import (
     store_metrics_history,

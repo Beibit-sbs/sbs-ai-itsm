@@ -1,0 +1,8 @@
+node_modules
+dist
+.ruff_cache
+*.tsbuildinfo
+*.log
+package-lock.artifactory.bak
+.git
+.gitignore

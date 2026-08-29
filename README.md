@@ -2,9 +2,9 @@
 
 Интеллектуальная multi-tenant SaaS-платформа для управления ИТ-службой.
 
-## FOUNDATION-001
+## Платформа
 
-Текущий репозиторий содержит запускаемую основу проекта:
+Текущий репозиторий содержит полнофункциональную локальную ITSM-платформу:
 
 - FastAPI backend;
 - React + TypeScript frontend;
@@ -17,6 +17,16 @@
 - проверку доступности backend;
 - backend tests и frontend production build.
 
+Production-модули платформы:
+
+- Service Desk и SLA;
+- Asset Inventory / CMDB foundation;
+- Change Management с CAB/ECAB, risk scoring и контролем окон;
+- Problem Management с RCA, recurring-incident analytics и Known Error Database;
+- Knowledge + AI Copilot;
+- Workflow Automation, Integrations и Notifications;
+- Analytics, Monitoring и tamper-evident Security Audit.
+
 ## Быстрый запуск
 
 ```bash
@@ -27,6 +37,7 @@ docker compose up --build
 По умолчанию в `.env.example` включены режимы для локальной demo-разработки:
 
 - `DEMO_MODE=true`
+- `SEED_DEMO_CATALOG=true`
 - `RUN_STARTUP_DDL=true`
 
 После запуска:
@@ -35,6 +46,30 @@ docker compose up --build
 - Backend: http://localhost:8000
 - OpenAPI: http://localhost:8000/docs
 - Health: http://localhost:8000/api/v1/health
+
+### Быстрый локальный запуск в Windows
+
+При уже установленных зависимостях достаточно запустить:
+
+```powershell
+wscript.exe scripts\start-local-demo.vbs
+```
+
+Локальный frontend откроется на http://localhost:5173. Backend использует
+постоянную SQLite-базу в `%LOCALAPPDATA%\Temp\sbs-ai-itsm-visible.db`, поэтому
+данные не пропадают между перезапусками.
+
+Демонстрационные учётные записи (только при `DEMO_MODE=true`):
+
+| Роль | Логин | Пароль |
+|---|---|---|
+| Пользователь | `requester@sbs.local` | `Sbs!2026` |
+| ИТ-менеджер | `manager@sbs.local` | `Sbs!2026` |
+| Администратор организации | `admin@sbs.local` | `Sbs!2026` |
+| SaaS Root | `root@sbs.local` | `Root!2026` |
+
+В production эти учётные записи и demo-каталог должны быть отключены:
+`DEMO_MODE=false`, `SEED_DEMO_CATALOG=false`.
 
 ## Локальная разработка backend
 
@@ -80,13 +115,22 @@ npm run build
 
 - API версионируется через `/api/v1`.
 - Все настройки поступают через environment variables.
-- Бизнес-модули будут multi-tenant с обязательной backend-проверкой `tenant_id`.
-- AI-функции позже подключаются через отдельный provider layer и не блокируют базовую работу ITSM.
-- SaaS Root и администратор организации будут разделены permissions, а не только названиями ролей.
+- Бизнес-модули multi-tenant с обязательной backend-проверкой `tenant_id`.
+- AI-функции подключены через отдельный provider layer и не блокируют базовую работу ITSM.
+- SaaS Root и администратор организации разделены permissions, а не только названиями ролей.
 
-## Следующий этап
+## Готовность и дальнейшие этапы
 
-`FOUNDATION-002 — Tenant, User, Role and Permission Foundation`.
+Функциональная готовность, локальные проверки и внешние блокеры запуска
+фиксируются в отчётах `docs/reports/` и в execution ledger. Перенос на внешний
+сервер выполняется после production runtime gate с PostgreSQL, Redis, worker,
+MFA, TLS и реальными интеграционными секретами.
+
+Главный план развития:
+`docs/roadmap/PRODUCTION-ITSM-MASTER-ROADMAP.md`.
+
+Текущий статус выполнения:
+`docs/operations/WORLD-CLASS-EXECUTION-LEDGER.md`.
 
 ## Production запуск
 
@@ -166,3 +210,11 @@ Operational runbooks:
 - `docs/operations/BACKUP-RESTORE-RUNBOOK.md`
 - `docs/operations/INCIDENT-DIAGNOSTICS-RUNBOOK.md`
 - `docs/operations/SECURITY-OPERATIONS-CHECKLIST.md`
+- `docs/operations/CHANGE-MANAGEMENT-RUNBOOK.md`
+- `docs/operations/AI-PROVIDER-CONFIGURATION.md`
+- `docs/operations/ENTERPRISE-IDENTITY-RUNBOOK.md`
+
+Latest administration delivery report:
+
+- `docs/reports/ADMIN-CONTROL-PLANE-002-REPORT.md`
+- `docs/reports/ADMIN-IDENTITY-ORGANIZATION-003-REPORT.md`

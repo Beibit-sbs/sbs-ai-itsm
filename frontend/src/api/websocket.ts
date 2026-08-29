@@ -44,6 +44,8 @@ export class DashboardWebSocketClient {
   private maxReconnectAttempts = 5
   private reconnectDelay = 1000
   private keepAliveInterval: ReturnType<typeof setInterval> | null = null
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private shouldReconnect = true
   private subscribedStreams: Set<DashboardStreamType> = new Set()
 
   constructor(baseUrl: string, accessToken: string) {
@@ -85,6 +87,7 @@ export class DashboardWebSocketClient {
    * Connect to WebSocket server
    */
   async connect(): Promise<void> {
+    this.shouldReconnect = true
     return new Promise(async (resolve, reject) => {
       try {
         // First, get a temporary socket token (more secure than using JWT directly)
@@ -103,6 +106,7 @@ export class DashboardWebSocketClient {
         this.ws.onopen = () => {
           this.reconnectAttempts = 0
           this.startKeepAlive()
+          this.sendCurrentSubscription()
           this.notifyListeners('onConnect')
           resolve()
         }
@@ -120,7 +124,9 @@ export class DashboardWebSocketClient {
         this.ws.onclose = () => {
           this.stopKeepAlive()
           this.notifyListeners('onDisconnect')
-          this.attemptReconnect()
+          if (this.shouldReconnect) {
+            this.attemptReconnect()
+          }
         }
       } catch (error) {
         console.error('WebSocket connection failed:', error)
@@ -133,7 +139,12 @@ export class DashboardWebSocketClient {
    * Disconnect from WebSocket server
    */
   disconnect(): void {
+    this.shouldReconnect = false
     this.stopKeepAlive()
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
     if (this.ws) {
       this.ws.close()
       this.ws = null
@@ -150,13 +161,7 @@ export class DashboardWebSocketClient {
     }
 
     streams.forEach((stream) => this.subscribedStreams.add(stream))
-
-    this.ws.send(
-      JSON.stringify({
-        type: 'subscribe',
-        streams: Array.from(this.subscribedStreams),
-      })
-    )
+    this.sendCurrentSubscription()
   }
 
   /**
@@ -225,6 +230,18 @@ export class DashboardWebSocketClient {
     }
   }
 
+  private sendCurrentSubscription(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.subscribedStreams.size === 0) {
+      return
+    }
+    this.ws.send(
+      JSON.stringify({
+        type: 'subscribe',
+        streams: Array.from(this.subscribedStreams),
+      })
+    )
+  }
+
   /**
    * Handle incoming WebSocket message
    */
@@ -287,6 +304,9 @@ export class DashboardWebSocketClient {
    * Attempt to reconnect to WebSocket server
    */
   private attemptReconnect(): void {
+    if (!this.shouldReconnect) {
+      return
+    }
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error('Max reconnection attempts reached')
       this.notifyListeners('onError', 'Failed to reconnect to WebSocket')
@@ -298,7 +318,11 @@ export class DashboardWebSocketClient {
     
     console.log(`Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`)
 
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      if (!this.shouldReconnect) {
+        return
+      }
       // Clear old socket token to get a fresh one on reconnect
       this.socketToken = null
       

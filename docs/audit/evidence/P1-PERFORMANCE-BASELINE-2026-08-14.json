@@ -1,0 +1,52 @@
+{
+  "schema_version": "2026.07.1",
+  "status": "PASS",
+  "profile": "baseline",
+  "target": "http://127.0.0.1:18080/api/v1/",
+  "started_at": "2026-08-14T08:56:15.185897+00:00",
+  "finished_at": "2026-08-14T08:59:25.310495+00:00",
+  "effective_load": {
+    "duration_seconds": 180,
+    "concurrency": 10,
+    "websocket_connections": 5,
+    "write_percent": 0,
+    "write_enabled": false
+  },
+  "thresholds": {
+    "http_error_percent_max": 0.5,
+    "http_p95_ms_max": 750,
+    "http_p99_ms_max": 1500,
+    "websocket_failure_percent_max": 1.0
+  },
+  "checks": {
+    "http_error_percent": true,
+    "http_p95_ms": true,
+    "http_p99_ms": true,
+    "websocket_failure_percent": true
+  },
+  "summary": {
+    "requests": 6222,
+    "successful_http": 6222,
+    "failed": 0,
+    "http_error_percent": 0.0,
+    "http_mean_ms": 38.186,
+    "http_p50_ms": 29.87,
+    "http_p95_ms": 77.654,
+    "http_p99_ms": 288.157,
+    "http_max_ms": 345.84,
+    "websocket_attempts": 5,
+    "websocket_failures": 0,
+    "websocket_failure_percent": 0.0,
+    "statuses": {
+      "200": 6222
+    },
+    "operations": {
+      "health": 983,
+      "notifications": 1279,
+      "search": 1243,
+      "tickets": 2717
+    },
+    "exceptions": {}
+  },
+  "evidence_sha256": "41875f4c6b3f078f0efe077ee564ae4bd3ad0498b895fe8804a9f634476df686"
+}

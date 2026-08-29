@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from app.models.notification_preference import NotificationPreference
 from app.models.notification_template import NotificationTemplate
 from app.models.user import User
 from app.services.audit import log_audit
+from app.services.email_operations import EmailOperationError
 from app.services.notifications import (
     list_email_log_paged,
     list_notifications_paged,
@@ -82,10 +83,15 @@ class NotificationTemplateResponse(BaseModel):
 
 
 class NotificationTemplatePatchRequest(BaseModel):
-    name: str | None = None
-    subject_template: str | None = None
-    body_template: str | None = None
-    channel: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=2, max_length=255)
+    subject_template: str | None = Field(default=None, min_length=2, max_length=255)
+    body_template: str | None = Field(default=None, min_length=2, max_length=20_000)
+    channel: str | None = Field(
+        default=None,
+        pattern="^(in_app|email)$",
+    )
     is_active: bool | None = None
 
 
@@ -94,8 +100,15 @@ class EmailMessageLogResponse(BaseModel):
     tenant_id: str | None
     notification_id: str | None
     event_type: str | None
+    channel_id: str | None
+    direction: str
     provider: str
     provider_message_id: str | None
+    internet_message_id: str | None
+    conversation_id: str | None
+    idempotency_key: str | None
+    from_email: str | None
+    from_name: str | None
     to_email: str
     to_name: str | None
     subject: str
@@ -108,8 +121,13 @@ class EmailMessageLogResponse(BaseModel):
     metadata: dict[str, Any] | None
     error_message: str | None
     related_ticket_id: str | None
+    related_request_id: str | None
     created_at: datetime
+    queued_at: datetime | None
+    accepted_at: datetime | None
     sent_at: datetime | None
+    delivered_at: datetime | None
+    bounced_at: datetime | None
 
 
 class EmailLogListResponse(BaseModel):
@@ -220,8 +238,15 @@ def _email_log_to_response(item: EmailMessageLog) -> EmailMessageLogResponse:
         tenant_id=item.tenant_id,
         notification_id=item.notification_id,
         event_type=item.event_type,
+        channel_id=item.channel_id,
+        direction=item.direction,
         provider=item.provider,
         provider_message_id=item.provider_message_id,
+        internet_message_id=item.internet_message_id,
+        conversation_id=item.conversation_id,
+        idempotency_key=item.idempotency_key,
+        from_email=item.from_email,
+        from_name=item.from_name,
         to_email=item.to_email,
         to_name=item.to_name,
         subject=item.subject,
@@ -234,8 +259,13 @@ def _email_log_to_response(item: EmailMessageLog) -> EmailMessageLogResponse:
         metadata=metadata,
         error_message=item.error_message,
         related_ticket_id=item.related_ticket_id,
+        related_request_id=item.related_request_id,
         created_at=item.created_at,
+        queued_at=item.queued_at,
+        accepted_at=item.accepted_at,
         sent_at=item.sent_at,
+        delivered_at=item.delivered_at,
+        bounced_at=item.bounced_at,
     )
 
 
@@ -258,16 +288,21 @@ def get_notifications(
     type_filter: str | None = Query(default=None, alias="event_type"),
     legacy_type_filter: str | None = Query(default=None, alias="type"),
     q: str | None = Query(default=None),
+    scope: str = Query(default="mine", pattern=r"^(mine|tenant)$"),
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> NotificationListResponse:
     require_permissions(current_user, "notifications.read")
     _ensure_access(current_user)
+    if scope == "tenant":
+        require_permissions(current_user, "notifications.manage")
     if type_filter is None:
         type_filter = legacy_type_filter
     items, total, unread = list_notifications_paged(
         db,
         tenant_id=_tenant_scope(current_user),
+        recipient_user_id=current_user.id if scope == "mine" else None,
+        recipient_email=current_user.email if scope == "mine" else None,
         page=page,
         page_size=page_size,
         status=status_filter,
@@ -290,6 +325,8 @@ def get_unread_count(current_user: AuthUserResponse = Depends(get_current_user),
     _, _, unread = list_notifications_paged(
         db,
         tenant_id=_tenant_scope(current_user),
+        recipient_user_id=current_user.id,
+        recipient_email=current_user.email,
         page=1,
         page_size=1,
     )
@@ -300,7 +337,13 @@ def get_unread_count(current_user: AuthUserResponse = Depends(get_current_user),
 def patch_notification_read(notification_id: str, current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> NotificationResponse:
     require_permissions(current_user, "notifications.update")
     _ensure_access(current_user)
-    notification = mark_as_read(db, notification_id)
+    notification = mark_as_read(
+        db,
+        notification_id,
+        user_id=current_user.id,
+        recipient_email=current_user.email,
+        tenant_id=_tenant_scope(current_user),
+    )
     if notification is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
     db.commit()
@@ -312,7 +355,12 @@ def patch_notification_read(notification_id: str, current_user: AuthUserResponse
 def patch_read_all(current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, int]:
     require_permissions(current_user, "notifications.update")
     _ensure_access(current_user)
-    updated = mark_all_as_read(db)
+    updated = mark_all_as_read(
+        db,
+        user_id=current_user.id,
+        recipient_email=current_user.email,
+        tenant_id=_tenant_scope(current_user),
+    )
     actor = db.scalar(select(User).where(User.id == current_user.id))
     log_audit(
         db,
@@ -349,6 +397,14 @@ def patch_template(
     template = db.scalar(select(NotificationTemplate).where(NotificationTemplate.id == template_id))
     if template is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+    if not is_saas_root(current_user) and (
+        template.tenant_id is None
+        or template.tenant_id != current_user.tenant_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Template not found",
+        )
 
     for field_name, value in request.model_dump(exclude_unset=True).items():
         setattr(template, field_name, value)
@@ -438,7 +494,15 @@ def retry_email_log_item(
 ) -> EmailMessageLogResponse:
     require_permissions(current_user, "notifications.email_log.retry")
     _ensure_access(current_user)
-    item = retry_email_log(db, email_log_id=email_log_id)
+    existing = db.get(EmailMessageLog, email_log_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email log entry not found")
+    if not is_saas_root(current_user) and existing.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email log entry not found")
+    try:
+        item = retry_email_log(db, email_log_id=email_log_id)
+    except EmailOperationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email log entry not found")
     actor = db.scalar(select(User).where(User.id == current_user.id))

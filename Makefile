@@ -1,4 +1,4 @@
-.PHONY: dev up down logs logs-backend logs-frontend logs-worker ps health smoke test build clean prod-up prod-down prod-logs migrate backup restore env-check data-backup db-head db-upgrade db-current db-history
+.PHONY: dev up down logs logs-backend logs-frontend logs-worker ps health smoke prod-smoke compose-check secrets-init prod-bootstrap test build clean prod-up prod-down prod-logs monitoring-logs migrate backup restore env-check data-backup db-head db-upgrade db-current db-history
 
 dev:
 	docker compose up --build
@@ -43,6 +43,18 @@ smoke:
 	done; \
 	echo "Smoke checks passed"
 
+prod-smoke:
+	python3 scripts/smoke-production.py --env-file .env.production
+
+compose-check:
+	docker compose -f docker-compose.prod.yml --env-file .env.production config --quiet
+
+secrets-init:
+	python3 scripts/init-production-secrets.py --directory secrets --with-bootstrap-password
+
+prod-bootstrap:
+	docker compose -f docker-compose.prod.yml -f docker-compose.bootstrap.yml --env-file .env.production up -d --build
+
 test:
 	cd backend && pytest
 	cd frontend && npm run build
@@ -61,6 +73,9 @@ prod-down:
 
 prod-logs:
 	docker compose -f docker-compose.prod.yml --env-file .env.production logs -f
+
+monitoring-logs:
+	docker compose -f docker-compose.prod.yml --env-file .env.production logs -f prometheus alertmanager grafana
 
 migrate:
 	cd backend && alembic upgrade head

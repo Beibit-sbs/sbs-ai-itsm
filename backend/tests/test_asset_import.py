@@ -188,6 +188,44 @@ def test_commit_import_creates_assets(app) -> None:
 
         after_assets = client.get('/api/v1/assets?source=excel_import', headers={'Authorization': f'Bearer {token}'}).json()['items']
         assert len(after_assets) >= len(before_assets)
+        assert after_assets
+        assert all(item['ci_class_code'] == 'GENERIC_ASSET' for item in after_assets)
+        assert all(item['ci_schema_version'] for item in after_assets)
+        assert all(item['ci_schema_hash'] for item in after_assets)
+        assert all(item['lifecycle_status'] for item in after_assets)
+
+        sources_response = client.get(
+            '/api/v1/cmdb/sources',
+            headers={'Authorization': f'Bearer {token}'},
+        )
+        assert sources_response.status_code == 200
+        excel_source = next(
+            item
+            for item in sources_response.json()
+            if item['code'] == 'EXCEL_ASSET_IMPORT'
+        )
+        assert excel_source['last_success_at']
+
+        runs_response = client.get(
+            f"/api/v1/cmdb/reconciliation-runs?source_id={excel_source['id']}",
+            headers={'Authorization': f'Bearer {token}'},
+        )
+        assert runs_response.status_code == 200
+        assert runs_response.json()[0]['status'] == 'COMPLETED'
+
+        governed_import = next(
+            item
+            for item in after_assets
+            if item['inventory_number'] == 'INV-EXCEL-001'
+        )
+        ownership_response = client.get(
+            f"/api/v1/cmdb/items/{governed_import['id']}/field-ownership",
+            headers={'Authorization': f'Bearer {token}'},
+        )
+        assert ownership_response.status_code == 200
+        assert {
+            row['source_code'] for row in ownership_response.json()
+        } == {'EXCEL_ASSET_IMPORT'}
 
 
 def test_commit_import_does_not_duplicate_existing_inventory_number(app) -> None:
@@ -205,6 +243,14 @@ def test_commit_import_does_not_duplicate_existing_inventory_number(app) -> None
         assert first_commit.status_code == 200
 
         second_batch = _upload_preview(client, token, _build_excel_bytes())
+        preview_rows = client.get(
+            f'/api/v1/assets/import/batches/{second_batch}/rows',
+            headers={'Authorization': f'Bearer {token}'},
+        )
+        assert preview_rows.status_code == 200
+        statuses = [row['status'] for row in preview_rows.json()]
+        assert statuses.count('update_candidate') >= 3
+        assert statuses.count('duplicate') == 1
         second_commit = client.post(
             f'/api/v1/assets/import/{second_batch}/commit',
             headers={'Authorization': f'Bearer {token}'},

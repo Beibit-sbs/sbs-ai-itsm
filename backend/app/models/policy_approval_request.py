@@ -1,6 +1,5 @@
 """Policy approval request model for staged policy rollout."""
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime
 
 from sqlalchemy import DateTime, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column

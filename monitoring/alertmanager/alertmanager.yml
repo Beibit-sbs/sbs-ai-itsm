@@ -1,0 +1,37 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: sbs-platform
+  group_by:
+    - alertname
+    - severity
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - receiver: sbs-platform
+      matchers:
+        - alertname="SbsObservabilityAcceptanceTest"
+      group_wait: 1s
+      group_interval: 1s
+      repeat_interval: 1m
+
+inhibit_rules:
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="warning"
+    equal:
+      - service
+
+receivers:
+  - name: sbs-platform
+    webhook_configs:
+      - url: http://backend:8000/api/v1/monitoring/alerts
+        send_resolved: true
+        max_alerts: 100
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /run/secrets/alertmanager_webhook_token

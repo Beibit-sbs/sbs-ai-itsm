@@ -58,7 +58,7 @@ def get_active_rollout(
     rollout = db.query(PolicyCanaryRollout).filter(
         PolicyCanaryRollout.policy_type == policy_type,
         PolicyCanaryRollout.status == "in_progress",
-        PolicyCanaryRollout.auto_rollback_triggered == False,
+        PolicyCanaryRollout.auto_rollback_triggered.is_(False),
     ).first()
     
     return rollout

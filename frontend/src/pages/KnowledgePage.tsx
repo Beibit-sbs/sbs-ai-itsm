@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import {
   archiveKnowledgeArticle,
+  createKnowledgeCategory,
   createKnowledgeArticle,
   fetchKnowledgeArticle,
   fetchKnowledgeArticlesPage,
@@ -14,6 +16,8 @@ import {
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import AppShell from '../components/AppShell'
+import { useDialogFocusTrap } from '../accessibility/useDialogFocusTrap'
+import { useTenantExperience } from '../experience/TenantExperienceContext'
 
 const subnavItems = ['Статьи', 'Категории', 'Черновики', 'Использование', 'Feedback', 'AI Suggestions'] as const
 
@@ -40,14 +44,11 @@ const emptyForm: ArticleForm = {
   tags: '',
 }
 
-function formatDate(value: string | null | undefined) {
-  if (!value) return '—'
-  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
-}
-
 export default function KnowledgePage() {
   const { session } = useAuth()
+  const { formatDateTime, translate } = useTenantExperience()
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
   const permissions = new Set(session?.user.permissions ?? [])
 
   const canCreate = permissions.has('knowledge.create')
@@ -58,10 +59,17 @@ export default function KnowledgePage() {
 
   const [activeSubnav, setActiveSubnav] = useState<SubnavKey>('Статьи')
   const [detailTab, setDetailTab] = useState<DetailTab>('Обзор')
-  const [selectedArticleId, setSelectedArticleId] = useState<string | null>(null)
+  const [selectedArticleId, setSelectedArticleId] = useState<string | null>(
+    () => searchParams.get('article_id'),
+  )
   const [editingArticle, setEditingArticle] = useState<KnowledgeArticle | null>(null)
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [form, setForm] = useState<ArticleForm>(emptyForm)
+  const [categoryForm, setCategoryForm] = useState({
+    code: '',
+    name: '',
+    description: '',
+  })
 
   const [q, setQ] = useState('')
   const [categoryId, setCategoryId] = useState('ALL')
@@ -70,20 +78,39 @@ export default function KnowledgePage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
 
+  function openArticle(articleId: string) {
+    setSelectedArticleId(articleId)
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set('article_id', articleId)
+      return next
+    }, { replace: true })
+  }
+
+  function closeArticle() {
+    setSelectedArticleId(null)
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('article_id')
+      return next
+    }, { replace: true })
+  }
+
+  const formDialogRef = useDialogFocusTrap<HTMLDivElement>(
+    isFormOpen,
+    () => setIsFormOpen(false),
+  )
+  const detailDialogRef = useDialogFocusTrap<HTMLDivElement>(
+    Boolean(selectedArticleId),
+    closeArticle,
+  )
+
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      if (selectedArticleId) {
-        setSelectedArticleId(null)
-        return
-      }
-      if (isFormOpen) {
-        setIsFormOpen(false)
-      }
+    const linkedArticleId = searchParams.get('article_id')
+    if (linkedArticleId && linkedArticleId !== selectedArticleId) {
+      setSelectedArticleId(linkedArticleId)
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [selectedArticleId, isFormOpen])
+  }, [searchParams, selectedArticleId])
 
   useEffect(() => {
     setPage(1)
@@ -116,6 +143,14 @@ export default function KnowledgePage() {
     queryFn: () => fetchKnowledgeArticle(session?.access_token ?? '', selectedArticleId ?? ''),
     enabled: Boolean(session?.access_token && selectedArticleId),
   })
+  const categoryMutation = useMutation({
+    mutationFn: () => createKnowledgeCategory(session?.access_token ?? '', categoryForm),
+    onSuccess: async (category) => {
+      setCategoryForm({ code: '', name: '', description: '' })
+      setForm((current) => ({ ...current, category_id: current.category_id || category.id }))
+      await queryClient.invalidateQueries({ queryKey: ['knowledge-categories'] })
+    },
+  })
 
   const createMutation = useMutation({
     mutationFn: async (payload: CreateKnowledgeArticleRequest) => {
@@ -125,7 +160,7 @@ export default function KnowledgePage() {
     onSuccess: async (article) => {
       setIsFormOpen(false)
       setForm(emptyForm)
-      setSelectedArticleId(article.id)
+      openArticle(article.id)
       await queryClient.invalidateQueries({ queryKey: ['knowledge-articles-page'] })
     },
   })
@@ -139,7 +174,7 @@ export default function KnowledgePage() {
       setIsFormOpen(false)
       setEditingArticle(null)
       setForm(emptyForm)
-      setSelectedArticleId(article.id)
+      openArticle(article.id)
       await queryClient.invalidateQueries({ queryKey: ['knowledge-articles-page'] })
       await queryClient.invalidateQueries({ queryKey: ['knowledge-article'] })
     },
@@ -192,7 +227,7 @@ export default function KnowledgePage() {
       <nav className="module-subnav" aria-label="Knowledge subnav">
         {subnavItems.map((item) => (
           <button key={item} type="button" className={`module-subnav-tab ${activeSubnav === item ? 'active' : ''}`} onClick={() => setActiveSubnav(item)}>
-            {item}
+            {translate(item)}
           </button>
         ))}
       </nav>
@@ -263,6 +298,50 @@ export default function KnowledgePage() {
             <h3 className="section-title">Категории</h3>
             <p className="section-subtitle">Справочник категорий базы знаний.</p>
           </header>
+          {canCreate ? (
+            <form
+              className="knowledge-category-form"
+              onSubmit={(event) => {
+                event.preventDefault()
+                categoryMutation.mutate()
+              }}
+            >
+              <label>
+                <span>Код</span>
+                <input
+                  required
+                  value={categoryForm.code}
+                  onChange={(event) => setCategoryForm((current) => ({ ...current, code: event.target.value }))}
+                  placeholder="ACCESS"
+                />
+              </label>
+              <label>
+                <span>Название</span>
+                <input
+                  required
+                  value={categoryForm.name}
+                  onChange={(event) => setCategoryForm((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="Доступ и учётные записи"
+                />
+              </label>
+              <label>
+                <span>Описание</span>
+                <input
+                  value={categoryForm.description}
+                  onChange={(event) => setCategoryForm((current) => ({ ...current, description: event.target.value }))}
+                  placeholder="Инструкции по доступам и ролям"
+                />
+              </label>
+              <button type="submit" disabled={categoryMutation.isPending}>
+                {categoryMutation.isPending ? 'Создаём…' : 'Создать категорию'}
+              </button>
+            </form>
+          ) : null}
+          {categoryMutation.isError ? (
+            <p className="error-message" role="alert">
+              {categoryMutation.error instanceof Error ? categoryMutation.error.message : 'Не удалось создать категорию.'}
+            </p>
+          ) : null}
           <div className="activity-list">
             {categories.map((item) => (
               <article key={item.id} className="activity-item">
@@ -317,15 +396,15 @@ export default function KnowledgePage() {
                           <p className="table-subtext">{article.summary}</p>
                         </td>
                         <td>{article.category_name ?? '—'}</td>
-                        <td>{article.status}</td>
-                        <td>{article.visibility}</td>
+                        <td>{translate(article.status)}</td>
+                        <td>{translate(article.visibility)}</td>
                         <td>{article.tags.join(', ') || '—'}</td>
                         <td>{article.view_count ?? 0}</td>
                         <td>{article.helpful_count} / {article.not_helpful_count}</td>
-                        <td>{formatDate(article.updated_at)}</td>
+                        <td>{formatDateTime(article.updated_at)}</td>
                         <td>
                           <div className="analytics-actions" style={{ justifyContent: 'flex-start' }}>
-                            <button type="button" className="ghost-button row-action" onClick={() => { setSelectedArticleId(article.id); setDetailTab('Обзор') }}>Детали</button>
+                            <button type="button" className="ghost-button row-action" onClick={() => { openArticle(article.id); setDetailTab('Обзор') }}>Детали</button>
                             <button
                               type="button"
                               className="ghost-button row-action"
@@ -371,7 +450,7 @@ export default function KnowledgePage() {
                               disabled={!canFeedback || feedbackMutation.isPending}
                               title={!canFeedback ? 'Нет прав knowledge.feedback' : undefined}
                               onClick={() => {
-                                setSelectedArticleId(article.id)
+                                openArticle(article.id)
                                 setDetailTab('Feedback')
                               }}
                             >
@@ -400,7 +479,7 @@ export default function KnowledgePage() {
                     {usageTop.map((item) => (
                       <article className="activity-item" key={item.id}>
                         <header><strong>{item.title}</strong><span>{item.view_count ?? 0} views</span></header>
-                        <p>Last used: {formatDate(item.last_used_at)}</p>
+                        <p>Last used: {formatDateTime(item.last_used_at)}</p>
                       </article>
                     ))}
                   </div>
@@ -413,11 +492,19 @@ export default function KnowledgePage() {
 
       {isFormOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setIsFormOpen(false)}>
-          <div className="modal-card modal-card-large" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+          <div
+            ref={formDialogRef}
+            className="modal-card modal-card-large"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="knowledge-form-dialog-title"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="modal-header">
               <div>
                 <p className="eyebrow">{editingArticle ? 'РЕДАКТИРОВАНИЕ' : 'НОВАЯ СТАТЬЯ'}</p>
-                <h2>{editingArticle ? 'Редактировать статью' : 'Создать статью'}</h2>
+                <h2 id="knowledge-form-dialog-title">{editingArticle ? 'Редактировать статью' : 'Создать статью'}</h2>
               </div>
               <button type="button" className="ghost-button" onClick={() => setIsFormOpen(false)}>Закрыть</button>
             </div>
@@ -475,38 +562,46 @@ export default function KnowledgePage() {
       ) : null}
 
       {selectedArticleId ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setSelectedArticleId(null)}>
-          <div className="modal-card modal-card-xl" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-backdrop" role="presentation" onClick={closeArticle}>
+          <div
+            ref={detailDialogRef}
+            className="modal-card modal-card-xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="knowledge-detail-dialog-title"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="modal-header">
               <div>
                 <p className="eyebrow">СТАТЬЯ</p>
-                <h2>{selectedArticle?.article_number ?? 'Загрузка...'}</h2>
+                <h2 id="knowledge-detail-dialog-title">{selectedArticle?.article_number ?? 'Загрузка...'}</h2>
                 <p className="modal-subtitle">{selectedArticle?.title ?? ''}</p>
               </div>
-              <button type="button" className="ghost-button" onClick={() => setSelectedArticleId(null)}>Закрыть</button>
+              <button type="button" className="ghost-button" onClick={closeArticle}>Закрыть</button>
             </div>
 
             <section className="module-subnav">
               {(['Обзор', 'Контент', 'Связанные заявки', 'Использование', 'Feedback'] as const).map((tab) => (
-                <button key={tab} type="button" className={`module-subnav-tab ${detailTab === tab ? 'active' : ''}`} onClick={() => setDetailTab(tab)}>{tab}</button>
+                <button key={tab} type="button" className={`module-subnav-tab ${detailTab === tab ? 'active' : ''}`} onClick={() => setDetailTab(tab)}>{translate(tab)}</button>
               ))}
             </section>
 
-            {articleQuery.isPending ? <p className="state-panel state-panel-loading">Загрузка статьи...</p> : null}
-            {articleQuery.isError ? <p className="error-message">Не удалось загрузить статью.</p> : null}
+            {articleQuery.isPending ? <p className="state-panel state-panel-loading" role="status">Загрузка статьи...</p> : null}
+            {articleQuery.isError ? <p className="error-message" role="alert">Не удалось загрузить статью.</p> : null}
 
             {selectedArticle ? (
               <section className="ticket-detail-panel" style={{ marginTop: 12 }}>
                 {detailTab === 'Обзор' ? (
                   <div className="detail-fields">
                     <div><span>Категория</span><strong>{selectedArticle.category_name ?? '—'}</strong></div>
-                    <div><span>Status</span><strong>{selectedArticle.status}</strong></div>
-                    <div><span>Visibility</span><strong>{selectedArticle.visibility}</strong></div>
+                    <div><span>Status</span><strong>{translate(selectedArticle.status)}</strong></div>
+                    <div><span>Visibility</span><strong>{translate(selectedArticle.visibility)}</strong></div>
                     <div><span>Views</span><strong>{selectedArticle.view_count ?? 0}</strong></div>
                     <div><span>Helpful</span><strong>{selectedArticle.helpful_count}</strong></div>
                     <div><span>Not helpful</span><strong>{selectedArticle.not_helpful_count}</strong></div>
-                    <div><span>Updated</span><strong>{formatDate(selectedArticle.updated_at)}</strong></div>
-                    <div><span>Published</span><strong>{formatDate(selectedArticle.published_at)}</strong></div>
+                    <div><span>Updated</span><strong>{formatDateTime(selectedArticle.updated_at)}</strong></div>
+                    <div><span>Published</span><strong>{formatDateTime(selectedArticle.published_at)}</strong></div>
                   </div>
                 ) : null}
 
@@ -527,7 +622,7 @@ export default function KnowledgePage() {
                 {detailTab === 'Использование' ? (
                   <div className="detail-fields">
                     <div><span>Views</span><strong>{selectedArticle.view_count ?? 0}</strong></div>
-                    <div><span>Last used</span><strong>{formatDate(selectedArticle.last_used_at)}</strong></div>
+                    <div><span>Last used</span><strong>{formatDateTime(selectedArticle.last_used_at)}</strong></div>
                   </div>
                 ) : null}
 

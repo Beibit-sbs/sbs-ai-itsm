@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, select, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,7 @@ from app.models.ticket import Ticket
 from app.models.ticket_category import TicketCategory
 from app.models.ticket_comment import TicketComment
 from app.models.ticket_history import TicketHistory
+from app.models.ticket_number_counter import TicketNumberCounter
 from app.models.ticket_priority import TicketPriority
 from app.models.ticket_status import TicketStatus
 from app.models.tenant import Tenant
@@ -114,6 +115,34 @@ def _build_lookup(definitions: Iterable[dict[str, object]]) -> dict[str, dict[st
     return {str(item["code"]): item for item in definitions}
 
 
+def _maximum_ticket_number_suffix(db: Session) -> int:
+    max_value = 1000
+    for number in db.scalars(select(Ticket.ticket_number)).all():
+        if not number:
+            continue
+        match = re.search(r"(\d+)$", str(number))
+        if match:
+            max_value = max(max_value, int(match.group(1)))
+    return max_value
+
+
+def ensure_ticket_number_counter(db: Session) -> None:
+    """Create or advance the allocator without ever reusing an issued number."""
+
+    required_next_value = _maximum_ticket_number_suffix(db) + 1
+    counter = db.get(TicketNumberCounter, "global")
+    if counter is None:
+        db.add(
+            TicketNumberCounter(
+                scope="global",
+                next_value=required_next_value,
+            )
+        )
+    elif counter.next_value < required_next_value:
+        counter.next_value = required_next_value
+    db.flush()
+
+
 def ensure_service_desk_schema(engine: Engine) -> None:
     inspector = inspect(engine)
     existing_columns = {column["name"] for column in inspector.get_columns("tickets")}
@@ -167,19 +196,37 @@ def ensure_service_desk_schema(engine: Engine) -> None:
             )
 
 
+def ensure_service_desk_reference_data(db: Session) -> None:
+    """Create the mandatory ticket dictionaries without changing operator data.
+
+    Categories, priorities, and statuses are required by the ticket API in every
+    environment.  They are product reference data, not demo fixtures.  Existing
+    rows are deliberately left untouched so an operator can localize labels,
+    colors, descriptions, ordering, and activation state.
+    """
+
+    reference_sets = (
+        (TicketCategory, CATEGORY_DEFS),
+        (TicketPriority, PRIORITY_DEFS),
+        (TicketStatus, STATUS_DEFS),
+    )
+    for model, definitions in reference_sets:
+        existing_codes = set(db.scalars(select(model.code)).all())
+        db.add_all(
+            model(id=_uuid(), **definition)
+            for definition in definitions
+            if definition["code"] not in existing_codes
+        )
+    ensure_ticket_number_counter(db)
+    db.flush()
+
+
 def seed_service_desk_demo_data(db: Session) -> None:
     tenant = db.scalar(select(Tenant).where(Tenant.slug == "demo-tenant"))
     if tenant is None:
         return
 
-    if db.scalar(select(TicketCategory.id)) is None:
-        db.add_all([TicketCategory(id=_uuid(), **definition) for definition in CATEGORY_DEFS])
-
-    if db.scalar(select(TicketPriority.id)) is None:
-        db.add_all([TicketPriority(id=_uuid(), **definition) for definition in PRIORITY_DEFS])
-
-    if db.scalar(select(TicketStatus.id)) is None:
-        db.add_all([TicketStatus(id=_uuid(), **definition) for definition in STATUS_DEFS])
+    ensure_service_desk_reference_data(db)
 
     existing_numbers = set(db.scalars(select(Ticket.ticket_number)).all())
     base_time = _now()
@@ -247,6 +294,11 @@ def seed_service_desk_demo_data(db: Session) -> None:
             ]
         )
 
+    # Demo tickets are inserted with fixed human-readable numbers.  Advance the
+    # shared allocator after those rows have been flushed so the first real
+    # request cannot reuse SD-1001 (or any other seeded number).
+    db.flush()
+    ensure_ticket_number_counter(db)
     db.commit()
 
 
@@ -265,6 +317,7 @@ def calculate_response_minutes(ticket: Ticket, history: list[TicketHistory]) -> 
 def build_ticket_summary(ticket: Ticket, category_label: str | None = None, priority_label: str | None = None, status_label: str | None = None, response_minutes: int | None = None) -> dict[str, object]:
     return {
         "id": ticket.id,
+        "tenant_id": ticket.tenant_id,
         "ticket_number": ticket.ticket_number,
         "title": ticket.title,
         "description": ticket.description,
@@ -295,10 +348,28 @@ def build_ticket_summary(ticket: Ticket, category_label: str | None = None, prio
 
 
 def next_ticket_number(db: Session) -> str:
-    numbers = [str(number) for number in db.scalars(select(Ticket.ticket_number)).all() if number]
-    max_value = 1000
-    for number in numbers:
-        match = re.search(r"(\d+)$", number)
-        if match:
-            max_value = max(max_value, int(match.group(1)))
-    return f"SD-{max_value + 1:04d}"
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        allocated_value = db.scalar(text("SELECT nextval('ticket_number_seq')"))
+        if allocated_value is None:
+            raise RuntimeError("PostgreSQL ticket number sequence is unavailable")
+        return f"SD-{int(allocated_value):04d}"
+
+    allocated_next_value = db.scalar(
+        update(TicketNumberCounter)
+        .where(TicketNumberCounter.scope == "global")
+        .values(next_value=TicketNumberCounter.next_value + 1)
+        .returning(TicketNumberCounter.next_value)
+    )
+    if allocated_next_value is None:
+        # Startup seeding and the migration normally create this row.  Keeping
+        # the fallback makes isolated developer/test databases self-healing.
+        ensure_ticket_number_counter(db)
+        allocated_next_value = db.scalar(
+            update(TicketNumberCounter)
+            .where(TicketNumberCounter.scope == "global")
+            .values(next_value=TicketNumberCounter.next_value + 1)
+            .returning(TicketNumberCounter.next_value)
+        )
+    if allocated_next_value is None:
+        raise RuntimeError("Ticket number allocator is unavailable")
+    return f"SD-{int(allocated_next_value) - 1:04d}"

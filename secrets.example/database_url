@@ -1,0 +1,1 @@
+postgresql+psycopg://sbs_itsm:GENERATE-A-UNIQUE-POSTGRES-PASSWORD@postgres:5432/sbs_itsm

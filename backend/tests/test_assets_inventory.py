@@ -4,6 +4,12 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.api.v1.routes.assets import (
+    _allow_agent_limited_update,
+    _can_manage_assets,
+)
+from app.api.v1.routes.auth import AuthUserResponse
+
 
 def _login(client: TestClient, email: str, password: str = "Sbs!2026") -> str:
     response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
@@ -19,6 +25,30 @@ def _first_asset_id(client: TestClient, token: str) -> str:
     response = client.get("/api/v1/assets", headers=_headers(token))
     assert response.status_code == 200, response.text
     return response.json()["items"][0]["id"]
+
+
+def test_custom_asset_roles_use_effective_permissions() -> None:
+    editor = AuthUserResponse(
+        id="custom-editor",
+        email="asset-editor@example.invalid",
+        full_name="Asset Editor",
+        role="custom_asset_editor",
+        tenant_id="tenant-a",
+        permissions=["assets.read", "assets.update"],
+    )
+    verifier = AuthUserResponse(
+        id="custom-verifier",
+        email="asset-verifier@example.invalid",
+        full_name="Asset Verifier",
+        role="custom_asset_verifier",
+        tenant_id="tenant-a",
+        permissions=["assets.read", "assets.verify"],
+    )
+
+    assert _can_manage_assets(editor) is True
+    assert _allow_agent_limited_update(editor) is False
+    assert _can_manage_assets(verifier) is False
+    assert _allow_agent_limited_update(verifier) is True
 
 
 def test_assets_pagination_envelope_preserved(app) -> None:
@@ -165,6 +195,7 @@ def test_asset_detail_returns_linked_tickets_summary(app) -> None:
                 "description": "Проверка linked tickets summary",
                 "requester_name": "Ирина Соколова",
                 "requester_email": "irina.sokolova@sbs.local",
+                "on_behalf_reason": "Asset owner reported the issue",
                 "department": "IT",
                 "location": "HQ",
                 "category": "HARDWARE_WORKSTATION",

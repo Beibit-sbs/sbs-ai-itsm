@@ -11,7 +11,7 @@ Functions:
 
 from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, and_
+from sqlalchemy import desc
 
 from app.models.policy_rollout_metrics import (
     PolicyRolloutMetricsHistory,
@@ -27,58 +27,109 @@ from app.models.alert_notifications import (
 from app.models.policy_canary_rollout import PolicyCanaryRollout
 
 
-def get_dashboard_summary(db: Session, tenant_id: str) -> dict:
+def _timestamp() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _isoformat(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    rendered = value.isoformat()
+    return rendered.replace("+00:00", "Z") if value.tzinfo else f"{rendered}Z"
+
+
+def _tenant_scoped(query, column, tenant_id: str | None):
+    """Apply tenant isolation while allowing the root-only global stream."""
+    if tenant_id in (None, "global"):
+        return query
+    return query.filter(column == tenant_id)
+
+
+def _elapsed_hours(started_at: datetime | None, ended_at: datetime | None = None) -> float:
+    if started_at is None:
+        return 0.0
+    end = ended_at or datetime.now(UTC)
+    if started_at.tzinfo is None and end.tzinfo is not None:
+        end = end.replace(tzinfo=None)
+    elif started_at.tzinfo is not None and end.tzinfo is None:
+        end = end.replace(tzinfo=started_at.tzinfo)
+    return max(0.0, (end - started_at).total_seconds() / 3600)
+
+
+def get_dashboard_summary(db: Session, tenant_id: str | None) -> dict:
     """Get overall dashboard health snapshot."""
     try:
-        # Count active rollouts
-        active_rollouts = db.query(PolicyCanaryRollout).filter(
-            and_(
-                PolicyCanaryRollout.tenant_id == tenant_id,
-                PolicyCanaryRollout.status == "active",
-            )
-        ).count()
+        # Canary rollout records are platform policy records and do not carry
+        # tenant_id. Tenant-owned health, anomaly, and alert records are
+        # filtered below for organization sessions.
+        active_rollout_records = (
+            db.query(PolicyCanaryRollout)
+            .filter(PolicyCanaryRollout.status.in_(("active", "in_progress")))
+            .order_by(desc(PolicyCanaryRollout.started_at))
+            .all()
+        )
+        active_rollout_ids = [item.id for item in active_rollout_records]
 
-        # Get latest health assessments
-        health_assessments = db.query(PolicyMetricsHealthAssessment).filter(
-            PolicyMetricsHealthAssessment.tenant_id == tenant_id,
-        ).order_by(
-            desc(PolicyMetricsHealthAssessment.assessed_at)
-        ).limit(10).all()
+        health_query = _tenant_scoped(
+            db.query(PolicyMetricsHealthAssessment),
+            PolicyMetricsHealthAssessment.tenant_id,
+            tenant_id,
+        )
+        health_assessments = (
+            health_query.order_by(desc(PolicyMetricsHealthAssessment.assessed_at))
+            .limit(10)
+            .all()
+        )
 
         # Calculate average health score
         health_scores = [h.health_score for h in health_assessments if h.health_score]
         avg_health = sum(health_scores) / len(health_scores) if health_scores else 0.0
 
         # Count active alerts
-        active_alerts = db.query(PolicyAlertHistory).filter(
-            and_(
-                PolicyAlertHistory.tenant_id == tenant_id,
-                PolicyAlertHistory.status == "active",
-            )
+        active_alert_query = db.query(PolicyAlertHistory).filter(
+            PolicyAlertHistory.status == "active"
+        )
+        active_alerts = _tenant_scoped(
+            active_alert_query,
+            PolicyAlertHistory.tenant_id,
+            tenant_id,
         ).count()
 
         # Count critical alerts
-        critical_alerts = db.query(PolicyAlertHistory).filter(
-            and_(
-                PolicyAlertHistory.tenant_id == tenant_id,
-                PolicyAlertHistory.status == "active",
-                PolicyAlertHistory.severity == "critical",
-            )
+        critical_alert_query = db.query(PolicyAlertHistory).filter(
+            PolicyAlertHistory.status == "active",
+            PolicyAlertHistory.severity == "critical",
+        )
+        critical_alerts = _tenant_scoped(
+            critical_alert_query,
+            PolicyAlertHistory.tenant_id,
+            tenant_id,
         ).count()
 
         # Count anomalies
-        recent_anomalies = db.query(PolicyMetricsAnomalyDetection).filter(
-            and_(
-                PolicyMetricsAnomalyDetection.tenant_id == tenant_id,
-                PolicyMetricsAnomalyDetection.resolved_at.is_(None),
-            )
+        anomaly_query = db.query(PolicyMetricsAnomalyDetection).filter(
+            PolicyMetricsAnomalyDetection.resolved_at.is_(None)
+        )
+        recent_anomalies = _tenant_scoped(
+            anomaly_query,
+            PolicyMetricsAnomalyDetection.tenant_id,
+            tenant_id,
         ).count()
 
         return {
-            "timestamp": datetime.now(UTC).isoformat() + "Z",
-            "active_rollouts": active_rollouts,
+            "timestamp": _timestamp(),
+            "active_rollouts": len(active_rollout_ids),
+            "active_rollout_ids": active_rollout_ids,
             "avg_health_score": avg_health,
-            "health_status": "healthy" if avg_health >= 0.8 else "degraded" if avg_health >= 0.5 else "critical",
+            "health_status": (
+                "unknown"
+                if not health_scores
+                else "healthy"
+                if avg_health >= 0.8
+                else "degraded"
+                if avg_health >= 0.5
+                else "critical"
+            ),
             "active_alerts": active_alerts,
             "critical_alerts": critical_alerts,
             "unresolved_anomalies": recent_anomalies,
@@ -87,13 +138,21 @@ def get_dashboard_summary(db: Session, tenant_id: str) -> dict:
     except Exception as e:
         return {
             "error": str(e),
-            "timestamp": datetime.now(UTC).isoformat() + "Z",
+            "timestamp": _timestamp(),
+            "active_rollouts": 0,
+            "active_rollout_ids": [],
+            "avg_health_score": 0.0,
+            "health_status": "unknown",
+            "active_alerts": 0,
+            "critical_alerts": 0,
+            "unresolved_anomalies": 0,
+            "system_status": "unknown",
         }
 
 
 def get_metrics_timeline(
     db: Session,
-    tenant_id: str,
+    tenant_id: str | None,
     rollout_id: str,
     minutes_back: int = 60,
     metric_type: str = "error_rate",
@@ -103,19 +162,21 @@ def get_metrics_timeline(
         cutoff_time = datetime.now(UTC) - timedelta(minutes=minutes_back)
 
         # Get history data
-        history = db.query(PolicyRolloutMetricsHistory).filter(
-            and_(
+        history = (
+            db.query(PolicyRolloutMetricsHistory)
+            .filter(
                 PolicyRolloutMetricsHistory.rollout_id == rollout_id,
-                PolicyRolloutMetricsHistory.tenant_id == tenant_id,
                 PolicyRolloutMetricsHistory.collected_at >= cutoff_time,
             )
-        ).order_by(PolicyRolloutMetricsHistory.collected_at).all()
+            .order_by(PolicyRolloutMetricsHistory.collected_at)
+            .all()
+        )
 
         # Extract metric values
         timestamps = []
         values = []
         for record in history:
-            timestamps.append(record.collected_at.isoformat() + "Z")
+            timestamps.append(_isoformat(record.collected_at))
             if metric_type == "error_rate":
                 values.append(record.error_rate or 0)
             elif metric_type == "latency_p99":
@@ -153,23 +214,30 @@ def get_metrics_timeline(
             "error": str(e),
             "rollout_id": rollout_id,
             "metric_type": metric_type,
+            "time_window_minutes": minutes_back,
+            "timestamps": [],
+            "values": [],
+            "statistics": {
+                "average": 0,
+                "minimum": 0,
+                "maximum": 0,
+                "data_points": 0,
+            },
         }
 
 
 def get_active_alerts(
     db: Session,
-    tenant_id: str,
+    tenant_id: str | None,
     severity_filter: str | None = None,
     limit: int = 50,
 ) -> dict:
     """Get current active alerts with context."""
     try:
         query = db.query(PolicyAlertHistory).filter(
-            and_(
-                PolicyAlertHistory.tenant_id == tenant_id,
-                PolicyAlertHistory.status.in_(["active", "acknowledged"]),
-            )
+            PolicyAlertHistory.status.in_(["active", "acknowledged"])
         )
+        query = _tenant_scoped(query, PolicyAlertHistory.tenant_id, tenant_id)
 
         if severity_filter and severity_filter in ["critical", "high", "medium", "low"]:
             query = query.filter(PolicyAlertHistory.severity == severity_filter)
@@ -197,8 +265,8 @@ def get_active_alerts(
                 "operator": alert.operator,
                 "severity": alert.severity,
                 "status": alert.status,
-                "triggered_at": alert.triggered_at.isoformat() + "Z" if alert.triggered_at else None,
-                "acknowledged_at": alert.acknowledged_at.isoformat() + "Z" if alert.acknowledged_at else None,
+                "triggered_at": _isoformat(alert.triggered_at),
+                "acknowledged_at": _isoformat(alert.acknowledged_at),
                 "duration_seconds": duration,
                 "breach_count": alert.breach_count,
                 "breach_percentage": alert.breach_percentage,
@@ -207,77 +275,107 @@ def get_active_alerts(
         return {
             "alerts": alert_list,
             "count": len(alert_list),
-            "timestamp": datetime.now(UTC).isoformat() + "Z",
+            "timestamp": _timestamp(),
         }
     except Exception as e:
         return {
             "error": str(e),
             "alerts": [],
             "count": 0,
+            "timestamp": _timestamp(),
         }
 
 
 def get_rollout_comparison(
     db: Session,
-    tenant_id: str,
+    tenant_id: str | None,
     rollout_ids: list[str],
 ) -> dict:
     """Compare multiple rollouts side-by-side."""
     try:
         rollouts = []
         for rollout_id in rollout_ids[:10]:  # Limit to 10 comparisons
+            rollout = db.get(PolicyCanaryRollout, rollout_id)
+            if rollout is None:
+                continue
+
             # Get latest snapshot
             snapshot = db.query(PolicyRolloutMetricsSnapshot).filter(
-                and_(
-                    PolicyRolloutMetricsSnapshot.rollout_id == rollout_id,
-                    PolicyRolloutMetricsSnapshot.tenant_id == tenant_id,
-                )
+                PolicyRolloutMetricsSnapshot.rollout_id == rollout_id
             ).first()
 
             # Get latest health
-            health = db.query(PolicyMetricsHealthAssessment).filter(
-                and_(
-                    PolicyMetricsHealthAssessment.rollout_id == rollout_id,
-                    PolicyMetricsHealthAssessment.tenant_id == tenant_id,
+            health_query = db.query(PolicyMetricsHealthAssessment).filter(
+                PolicyMetricsHealthAssessment.rollout_id == rollout_id
+            )
+            health = (
+                _tenant_scoped(
+                    health_query,
+                    PolicyMetricsHealthAssessment.tenant_id,
+                    tenant_id,
                 )
-            ).order_by(desc(PolicyMetricsHealthAssessment.assessed_at)).first()
+                .order_by(desc(PolicyMetricsHealthAssessment.assessed_at))
+                .first()
+            )
 
             # Get active alerts for rollout
-            alert_count = db.query(PolicyAlertHistory).filter(
-                and_(
-                    PolicyAlertHistory.rollout_id == rollout_id,
-                    PolicyAlertHistory.tenant_id == tenant_id,
-                    PolicyAlertHistory.status == "active",
-                )
+            alert_query = db.query(PolicyAlertHistory).filter(
+                PolicyAlertHistory.rollout_id == rollout_id,
+                PolicyAlertHistory.status == "active",
+            )
+            alert_count = _tenant_scoped(
+                alert_query,
+                PolicyAlertHistory.tenant_id,
+                tenant_id,
+            ).count()
+
+            anomaly_query = db.query(PolicyMetricsAnomalyDetection).filter(
+                PolicyMetricsAnomalyDetection.rollout_id == rollout_id,
+                PolicyMetricsAnomalyDetection.resolved_at.is_(None),
+            )
+            unresolved_anomalies = _tenant_scoped(
+                anomaly_query,
+                PolicyMetricsAnomalyDetection.tenant_id,
+                tenant_id,
             ).count()
 
             rollouts.append({
                 "rollout_id": rollout_id,
+                "name": rollout.policy_type.replace("_", " ").title(),
+                "status": rollout.status,
+                "canary_percentage": float(rollout.current_canary_percentage),
                 "error_rate": snapshot.error_rate if snapshot else None,
                 "latency_p99_ms": snapshot.latency_p99_ms if snapshot else None,
                 "throughput_eps": snapshot.throughput_eps if snapshot else None,
                 "health_score": health.health_score if health else None,
                 "health_status": health.status if health else None,
                 "active_alerts": alert_count,
+                "unresolved_anomalies": unresolved_anomalies,
+                "duration_hours": _elapsed_hours(
+                    rollout.started_at,
+                    rollout.completed_at,
+                ),
+                "started_at": _isoformat(rollout.started_at),
                 "error_trend": snapshot.error_rate_increasing if snapshot else None,
             })
 
         return {
             "comparison": rollouts,
             "count": len(rollouts),
-            "timestamp": datetime.now(UTC).isoformat() + "Z",
+            "timestamp": _timestamp(),
         }
     except Exception as e:
         return {
             "error": str(e),
             "comparison": [],
             "count": 0,
+            "timestamp": _timestamp(),
         }
 
 
 def get_anomaly_timeline(
     db: Session,
-    tenant_id: str,
+    tenant_id: str | None,
     rollout_id: str | None = None,
     minutes_back: int = 1440,  # 24 hours
 ) -> dict:
@@ -286,17 +384,19 @@ def get_anomaly_timeline(
         cutoff_time = datetime.now(UTC) - timedelta(minutes=minutes_back)
 
         query = db.query(PolicyMetricsAnomalyDetection).filter(
-            and_(
-                PolicyMetricsAnomalyDetection.tenant_id == tenant_id,
-                PolicyMetricsAnomalyDetection.created_at >= cutoff_time,
-            )
+            PolicyMetricsAnomalyDetection.detected_at >= cutoff_time
+        )
+        query = _tenant_scoped(
+            query,
+            PolicyMetricsAnomalyDetection.tenant_id,
+            tenant_id,
         )
 
         if rollout_id:
             query = query.filter(PolicyMetricsAnomalyDetection.rollout_id == rollout_id)
 
         anomalies = query.order_by(
-            desc(PolicyMetricsAnomalyDetection.created_at)
+            desc(PolicyMetricsAnomalyDetection.detected_at)
         ).limit(100).all()
 
         timeline = []
@@ -309,30 +409,36 @@ def get_anomaly_timeline(
                 "anomaly_score": anomaly.anomaly_score,
                 "severity": anomaly.severity,
                 "value": anomaly.value,
-                "baseline": anomaly.baseline,
-                "deviation_percent": anomaly.deviation_percent,
-                "created_at": anomaly.created_at.isoformat() + "Z",
+                "baseline": anomaly.baseline if anomaly.baseline is not None else 0.0,
+                "deviation_percent": (
+                    anomaly.deviation_percent
+                    if anomaly.deviation_percent is not None
+                    else 0.0
+                ),
+                "created_at": _isoformat(anomaly.detected_at),
                 "acknowledged": anomaly.acknowledged,
-                "resolved_at": anomaly.resolved_at.isoformat() + "Z" if anomaly.resolved_at else None,
+                "resolved_at": _isoformat(anomaly.resolved_at),
             })
 
         return {
             "anomalies": timeline,
             "count": len(timeline),
             "time_window_minutes": minutes_back,
-            "timestamp": datetime.now(UTC).isoformat() + "Z",
+            "timestamp": _timestamp(),
         }
     except Exception as e:
         return {
             "error": str(e),
             "anomalies": [],
             "count": 0,
+            "time_window_minutes": minutes_back,
+            "timestamp": _timestamp(),
         }
 
 
 def get_metric_correlation_matrix(
     db: Session,
-    tenant_id: str,
+    tenant_id: str | None,
     rollout_id: str,
     time_window_minutes: int = 60,
 ) -> dict:
@@ -341,19 +447,23 @@ def get_metric_correlation_matrix(
         cutoff_time = datetime.now(UTC) - timedelta(minutes=time_window_minutes)
 
         # Get all metrics for time window
-        history = db.query(PolicyRolloutMetricsHistory).filter(
-            and_(
+        history = (
+            db.query(PolicyRolloutMetricsHistory)
+            .filter(
                 PolicyRolloutMetricsHistory.rollout_id == rollout_id,
-                PolicyRolloutMetricsHistory.tenant_id == tenant_id,
                 PolicyRolloutMetricsHistory.collected_at >= cutoff_time,
             )
-        ).order_by(PolicyRolloutMetricsHistory.collected_at).all()
+            .order_by(PolicyRolloutMetricsHistory.collected_at)
+            .all()
+        )
 
         if not history:
             return {
                 "rollout_id": rollout_id,
                 "correlation_matrix": {},
                 "metric_count": 0,
+                "time_window_minutes": time_window_minutes,
+                "timestamp": _timestamp(),
             }
 
         # Extract metrics
@@ -400,11 +510,14 @@ def get_metric_correlation_matrix(
             "correlation_matrix": correlation_matrix,
             "metric_count": len(metric_names),
             "time_window_minutes": time_window_minutes,
-            "timestamp": datetime.now(UTC).isoformat() + "Z",
+            "timestamp": _timestamp(),
         }
     except Exception as e:
         return {
             "error": str(e),
             "rollout_id": rollout_id,
             "correlation_matrix": {},
+            "metric_count": 0,
+            "time_window_minutes": time_window_minutes,
+            "timestamp": _timestamp(),
         }

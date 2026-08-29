@@ -7,15 +7,17 @@ Tests the WebSocket infrastructure for real-time dashboard data streaming.
 import pytest
 import json
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from fastapi import WebSocket
-from fastapi.testclient import TestClient
 
 from app.services.jobs.dashboard_websocket_service import (
+    DashboardEvent,
     DashboardWebSocketManager,
     DashboardStreamBroadcaster,
-    ws_manager,
 )
+from app.api.v1.routes.auth import AuthUserResponse
+from app.api.v1.routes.jobs import create_socket_token
+from app.core.security import decode_token
 
 
 class TestDashboardWebSocketManager:
@@ -278,6 +280,74 @@ class TestDashboardWebSocketManager:
         count = manager.get_tenant_connection_count("non-existent")
         assert count == 0
 
+    @pytest.mark.asyncio
+    async def test_socket_token_is_one_time(self):
+        manager = DashboardWebSocketManager()
+
+        assert await manager.consume_socket_token("token-1", 60) is True
+        assert await manager.consume_socket_token("token-1", 60) is False
+
+    @pytest.mark.asyncio
+    async def test_connection_capacity_is_enforced(self):
+        manager = DashboardWebSocketManager(max_connections_per_tenant=1)
+        first = AsyncMock(spec=WebSocket)
+        second = AsyncMock(spec=WebSocket)
+
+        await manager.connect(first, "tenant-1")
+        await manager.connect(second, "tenant-1")
+
+        second.close.assert_awaited_once_with(code=1013, reason="Tenant WebSocket capacity reached")
+        assert manager.get_tenant_connection_count("tenant-1") == 1
+
+    @pytest.mark.asyncio
+    async def test_shared_transport_broadcasts_across_replicas(self):
+        class SharedHub:
+            def __init__(self):
+                self.handlers = []
+                self.tokens = set()
+
+        class FakeTransport:
+            def __init__(self, hub):
+                self.hub = hub
+                self.healthy = True
+                self.handler = None
+
+            async def start(self, handler):
+                self.handler = handler
+                self.hub.handlers.append(handler)
+
+            async def stop(self):
+                self.hub.handlers.remove(self.handler)
+
+            async def publish(self, event: DashboardEvent):
+                await asyncio.gather(*(handler(event) for handler in list(self.hub.handlers)))
+
+            async def acquire_stream_lease(self, tenant_id, stream_type, ttl_seconds):
+                return True
+
+            async def consume_once(self, token_id, ttl_seconds):
+                if token_id in self.hub.tokens:
+                    return False
+                self.hub.tokens.add(token_id)
+                return True
+
+        hub = SharedHub()
+        first_manager = DashboardWebSocketManager()
+        second_manager = DashboardWebSocketManager()
+        await first_manager.start_transport(FakeTransport(hub))
+        await second_manager.start_transport(FakeTransport(hub))
+        socket = AsyncMock(spec=WebSocket)
+        second_manager.active_connections["tenant-1"] = {socket}
+        second_manager.subscriptions[socket] = {"summary"}
+
+        await first_manager.broadcast_summary("tenant-1", {"status": "healthy"})
+
+        socket.send_json.assert_awaited_once()
+        assert await first_manager.consume_socket_token("shared-token", 60) is True
+        assert await second_manager.consume_socket_token("shared-token", 60) is False
+        await first_manager.stop_transport()
+        await second_manager.stop_transport()
+
 
 class TestWebSocketClientTypes:
     """Test WebSocket message type definitions"""
@@ -316,10 +386,9 @@ class TestWebSocketIntegration:
     """Integration tests for WebSocket endpoint"""
 
     def test_websocket_endpoint_exists(self):
-        """Test that WebSocket endpoint is registered"""
-        # Note: Full WebSocket testing would require websocket-client library
-        # This is a placeholder for integration test structure
-        assert True
+        from app.main import app
+
+        assert str(app.url_path_for("websocket_dashboard")) == "/api/v1/jobs/dashboard/ws"
 
 
 class TestDashboardStreamBroadcaster:
@@ -390,19 +459,40 @@ class TestSocketTokenEndpoint:
     """Test the socket token endpoint for WebSocket authentication"""
 
     def test_socket_token_response_structure(self):
-        """Test that socket token response has correct structure"""
-        # Simulating the response structure
-        socket_token_response = {
-            "socket_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-            "expires_in": 3600,
-            "connection_url": "wss://api/v1/jobs/dashboard/ws?token=...",
-        }
-        
-        assert "socket_token" in socket_token_response
-        assert "expires_in" in socket_token_response
-        assert "connection_url" in socket_token_response
-        assert isinstance(socket_token_response["expires_in"], int)
-        assert socket_token_response["expires_in"] == 3600  # 1 hour
+        current_user = AuthUserResponse(
+            id="user-1",
+            email="agent@example.com",
+            full_name="Agent",
+            tenant_id="tenant-1",
+            role="it_agent",
+            permissions=["admin.settings.read"],
+        )
+        response = create_socket_token(current_user)
+
+        assert response.expires_in == 60
+        assert response.connection_url.startswith("/api/v1/jobs/dashboard/ws?token=")
+        payload = decode_token(response.socket_token, expected_type="socket")
+        assert payload["sub"] == "user-1"
+        assert payload["tenant_id"] == "tenant-1"
+
+    def test_root_socket_token_uses_global_scope(self):
+        """Platform Root must be able to open the real-time dashboard socket."""
+        current_user = AuthUserResponse(
+            id="root-1",
+            email="root@example.com",
+            full_name="Platform Root",
+            tenant_id=None,
+            role="saas_root",
+            permissions=["admin.settings.read"],
+            is_root=True,
+            is_superuser=True,
+        )
+
+        response = create_socket_token(current_user)
+        payload = decode_token(response.socket_token, expected_type="socket")
+
+        assert payload["sub"] == "root-1"
+        assert payload["tenant_id"] == "global"
 
     def test_socket_token_expiration_one_hour(self):
         """Test that socket token expires in 1 hour"""

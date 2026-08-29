@@ -1,0 +1,123 @@
+{
+  "schema_version": "2026.07.1",
+  "status": "PASS",
+  "profile": "peak",
+  "target": "http://127.0.0.1:18080/api/v1/",
+  "started_at": "2026-08-14T09:18:24.393163+00:00",
+  "finished_at": "2026-08-14T09:23:25.196795+00:00",
+  "effective_load": {
+    "duration_seconds": 300,
+    "concurrency": 50,
+    "websocket_connections": 25,
+    "write_percent": 5,
+    "write_enabled": true
+  },
+  "thresholds": {
+    "http_error_percent_max": 1.0,
+    "http_p95_ms_max": 1000,
+    "http_p99_ms_max": 2000,
+    "websocket_failure_percent_max": 1.0
+  },
+  "checks": {
+    "http_error_percent": true,
+    "http_p95_ms": true,
+    "http_p99_ms": true,
+    "websocket_failure_percent": true
+  },
+  "summary": {
+    "requests": 42740,
+    "successful_http": 42740,
+    "failed": 0,
+    "http_error_percent": 0.0,
+    "http_mean_ms": 274.123,
+    "http_p50_ms": 74.701,
+    "http_p95_ms": 830.174,
+    "http_p99_ms": 985.042,
+    "http_max_ms": 1559.352,
+    "websocket_attempts": 25,
+    "websocket_failures": 0,
+    "websocket_failure_percent": 0.0,
+    "statuses": {
+      "200": 40951,
+      "201": 1789
+    },
+    "operations": {
+      "health": 4998,
+      "notifications": 6752,
+      "search": 6813,
+      "ticket_create": 1789,
+      "ticket_transition_assigned": 1789,
+      "ticket_transition_closed": 1789,
+      "ticket_transition_in_progress": 1789,
+      "ticket_transition_resolved": 1789,
+      "tickets": 15232
+    },
+    "exceptions": {},
+    "operation_latency_ms": {
+      "health": {
+        "count": 4998,
+        "mean": 15.403,
+        "p95": 29.283,
+        "p99": 240.696,
+        "max": 298.328
+      },
+      "notifications": {
+        "count": 6752,
+        "mean": 55.168,
+        "p95": 209.911,
+        "p99": 345.527,
+        "max": 580.585
+      },
+      "search": {
+        "count": 6813,
+        "mean": 636.561,
+        "p95": 921.066,
+        "p99": 1055.953,
+        "max": 1559.352
+      },
+      "ticket_create": {
+        "count": 1789,
+        "mean": 690.503,
+        "p95": 983.139,
+        "p99": 1120.862,
+        "max": 1281.791
+      },
+      "ticket_transition_assigned": {
+        "count": 1789,
+        "mean": 639.428,
+        "p95": 908.56,
+        "p99": 1036.75,
+        "max": 1288.111
+      },
+      "ticket_transition_closed": {
+        "count": 1789,
+        "mean": 638.939,
+        "p95": 916.82,
+        "p99": 1059.49,
+        "max": 1239.864
+      },
+      "ticket_transition_in_progress": {
+        "count": 1789,
+        "mean": 638.119,
+        "p95": 923.132,
+        "p99": 1071.659,
+        "max": 1206.8
+      },
+      "ticket_transition_resolved": {
+        "count": 1789,
+        "mean": 638.215,
+        "p95": 911.578,
+        "p99": 1058.836,
+        "max": 1241.215
+      },
+      "tickets": {
+        "count": 15232,
+        "mean": 73.79,
+        "p95": 281.284,
+        "p99": 399.941,
+        "max": 739.251
+      }
+    }
+  },
+  "evidence_sha256": "0cf428ad3c84e0b9431aad4af1983d46a182df961827307b3f7d05c46c449007"
+}

@@ -3,10 +3,14 @@
  * Shows active rollouts, health score, alert counts, and anomalies
  */
 
+import type { ReactNode } from 'react'
+import { localizeTree } from '../../experience/LocalizedContent'
+import { useTenantExperience } from '../../experience/TenantExperienceContext'
+
 interface SystemHealthProps {
   activeRollouts: number
   avgHealthScore: number
-  healthStatus: 'healthy' | 'degraded' | 'critical'
+  healthStatus: 'healthy' | 'degraded' | 'critical' | 'unknown'
   activeAlerts: number
   criticalAlerts: number
   unresolved_anomalies: number
@@ -22,6 +26,8 @@ export default function SystemHealthCard({
   unresolved_anomalies,
   systemStatus,
 }: SystemHealthProps) {
+  const { translate } = useTenantExperience()
+  const localize = (node: ReactNode) => localizeTree(node, translate)
   const getHealthColor = (status: string) => {
     switch (status) {
       case 'healthy':
@@ -51,17 +57,17 @@ export default function SystemHealthCard({
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'operational':
-        return '✓ Operational'
+        return translate('✓ Operational')
       case 'degraded':
-        return '⚠ Degraded'
+        return translate('⚠ Degraded')
       case 'critical':
-        return '✕ Critical'
+        return translate('✕ Critical')
       default:
         return status
     }
   }
 
-  return (
+  return localize(
     <div className={`rounded-lg border-2 p-6 ${getHealthColor(healthStatus)}`}>
       <h2 className="mb-4 text-2xl font-bold">System Health Overview</h2>
       

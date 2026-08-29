@@ -4,6 +4,15 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from app.api.v1.routes.auth import AuthUserResponse
+from app.api.v1.routes.tickets import (
+    _can_manage_all_tickets,
+    _can_self_assign_ticket,
+    _is_assigned_only,
+    _is_requester_only,
+    _ticket_visibility_scopes,
+)
+
 
 def _login(client: TestClient, email: str, password: str = "Sbs!2026") -> str:
     response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
@@ -34,6 +43,7 @@ def _create_ticket(client: TestClient, token: str, **overrides):
         "description": "Тестовая заявка",
         "requester_name": "Business Requester",
         "requester_email": "requester@sbs.local",
+        "on_behalf_reason": "Test service desk registration",
         "department": "Business",
         "location": "HQ",
         "category": "NETWORK_INTERNET",
@@ -151,6 +161,85 @@ def test_manager_can_assign_ticket(app) -> None:
         )
         assert response.status_code == 200, response.text
         assert response.json()["assignee_id"] == assignee_id
+
+
+def test_manager_can_take_ticket_without_explicit_assignee(app) -> None:
+    with TestClient(app) as client:
+        admin_token = _login(client, "admin@sbs.local", "Sbs!2026")
+        manager_token = _login(client, "manager@sbs.local")
+
+        ticket = _create_ticket(client, admin_token, title="Manager self assignment")
+        response = client.post(
+            f"/api/v1/tickets/{ticket['id']}/assign",
+            headers=_headers(manager_token),
+            json={"comment": "Taking ownership from the work queue"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["assignee_name"] == "IT Manager"
+
+
+def test_custom_role_ticket_assignment_scope_uses_effective_permissions() -> None:
+    custom_dispatcher = AuthUserResponse(
+        id="custom-dispatcher",
+        email="dispatcher@example.invalid",
+        full_name="Custom Dispatcher",
+        role="custom_dispatcher",
+        tenant_id="tenant-a",
+        permissions=["tickets.read", "tickets.update", "tickets.assign"],
+    )
+    named_admin_without_scope = AuthUserResponse(
+        id="named-admin",
+        email="named-admin@example.invalid",
+        full_name="Named Admin Without Assignment Scope",
+        role="organization_admin",
+        tenant_id="tenant-a",
+        permissions=["tickets.read", "tickets.update"],
+    )
+
+    assert _can_manage_all_tickets(custom_dispatcher) is True
+    assert _can_manage_all_tickets(named_admin_without_scope) is False
+
+
+def test_custom_ticket_visibility_scopes_fail_closed_and_compose() -> None:
+    bare_reader = AuthUserResponse(
+        id="bare-reader",
+        email="bare-reader@example.invalid",
+        full_name="Bare Reader",
+        role="custom_reader",
+        tenant_id="tenant-a",
+        permissions=["tickets.read"],
+    )
+    scoped_agent = AuthUserResponse(
+        id="scoped-agent",
+        email="scoped-agent@example.invalid",
+        full_name="Scoped Agent",
+        role="custom_agent",
+        tenant_id="tenant-a",
+        permissions=[
+            "tickets.read",
+            "tickets.update",
+            "tickets.self_assign",
+            "tickets.scope.requester",
+        ],
+    )
+    dispatcher = AuthUserResponse(
+        id="dispatcher",
+        email="dispatcher@example.invalid",
+        full_name="Dispatcher",
+        role="custom_dispatcher",
+        tenant_id="tenant-a",
+        permissions=["tickets.read", "tickets.assign"],
+    )
+
+    assert _ticket_visibility_scopes(bare_reader) == frozenset()
+    assert _ticket_visibility_scopes(scoped_agent) == frozenset(
+        {"assigned", "requester"}
+    )
+    assert _is_requester_only(scoped_agent) is False
+    assert _is_assigned_only(scoped_agent) is True
+    assert _can_self_assign_ticket(scoped_agent) is True
+    assert _ticket_visibility_scopes(dispatcher) == frozenset({"all"})
 
 
 def test_invalid_status_transition_rejected(app) -> None:

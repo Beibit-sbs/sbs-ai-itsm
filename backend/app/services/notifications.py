@@ -15,6 +15,11 @@ from app.models.notification_preference import NotificationPreference
 from app.models.notification_template import NotificationTemplate
 from app.models.ticket import Ticket
 from app.services.email_provider import BaseEmailProvider, MockEmailProvider
+from app.services.email_operations import queue_email, schedule_email_retry
+from app.services.localized_content import (
+    RESOURCE_NOTIFICATION,
+    resolve_localized_payload,
+)
 
 
 TEMPLATE_SEEDS = [
@@ -158,11 +163,64 @@ def create_notification(
         read_at=created_at if is_read else None,
     )
     db.add(notification)
+    if tenant_id is not None:
+        # Teams delivery is an outbox operation in the same transaction. No
+        # network call is made here, so the business operation remains atomic.
+        from app.services.teams_collaboration import queue_teams_event
+
+        queue_teams_event(
+            db,
+            tenant_id=tenant_id,
+            event_type=normalized_event_type,
+            title=title,
+            message=message,
+            severity=severity,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            action_url=action_url,
+            notification_id=notification.id,
+        )
+        from app.services.integration_platform import queue_notification_webhooks
+
+        queue_notification_webhooks(
+            db,
+            tenant_id=tenant_id,
+            notification_id=notification.id,
+            event_type=normalized_event_type,
+            title=title,
+            message=message,
+            severity=severity,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            action_url=action_url,
+        )
     return notification
 
 
-def mark_as_read(db: Session, notification_id: str) -> Notification | None:
-    notification = db.scalar(select(Notification).where(Notification.id == notification_id))
+def _recipient_filter(*, user_id: str, recipient_email: str):
+    return (Notification.user_id == user_id) | (
+        Notification.user_id.is_(None)
+        & (func.lower(Notification.recipient_email) == recipient_email.strip().lower())
+    )
+
+
+def mark_as_read(
+    db: Session,
+    notification_id: str,
+    *,
+    user_id: str,
+    recipient_email: str,
+    tenant_id: str | None,
+) -> Notification | None:
+    statement = select(Notification).where(
+        Notification.id == notification_id,
+        _recipient_filter(user_id=user_id, recipient_email=recipient_email),
+    )
+    if tenant_id is not None:
+        statement = statement.where(
+            (Notification.tenant_id == tenant_id) | (Notification.tenant_id.is_(None))
+        )
+    notification = db.scalar(statement)
     if notification is None:
         return None
     if notification.status != "READ":
@@ -172,8 +230,22 @@ def mark_as_read(db: Session, notification_id: str) -> Notification | None:
     return notification
 
 
-def mark_all_as_read(db: Session) -> int:
-    notifications = db.scalars(select(Notification).where(Notification.status != "READ")).all()
+def mark_all_as_read(
+    db: Session,
+    *,
+    user_id: str,
+    recipient_email: str,
+    tenant_id: str | None,
+) -> int:
+    statement = select(Notification).where(
+        Notification.status != "READ",
+        _recipient_filter(user_id=user_id, recipient_email=recipient_email),
+    )
+    if tenant_id is not None:
+        statement = statement.where(
+            (Notification.tenant_id == tenant_id) | (Notification.tenant_id.is_(None))
+        )
+    notifications = db.scalars(statement).all()
     now = datetime.now(UTC)
     for notification in notifications:
         notification.status = "READ"
@@ -199,6 +271,8 @@ def list_notifications_paged(
     db: Session,
     *,
     tenant_id: str | None,
+    recipient_user_id: str | None,
+    recipient_email: str | None,
     page: int,
     page_size: int,
     status: str | None = None,
@@ -214,6 +288,15 @@ def list_notifications_paged(
         statement = statement.where(tenant_filter)
         total_statement = total_statement.where(tenant_filter)
         unread_statement = unread_statement.where(tenant_filter)
+
+    if recipient_user_id is not None and recipient_email is not None:
+        recipient_filter = _recipient_filter(
+            user_id=recipient_user_id,
+            recipient_email=recipient_email,
+        )
+        statement = statement.where(recipient_filter)
+        total_statement = total_statement.where(recipient_filter)
+        unread_statement = unread_statement.where(recipient_filter)
 
     if status and status.upper() != "ALL":
         statement = statement.where(Notification.status == status)
@@ -260,40 +343,25 @@ def send_mock_email(
     metadata: dict[str, Any] | None = None,
     provider: BaseEmailProvider | None = None,
 ):
-    now = datetime.now(UTC)
-    active_provider = provider or MockEmailProvider()
-    if isinstance(active_provider, MockEmailProvider):
-        log = EmailMessageLog(
-            id=str(uuid.uuid4()),
-            tenant_id=tenant_id,
-            notification_id=notification_id,
-            event_type=event_type,
-            provider="mock",
-            provider_message_id=f"mock-{uuid.uuid4()}",
+    if provider is not None and not isinstance(provider, MockEmailProvider):
+        return provider.send_email(
+            db,
             to_email=to_email,
-            to_name=to_name,
             subject=subject,
             body=body,
-            status="SENT",
-            attempt_count=1,
-            max_attempts=3,
-            next_retry_at=None,
-            payload_json=json.dumps({"subject": subject, "body": body}, ensure_ascii=False),
-            metadata_json=json.dumps(metadata, ensure_ascii=False) if metadata else None,
-            error_message=None,
             related_ticket_id=related_ticket_id,
-            created_at=now,
-            sent_at=now,
         )
-        db.add(log)
-        return log
-
-    return active_provider.send_email(
+    return queue_email(
         db,
         to_email=to_email,
+        to_name=to_name,
         subject=subject,
         body=body,
+        tenant_id=tenant_id,
+        notification_id=notification_id,
+        event_type=event_type,
         related_ticket_id=related_ticket_id,
+        metadata=metadata,
     )
 
 
@@ -340,20 +408,7 @@ def retry_email_log(db: Session, *, email_log_id: str) -> EmailMessageLog | None
     if log is None:
         return None
 
-    now = datetime.now(UTC)
-    log.attempt_count = (log.attempt_count or 0) + 1
-    if log.attempt_count > (log.max_attempts or 3):
-        log.status = "FAILED"
-        log.error_message = "Maximum retry attempts exceeded"
-        log.next_retry_at = None
-        return log
-
-    log.status = "SENT"
-    log.error_message = None
-    log.sent_at = now
-    log.next_retry_at = None
-    log.provider_message_id = log.provider_message_id or f"mock-{uuid.uuid4()}"
-    return log
+    return schedule_email_retry(db, item=log)
 
 
 def list_user_preferences(db: Session, *, user_id: str, tenant_id: str | None) -> list[NotificationPreference]:
@@ -425,6 +480,34 @@ def _template_map(db: Session) -> dict[str, NotificationTemplate]:
     return {item.code: item for item in templates}
 
 
+def _template_for_event(
+    db: Session,
+    event_code: str,
+    tenant_id: str | None,
+) -> NotificationTemplate | None:
+    if tenant_id:
+        tenant_template = db.scalar(
+            select(NotificationTemplate)
+            .where(
+                NotificationTemplate.tenant_id == tenant_id,
+                NotificationTemplate.code == event_code,
+                NotificationTemplate.is_active == True,  # noqa: E712
+            )
+            .limit(1)
+        )
+        if tenant_template is not None:
+            return tenant_template
+    return db.scalar(
+        select(NotificationTemplate)
+        .where(
+            NotificationTemplate.tenant_id.is_(None),
+            NotificationTemplate.code == event_code,
+            NotificationTemplate.is_active == True,  # noqa: E712
+        )
+        .limit(1)
+    )
+
+
 def create_ticket_event_notification(
     db: Session,
     *,
@@ -432,9 +515,10 @@ def create_ticket_event_notification(
     ticket: Ticket,
     actor_name: str,
     extra_context: dict[str, str] | None = None,
+    is_internal: bool = False,
 ) -> Notification | None:
-    templates = _template_map(db)
-    template = templates.get(event_code)
+    tenant_id = ticket.tenant_id
+    template = _template_for_event(db, event_code, tenant_id)
     if template is None:
         return None
 
@@ -451,7 +535,6 @@ def create_ticket_event_notification(
     if extra_context:
         context.update(extra_context)
 
-    tenant_id = ticket.tenant_id
     preferences = {
         item.event_type: item
         for item in db.scalars(select(NotificationPreference).where(NotificationPreference.user_id == ticket.requester_id)).all()
@@ -460,9 +543,20 @@ def create_ticket_event_notification(
     channel_in_app = True if preference is None else (not preference.is_muted and preference.channel_in_app)
     channel_email = template.channel == "email" if preference is None else (not preference.is_muted and preference.channel_email)
 
-    subject, body = render_template(template, context)
+    localized, _ = resolve_localized_payload(
+        db,
+        tenant_id=tenant_id,
+        resource_type=RESOURCE_NOTIFICATION,
+        resource_id=template.id,
+    )
+    subject_template = (
+        localized["subject_template"] if localized else template.subject_template
+    )
+    body_template = localized["body_template"] if localized else template.body_template
+    subject = _render(subject_template, context)
+    body = _render(body_template, context)
     notification: Notification | None = None
-    if channel_in_app:
+    if channel_in_app and not is_internal:
         notification = create_notification(
             db,
             type=event_code,
@@ -480,7 +574,9 @@ def create_ticket_event_notification(
             entity_id=ticket.id,
             metadata={"ticket_number": ticket.ticket_number},
         )
-    if channel_email:
+        # Force INSERT order for PostgreSQL FK checks: email log may reference this notification.
+        db.flush()
+    if channel_email and not is_internal:
         send_mock_email(
             db,
             to_email=ticket.requester_email,
@@ -493,6 +589,86 @@ def create_ticket_event_notification(
             to_name=ticket.requester_name,
             metadata={"ticket_number": ticket.ticket_number},
         )
+
+    # Participants are an explicit per-ticket subscription, separate from a
+    # user's global notification preferences. Never expose an internal comment
+    # to the requester or PUBLIC_ONLY watcher, and do not duplicate requester
+    # delivery when the requester also subscribed as a watcher.
+    from app.models.ticket_participant import TicketParticipant
+
+    participants = db.scalars(
+        select(TicketParticipant).where(
+            TicketParticipant.ticket_id == ticket.id,
+            TicketParticipant.tenant_id == tenant_id,
+            TicketParticipant.is_active.is_(True),
+        )
+    ).all()
+    status_events = {
+        "ticket_assigned",
+        "ticket_status_changed",
+        "ticket_resolved",
+        "sla_warning",
+        "sla_breached",
+    }
+    for participant in participants:
+        if (
+            participant.user_id == ticket.requester_id
+            or participant.email.strip().lower() == ticket.requester_email.strip().lower()
+        ):
+            continue
+        if participant.notification_scope == "NONE":
+            continue
+        if participant.notification_scope == "PUBLIC_ONLY" and is_internal:
+            continue
+        if (
+            participant.notification_scope == "STATUS_ONLY"
+            and event_code not in status_events
+        ):
+            continue
+        participant_notification: Notification | None = None
+        if participant.notify_in_app and participant.user_id is not None:
+            participant_notification = create_notification(
+                db,
+                type=event_code,
+                title=subject,
+                message=body,
+                recipient_name=participant.display_name,
+                recipient_email=participant.email,
+                channel="in_app",
+                status="UNREAD",
+                related_ticket_id=ticket.id,
+                user_id=participant.user_id,
+                tenant_id=tenant_id,
+                event_type=event_code,
+                entity_type="ticket",
+                entity_id=ticket.id,
+                metadata={
+                    "ticket_number": ticket.ticket_number,
+                    "participant_id": participant.id,
+                },
+            )
+            db.flush()
+            notification = notification or participant_notification
+        if participant.notify_email:
+            send_mock_email(
+                db,
+                to_email=participant.email,
+                subject=subject,
+                body=body,
+                related_ticket_id=ticket.id,
+                tenant_id=tenant_id,
+                notification_id=(
+                    participant_notification.id
+                    if participant_notification is not None
+                    else None
+                ),
+                event_type=event_code,
+                to_name=participant.display_name,
+                metadata={
+                    "ticket_number": ticket.ticket_number,
+                    "participant_id": participant.id,
+                },
+            )
     return notification
 
 

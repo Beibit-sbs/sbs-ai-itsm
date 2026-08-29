@@ -1,0 +1,11 @@
+# Exact historical false positives in synthetic test fixtures. Do not replace
+# these fingerprints with broad path or regex exclusions.
+f79c8c11037065004ff004b0e322fc4b478e4419:backend/tests/test_websocket_stage_037.py:generic-api-key:331
+51d6781d1ac80cfc511e7b7f354772ccbdf9efe7:backend/tests/test_jobs.py:generic-api-key:355
+af34f6fe3f33b9dc4934e11a29336118f1541c64:backend/tests/test_jobs.py:generic-api-key:62
+
+# Exact worktree-mode false positives. The first value is the public RFC 6238
+# test vector; the remaining values are correlation identifiers, not secrets.
+backend/tests/test_mfa.py:generic-api-key:66
+backend/tests/test_jobs.py:generic-api-key:94
+backend/tests/test_jobs.py:generic-api-key:1499

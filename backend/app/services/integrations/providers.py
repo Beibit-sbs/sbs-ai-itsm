@@ -38,16 +38,16 @@ class BaseIntegrationProvider:
         return {"preview": True, "assets": []}
 
     def push_ticket(self, ticket_payload: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "mocked", "ticket_payload": ticket_payload}
+        return {"status": "not_supported", "ticket_payload": ticket_payload}
 
     def send_notification(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "mocked", "payload": payload}
+        return {"status": "not_supported", "payload": payload}
 
     def receive_event(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "mocked", "payload": payload}
+        return {"status": "not_supported", "payload": payload}
 
     def export_entity(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "mocked", "payload": payload, "exported": True}
+        return {"status": "not_supported", "payload": payload, "exported": False}
 
     def get_capabilities(self) -> dict[str, Any]:
         return {
@@ -67,7 +67,11 @@ class MockLdapProvider(BaseIntegrationProvider):
     )
 
     def health_check(self) -> dict[str, Any]:
-        return {"status": "ok", "message": "Mock LDAP directory reachable.", "checked_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "LDAP demo data is available; no directory was contacted.",
+            "checked_at": datetime.now(UTC),
+        }
 
     def pull_users(self) -> dict[str, Any]:
         users = [
@@ -89,7 +93,11 @@ class MockZimbraProvider(BaseIntegrationProvider):
     )
 
     def health_check(self) -> dict[str, Any]:
-        return {"status": "ok", "message": "Mock Zimbra mailboxes available.", "checked_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "Zimbra demo data is available; no mail server was contacted.",
+            "checked_at": datetime.now(UTC),
+        }
 
     def pull_mailboxes(self) -> dict[str, Any]:
         mailboxes = [
@@ -110,10 +118,18 @@ class MockSmtpProvider(BaseIntegrationProvider):
     )
 
     def test_connection(self) -> dict[str, Any]:
-        return {"status": "ok", "message": "Mock SMTP gateway accepted test handshake.", "checked_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "SMTP demo handshake only; no gateway was contacted.",
+            "checked_at": datetime.now(UTC),
+        }
 
     def send_notification(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "logged_only", "message": "Notification was captured by Mock SMTP provider.", "payload": payload}
+        return {
+            "status": "simulated",
+            "message": "Notification was captured by the SMTP demo provider.",
+            "payload": payload,
+        }
 
 
 class MockPlatonusProvider(BaseIntegrationProvider):
@@ -125,7 +141,11 @@ class MockPlatonusProvider(BaseIntegrationProvider):
     )
 
     def health_check(self) -> dict[str, Any]:
-        return {"status": "ok", "message": "Mock Platonus SIS reachable.", "checked_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "Platonus demo data is available; no SIS was contacted.",
+            "checked_at": datetime.now(UTC),
+        }
 
     def pull_users(self) -> dict[str, Any]:
         users = [
@@ -146,7 +166,11 @@ class MockMoodleProvider(BaseIntegrationProvider):
     )
 
     def health_check(self) -> dict[str, Any]:
-        return {"status": "ok", "message": "Mock Moodle LMS reachable.", "checked_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "Moodle demo data is available; no LMS was contacted.",
+            "checked_at": datetime.now(UTC),
+        }
 
     def pull_users(self) -> dict[str, Any]:
         users = [
@@ -166,10 +190,20 @@ class MockWebhookProvider(BaseIntegrationProvider):
     )
 
     def receive_event(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "accepted", "message": "Mock webhook event received.", "payload": payload, "received_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "Webhook event was captured by the demo provider.",
+            "payload": payload,
+            "received_at": datetime.now(UTC),
+        }
 
     def push_event(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "accepted", "message": "Mock webhook event pushed.", "payload": payload, "sent_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "Webhook event was captured locally; nothing was sent.",
+            "payload": payload,
+            "sent_at": None,
+        }
 
 
 class MockOneCProvider(BaseIntegrationProvider):
@@ -181,7 +215,11 @@ class MockOneCProvider(BaseIntegrationProvider):
     )
 
     def health_check(self) -> dict[str, Any]:
-        return {"status": "ok", "message": "Mock 1C provider is reachable.", "checked_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "1C demo data is available; no 1C instance was contacted.",
+            "checked_at": datetime.now(UTC),
+        }
 
     def pull_assets(self) -> dict[str, Any]:
         assets = [
@@ -189,6 +227,14 @@ class MockOneCProvider(BaseIntegrationProvider):
             {"inventory_number": "1C-1002", "name": "Mock Laptop 2", "status": "active"},
         ]
         return {"preview": True, "records_total": len(assets), "assets": assets}
+
+    def export_entity(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": "simulated",
+            "exported": False,
+            "preview": payload,
+            "message": "1C export preview generated; nothing was exported.",
+        }
 
 
 class MockTelegramProvider(BaseIntegrationProvider):
@@ -200,10 +246,18 @@ class MockTelegramProvider(BaseIntegrationProvider):
     )
 
     def health_check(self) -> dict[str, Any]:
-        return {"status": "ok", "message": "Mock Telegram bot is reachable.", "checked_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "Telegram demo provider is enabled; no bot API was contacted.",
+            "checked_at": datetime.now(UTC),
+        }
 
     def send_notification(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "accepted", "message": "Mock Telegram message captured.", "payload": payload}
+        return {
+            "status": "simulated",
+            "message": "Telegram message was captured locally; nothing was sent.",
+            "payload": payload,
+        }
 
 
 class MockEmailProviderAdapter(BaseIntegrationProvider):
@@ -215,10 +269,18 @@ class MockEmailProviderAdapter(BaseIntegrationProvider):
     )
 
     def health_check(self) -> dict[str, Any]:
-        return {"status": "ok", "message": "Mock email adapter ready.", "checked_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "Email demo adapter is enabled; no provider was contacted.",
+            "checked_at": datetime.now(UTC),
+        }
 
     def send_notification(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "logged_only", "message": "Mock email adapter logged payload.", "payload": payload}
+        return {
+            "status": "simulated",
+            "message": "Email payload was captured locally; nothing was sent.",
+            "payload": payload,
+        }
 
 
 class MockLDAPProvider(MockLdapProvider):
@@ -239,7 +301,11 @@ class MockFileImportProvider(BaseIntegrationProvider):
     )
 
     def health_check(self) -> dict[str, Any]:
-        return {"status": "ok", "message": "Mock file import provider ready.", "checked_at": datetime.now(UTC)}
+        return {
+            "status": "simulated",
+            "message": "File import demo provider is ready; no file was imported.",
+            "checked_at": datetime.now(UTC),
+        }
 
 
 def should_simulate_failure(config: dict[str, Any] | None, event_type: str | None = None) -> bool:

@@ -16,8 +16,10 @@ depends_on = None
 
 
 def upgrade():
+    inspector = sa.inspect(op.get_bind())
     # Create policy_alert_notifications table
-    op.create_table(
+    if not inspector.has_table("policy_alert_notifications"):
+        op.create_table(
         "policy_alert_notifications",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("alert_rule_id", sa.String(), nullable=False),
@@ -39,15 +41,16 @@ def upgrade():
         sa.Column("acknowledged_by", sa.String(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["alert_rule_id"], ["policy_metrics_alert_rules.id"]),
-        sa.ForeignKeyConstraint(["rollout_id"], ["policy_canary_rollout.id"]),
-    )
-    op.create_index("ix_policy_alert_notifications_alert_rule_id", "policy_alert_notifications", ["alert_rule_id"])
-    op.create_index("ix_policy_alert_notifications_rollout_id", "policy_alert_notifications", ["rollout_id"])
-    op.create_index("ix_policy_alert_notifications_tenant_id", "policy_alert_notifications", ["tenant_id"])
-    op.create_index("ix_policy_alert_notifications_created_at", "policy_alert_notifications", ["created_at"])
+        sa.ForeignKeyConstraint(["rollout_id"], ["policy_canary_rollouts.id"]),
+        )
+        op.create_index("ix_policy_alert_notifications_alert_rule_id", "policy_alert_notifications", ["alert_rule_id"])
+        op.create_index("ix_policy_alert_notifications_rollout_id", "policy_alert_notifications", ["rollout_id"])
+        op.create_index("ix_policy_alert_notifications_tenant_id", "policy_alert_notifications", ["tenant_id"])
+        op.create_index("ix_policy_alert_notifications_created_at", "policy_alert_notifications", ["created_at"])
     
     # Create policy_alert_history table
-    op.create_table(
+    if not inspector.has_table("policy_alert_history"):
+        op.create_table(
         "policy_alert_history",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("alert_rule_id", sa.String(), nullable=False),
@@ -76,15 +79,16 @@ def upgrade():
         sa.Column("modified_at", sa.DateTime(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["alert_rule_id"], ["policy_metrics_alert_rules.id"]),
-        sa.ForeignKeyConstraint(["rollout_id"], ["policy_canary_rollout.id"]),
-    )
-    op.create_index("ix_policy_alert_history_alert_rule_id", "policy_alert_history", ["alert_rule_id"])
-    op.create_index("ix_policy_alert_history_rollout_id", "policy_alert_history", ["rollout_id"])
-    op.create_index("ix_policy_alert_history_tenant_id", "policy_alert_history", ["tenant_id"])
-    op.create_index("ix_policy_alert_history_triggered_at", "policy_alert_history", ["triggered_at"])
+        sa.ForeignKeyConstraint(["rollout_id"], ["policy_canary_rollouts.id"]),
+        )
+        op.create_index("ix_policy_alert_history_alert_rule_id", "policy_alert_history", ["alert_rule_id"])
+        op.create_index("ix_policy_alert_history_rollout_id", "policy_alert_history", ["rollout_id"])
+        op.create_index("ix_policy_alert_history_tenant_id", "policy_alert_history", ["tenant_id"])
+        op.create_index("ix_policy_alert_history_triggered_at", "policy_alert_history", ["triggered_at"])
     
     # Create policy_notification_preferences table
-    op.create_table(
+    if not inspector.has_table("policy_notification_preferences"):
+        op.create_table(
         "policy_notification_preferences",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("user_id", sa.String(), nullable=False),
@@ -117,9 +121,9 @@ def upgrade():
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now()),
         sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_policy_notification_preferences_user_id", "policy_notification_preferences", ["user_id"])
-    op.create_index("ix_policy_notification_preferences_tenant_id", "policy_notification_preferences", ["tenant_id"])
+        )
+        op.create_index("ix_policy_notification_preferences_user_id", "policy_notification_preferences", ["user_id"])
+        op.create_index("ix_policy_notification_preferences_tenant_id", "policy_notification_preferences", ["tenant_id"])
 
 
 def downgrade():

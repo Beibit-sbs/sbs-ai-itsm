@@ -1,0 +1,186 @@
+{
+  "schema_version": "2026.07.1",
+  "milestone": "M1",
+  "milestone_status": "RUNTIME_ACCEPTANCE_PENDING",
+  "stages": [
+    {
+      "id": "PRG-001",
+      "local_status": "COMPLETED_LOCAL",
+      "owner": "Platform Operations",
+      "artifacts": [
+        "docker-compose.prod.yml",
+        "docker-compose.bootstrap.yml",
+        "docs/reports/PRG-001-STAGING-PRODUCTION-TOPOLOGY-REPORT.md"
+      ],
+      "deferred_gates": [
+        {
+          "id": "topology-runtime",
+          "owner": "Platform Operations",
+          "command": "docker compose production config/deploy and smoke",
+          "acceptance": "target DNS/TLS/network topology passes readiness and smoke",
+          "evidence": "compose ps, health, TLS, network and smoke outputs"
+        }
+      ]
+    },
+    {
+      "id": "PRG-002",
+      "local_status": "COMPLETED_LOCAL",
+      "owner": "Database Operations",
+      "artifacts": [
+        "backend/alembic.ini",
+        "docs/reports/PRG-002-DATABASE-MIGRATION-REHEARSAL-REPORT.md"
+      ],
+      "deferred_gates": [
+        {
+          "id": "migration-staging-rehearsal",
+          "owner": "Database Operations",
+          "command": "alembic upgrade head against production-equivalent PostgreSQL",
+          "acceptance": "clean and representative-copy upgrades finish within approved window",
+          "evidence": "heads/current, duration, locks, backup ID and rollback decision"
+        }
+      ]
+    },
+    {
+      "id": "PRG-003",
+      "local_status": "COMPLETED_LOCAL",
+      "owner": "Database Operations",
+      "artifacts": [
+        "scripts/run-backup.py",
+        "scripts/restore-db.sh",
+        "docs/reports/PRG-003-BACKUP-RESTORE-DISASTER-RECOVERY-REPORT.md"
+      ],
+      "deferred_gates": [
+        {
+          "id": "restore-drill",
+          "owner": "Database Operations",
+          "command": "scheduled backup plus isolated restore drill",
+          "acceptance": "approved RPO/RTO and integrity checks pass with target storage",
+          "evidence": "backup manifest/hash, restore duration, consistency and owner sign-off"
+        }
+      ]
+    },
+    {
+      "id": "PRG-004",
+      "local_status": "EXTERNAL_DEPENDENCY",
+      "owner": "Security Operations",
+      "artifacts": [
+        "docs/operations/MFA-RUNBOOK.md",
+        "docs/operations/ENTERPRISE-IDENTITY-RUNBOOK.md",
+        "docs/operations/SECURITY-OPERATIONS-CHECKLIST.md",
+        "docs/reports/PRIVILEGED-MFA-004-REPORT.md"
+      ],
+      "deferred_gates": [
+        {
+          "id": "identity-cutover",
+          "owner": "Security Operations",
+          "command": "OIDC metadata/connection test, MFA enrollment and enforcement cutover",
+          "acceptance": "password-only privileged login rejected; OIDC and break-glass tested",
+          "evidence": "IdP logs, MFA coverage, step-up, break-glass and checklist sign-off"
+        }
+      ]
+    },
+    {
+      "id": "PRG-005",
+      "local_status": "IMPLEMENTATION_COMPLETE_RUNTIME_GATE_PENDING",
+      "owner": "Platform Operations",
+      "artifacts": [
+        "monitoring/slo-catalog.json",
+        "monitoring/prometheus/alerts.yml",
+        "monitoring/grafana/dashboards/sbs-platform-overview.json",
+        "scripts/validate_observability_contract.py",
+        "scripts/synthetic_core_flow.py",
+        "docs/reports/PRG-005-OBSERVABILITY-SLO-PENDING-GATE.md"
+      ],
+      "deferred_gates": [
+        {
+          "id": "observability-live",
+          "owner": "Platform Operations",
+          "command": "promtool/amtool, live scrape/dashboard, synthetic and alert delivery test",
+          "acceptance": "all critical signals visible; responsible operator receives/acks/resolves",
+          "evidence": "rules, scrape, dashboard, synthetic hash, alert dedup and on-call timestamps"
+        }
+      ]
+    },
+    {
+      "id": "PRG-006",
+      "local_status": "IMPLEMENTATION_COMPLETE_RUNTIME_GATE_PENDING",
+      "owner": "Performance Engineering",
+      "artifacts": [
+        "performance/workload-profile.json",
+        "security/acceptance-catalog.json",
+        "security/authorization-acceptance.json",
+        "scripts/run_performance_acceptance.py",
+        "scripts/run_resilience_acceptance.py",
+        "scripts/validate_prg006_contract.py",
+        "scripts/validate_authorization_acceptance.py",
+        "scripts/validate_route_authentication.py",
+        "scripts/validate_edge_security.py",
+        "scripts/validate_session_security.py",
+        "scripts/validate_canary_evidence.py",
+        "scripts/validate_alert_delivery.py",
+        "scripts/validate_legacy_integration_boundary.py",
+        "scripts/validate_automation_execution_integrity.py",
+        "scripts/validate_email_delivery_integrity.py",
+        "scripts/validate_teams_delivery_integrity.py",
+        "scripts/validate_ai_provider_evidence.py",
+        "scripts/validate_permission_aware_ui.py",
+        "docs/operations/AUTHORIZATION-ACCEPTANCE-RUNBOOK.md",
+        "docs/operations/ROUTE-AUTHENTICATION-CONTRACT.md",
+        "docs/operations/EDGE-TRUST-BOUNDARY-RUNBOOK.md",
+        "docs/operations/ACCOUNT-SESSION-SECURITY-RUNBOOK.md",
+        "docs/operations/CANARY-EVIDENCE-GOVERNANCE-RUNBOOK.md",
+        "docs/operations/ALERT-DELIVERY-INTEGRITY-RUNBOOK.md",
+        "docs/operations/LEGACY-INTEGRATION-SIMULATION-BOUNDARY-RUNBOOK.md",
+        "docs/operations/AUTOMATION-EXECUTION-INTEGRITY-RUNBOOK.md",
+        "docs/operations/EMAIL-DELIVERY-INTEGRITY-RUNBOOK.md",
+        "docs/operations/TEAMS-DELIVERY-INTEGRITY-RUNBOOK.md",
+        "docs/operations/AI-PROVIDER-EVIDENCE-INTEGRITY-RUNBOOK.md",
+        "docs/operations/PERMISSION-AWARE-UI-RUNBOOK.md",
+        "docs/reports/SEC-CROSS-STAGE-AUTHORIZATION-ACCEPTANCE-PENDING-RUNTIME.md",
+        "docs/reports/SEC-ADMIN-ROLE-CONTINUITY-HARDENING-PENDING-RUNTIME.md",
+        "docs/reports/ADMIN-MULTI-ROLE-ASSIGNMENT-HARDENING-PENDING-RUNTIME.md",
+        "docs/reports/SEC-ROUTE-AUTHENTICATION-HARDENING-PENDING-RUNTIME.md",
+        "docs/reports/SEC-EDGE-TRUST-HARDENING-PENDING-RUNTIME.md",
+        "docs/reports/SEC-ACCOUNT-SESSION-HARDENING-PENDING-RUNTIME.md",
+        "docs/reports/SEC-CANARY-EVIDENCE-HARDENING-PENDING-RUNTIME.md",
+        "docs/reports/SEC-ALERT-DELIVERY-INTEGRITY-PENDING-RUNTIME.md",
+        "docs/reports/SEC-LEGACY-INTEGRATION-SIMULATION-BOUNDARY-PENDING-RUNTIME.md",
+        "docs/reports/SEC-AUTOMATION-EXECUTION-INTEGRITY-PENDING-RUNTIME.md",
+        "docs/reports/SEC-EMAIL-DELIVERY-INTEGRITY-PENDING-RUNTIME.md",
+        "docs/reports/SEC-TEAMS-DELIVERY-INTEGRITY-PENDING-RUNTIME.md",
+        "docs/reports/SEC-AI-PROVIDER-EVIDENCE-INTEGRITY-PENDING-RUNTIME.md",
+        "docs/reports/SEC-PERMISSION-AWARE-UI-PENDING-RUNTIME.md",
+        "docs/reports/PRG-006-PERFORMANCE-RESILIENCE-SECURITY-PENDING-GATE.md"
+      ],
+      "deferred_gates": [
+        {
+          "id": "load-resilience-security",
+          "owner": "Release Manager",
+          "command": "baseline/peak/soak, controlled failures, concurrency isolation and scans",
+          "acceptance": "all thresholds pass and zero unresolved critical/high findings",
+          "evidence": "load hashes, capacity graphs, failure timelines, DAST/SCA/SAST/image reports"
+        }
+      ]
+    },
+    {
+      "id": "PRG-007",
+      "local_status": "IMPLEMENTATION_COMPLETE_RUNTIME_GATE_PENDING",
+      "owner": "Release Engineering",
+      "artifacts": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-images.yml",
+        "docs/operations/DEPLOYMENT-RUNBOOK.md",
+        "docs/operations/RELEASE-MANAGEMENT-RUNBOOK.md"
+      ],
+      "deferred_gates": [
+        {
+          "id": "immutable-release-promotion",
+          "owner": "Release Manager",
+          "command": "tag release, verify signed digests, approve staging promotion and rollback",
+          "acceptance": "immutable images promote without mutation and known-good rollback passes",
+          "evidence": "manifest, SBOM, provenance, signatures, deployment, smoke and rollback outputs"
+        }
+      ]
+    }
+  ]
+}

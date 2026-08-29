@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from statistics import mean
 from typing import Any
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import Select, and_, select
 from sqlalchemy.orm import Session
 
 from app.models.ai_suggestion import AiSuggestion
-from app.models.approval_request import ApprovalRequest
 from app.models.asset import Asset
 from app.models.audit_log import AuditLog
 from app.models.external_system import ExternalSystem
@@ -22,7 +21,6 @@ from app.models.knowledge_article_feedback import KnowledgeArticleFeedback
 from app.models.knowledge_usage_log import KnowledgeUsageLog
 from app.models.report_snapshot import ReportSnapshot
 from app.models.saved_report import SavedReport
-from app.models.system_setting import SystemSetting
 from app.models.ticket import Ticket
 from app.models.ticket_knowledge_link import TicketKnowledgeLink
 from app.models.user import User

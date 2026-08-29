@@ -8,8 +8,6 @@ Test Categories:
 4. Endpoint functionality
 """
 
-import pytest
-from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
 from app.services.jobs.dashboard_service import (
@@ -315,3 +313,22 @@ def test_anomaly_timeline_with_rollout_filter():
     # Both should return valid results
     assert "anomalies" in result_all
     assert "anomalies" in result_filtered
+
+
+def test_dashboard_services_match_current_database_models(db_session):
+    """Regression: empty dashboards must not reference removed model columns."""
+    results = [
+        get_dashboard_summary(db_session, None),
+        get_metrics_timeline(db_session, None, "missing-rollout", 60, "error_rate"),
+        get_active_alerts(db_session, None, None, 50),
+        get_rollout_comparison(db_session, None, ["missing-rollout"]),
+        get_anomaly_timeline(db_session, None, None, 1440),
+        get_metric_correlation_matrix(db_session, None, "missing-rollout", 60),
+    ]
+
+    for result in results:
+        assert "error" not in result
+
+    assert results[3]["count"] == 0
+    assert results[4]["count"] == 0
+    assert results[5]["metric_count"] == 0

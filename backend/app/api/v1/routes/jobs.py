@@ -1,17 +1,33 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
+import math
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, status, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Path,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from pydantic import BaseModel, Field
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
 from app.core.config import get_settings
+from app.core.security import create_token, decode_token
 from app.db.session import get_db
 from app.models.audit_log import AuditLog
 from app.models.runbook import Runbook
@@ -20,8 +36,7 @@ from app.models.job_run import JobRun
 from app.services.jobs import (
     JobQueueUnavailableError,
     UnknownTaskError,
-    create_job_lifecycle_event,
-    create_outbox_entry,
+    acknowledge_dead_letter,
     enqueue_task,
     execute_job,
     get_job as service_get_job,
@@ -37,6 +52,7 @@ from app.services.jobs import (
     list_jobs,
     outbox_diagnostics,
     outbox_summary,
+    prepare_dead_letter_replay,
     recover_job_event_consumer_deliveries,
     registered_task_names,
     run_task,
@@ -56,8 +72,6 @@ from app.services.jobs.policy_enforcement_integration import (
 from app.services.jobs.metrics_polling import (
     poll_active_rollouts,
     get_rollout_polling_status,
-    should_poll_now,
-    estimate_next_poll_time,
 )
 from app.services.jobs.background_scheduler import (
     start_scheduler,
@@ -67,8 +81,6 @@ from app.services.jobs.background_scheduler import (
     get_scheduler_metrics,
 )
 from app.services.jobs.metrics_infrastructure import (
-    store_metrics_history,
-    update_metrics_snapshot,
     get_metrics_history,
     get_metrics_snapshot,
     get_metrics_trend,
@@ -76,15 +88,14 @@ from app.services.jobs.metrics_infrastructure import (
 from app.services.jobs.metrics_analysis import (
     detect_anomalies,
     analyze_metric_correlation,
-    AlertRule,
     estimate_metric_trend,
     get_anomaly_score,
     analyze_rollout_health,
 )
 from app.services.jobs.alert_notifications import (
     NotificationService,
-    NotificationChannelType,
     AlertSeverity,
+    MetricsCollectionError,
     PrometheusMetricsCollector,
     CloudWatchMetricsCollector,
     determine_routing,
@@ -169,9 +180,26 @@ class JobRunResponse(BaseModel):
     updated_at: datetime
 
 
+class DeadLetterAcknowledgeRequest(BaseModel):
+    resolution_code: Literal[
+        "acceptance_test",
+        "non_retryable",
+        "superseded",
+        "manual_resolution",
+    ]
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class DeadLetterAcknowledgeResponse(BaseModel):
+    job_id: str
+    status: str
+    removed_occurrences: int
+
+
 class JobLifecycleEventResponse(BaseModel):
     id: str
     job_id: str
+    sequence: int
     event_type: str
     task_name: str
     tenant_id: str | None
@@ -479,7 +507,12 @@ class PolicyCanaryRolloutResponse(BaseModel):
 
 class PolicyCanaryApplyRequest(BaseModel):
     approval_request_id: str
-    canary_percentage: int = Field(ge=5, le=100)
+    canary_percentage: int = Field(ge=5, le=50)
+    baseline_error_rate: float = Field(ge=0.0, le=100.0)
+    baseline_latency_p99_ms: int = Field(ge=0)
+    baseline_throughput_eps: float = Field(ge=0.0)
+    metrics_source: Literal["PROMETHEUS", "CLOUDWATCH", "MANUAL_EVIDENCE"]
+    evidence_ref: str = Field(min_length=10, max_length=500)
 
 
 class PolicyCanaryGraduateRequest(BaseModel):
@@ -493,6 +526,8 @@ class PolicyCanaryMetricsUpdateRequest(BaseModel):
     error_rate: float = Field(ge=0.0, le=100.0)
     latency_p99_ms: int = Field(ge=0)
     throughput_eps: float = Field(ge=0.0)
+    metrics_source: Literal["PROMETHEUS", "CLOUDWATCH", "MANUAL_EVIDENCE"]
+    evidence_ref: str = Field(min_length=10, max_length=500)
 
 
 class PolicyCanaryAutoRollbackRequest(BaseModel):
@@ -809,8 +844,9 @@ class DashboardSummaryResponse(BaseModel):
     """Dashboard overview snapshot."""
     timestamp: str
     active_rollouts: int
+    active_rollout_ids: list[str]
     avg_health_score: float
-    health_status: str  # healthy, degraded, critical
+    health_status: str  # healthy, degraded, critical, unknown
     active_alerts: int
     critical_alerts: int
     unresolved_anomalies: int
@@ -862,12 +898,18 @@ class ActiveAlertsResponse(BaseModel):
 class RolloutComparisonItem(BaseModel):
     """Single rollout in comparison."""
     rollout_id: str
+    name: str
+    status: str
+    canary_percentage: float
     error_rate: float | None
     latency_p99_ms: float | None
     throughput_eps: float | None
     health_score: float | None
     health_status: str | None
     active_alerts: int
+    unresolved_anomalies: int
+    duration_hours: float
+    started_at: str | None
     error_trend: bool | None
 
 
@@ -1002,6 +1044,7 @@ def _to_event_response(event) -> JobLifecycleEventResponse:
     return JobLifecycleEventResponse(
         id=event.id,
         job_id=event.job_id,
+        sequence=event.sequence,
         event_type=event.event_type,
         task_name=event.task_name,
         tenant_id=event.tenant_id,
@@ -2450,7 +2493,6 @@ def apply_policy_canary_rollout(
 ) -> PolicyCanaryRolloutResponse:
     """Apply approved policy to canary percentage of consumers."""
     from app.models.policy_approval_request import PolicyApprovalRequest
-    from app.models.policy_canary_rollout import PolicyCanaryRollout
     from app.services.jobs.policy_canary_enforcement import create_canary_rollout
 
     _require_enqueue(current_user)
@@ -2463,10 +2505,30 @@ def apply_policy_canary_rollout(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Approval request must be in 'approved' status; current status is '{approval_req.status}'",
         )
+    if request.approval_request_id != approval_request_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="approval_request_id must match the route",
+        )
 
-    # Estimate affected consumers (simple: 5% of ~200 active consumers = ~10)
-    estimated_total_consumers = 200
-    affected_count = max(1, int(estimated_total_consumers * request.canary_percentage / 100))
+    runtime = get_settings()
+    configured_consumers = {
+        runtime.jobs_event_consumer_name,
+        runtime.jobs_event_automation_consumer_name,
+    }
+    affected_count = max(
+        1,
+        math.ceil(len(configured_consumers) * request.canary_percentage / 100),
+    )
+    baseline = {
+        "error_rate": request.baseline_error_rate,
+        "latency_p99_ms": request.baseline_latency_p99_ms,
+        "throughput_eps": request.baseline_throughput_eps,
+        "source": request.metrics_source,
+        "evidence_ref": request.evidence_ref,
+        "recorded_at": datetime.now(UTC).isoformat(),
+        "recorded_by": current_user.email,
+    }
 
     rollout = create_canary_rollout(
         db,
@@ -2474,7 +2536,7 @@ def apply_policy_canary_rollout(
         policy_type=approval_req.policy_type,
         canary_percentage=request.canary_percentage,
         affected_consumers_count=affected_count,
-        metrics_baseline={"error_rate": 0.5, "latency_p99_ms": 150, "throughput_eps": 100},
+        metrics_baseline=baseline,
     )
 
     log_audit(
@@ -2489,6 +2551,9 @@ def apply_policy_canary_rollout(
             "approval_request_id": approval_request_id,
             "canary_percentage": request.canary_percentage,
             "affected_consumers_count": affected_count,
+            "metrics_source": request.metrics_source,
+            "evidence_ref": request.evidence_ref,
+            "baseline_error_rate": request.baseline_error_rate,
         },
     )
     db.commit()
@@ -2522,6 +2587,7 @@ def graduate_policy_canary(
     """Graduate canary rollout to next percentage (5% -> 25% -> 100%)."""
     from app.models.policy_canary_rollout import PolicyCanaryRollout
     from app.services.jobs.policy_canary_enforcement import graduate_canary
+    from app.services.jobs.policy_metrics_monitoring import evaluate_safe_to_graduate
 
     _require_enqueue(current_user)
 
@@ -2539,18 +2605,30 @@ def graduate_policy_canary(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"New percentage {request.new_canary_percentage}% must be > current {rollout.current_canary_percentage}%",
         )
-
-    # Simulate metrics comparison (in production, would query actual metrics)
-    metrics_current = {
-        "error_rate": 0.48,  # Baseline was 0.5%, still good
-        "latency_p99_ms": 155,
-        "throughput_eps": 105,
+    is_safe, safety_reason = evaluate_safe_to_graduate(rollout)
+    if not is_safe:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Canary graduation blocked: {safety_reason}",
+        )
+    previous_percentage = rollout.current_canary_percentage
+    runtime = get_settings()
+    configured_consumers = {
+        runtime.jobs_event_consumer_name,
+        runtime.jobs_event_automation_consumer_name,
     }
+    affected_count = max(
+        1,
+        math.ceil(
+            len(configured_consumers) * request.new_canary_percentage / 100
+        ),
+    )
 
     try:
-        graduate_canary(db, rollout_id, request.new_canary_percentage, metrics_current)
+        graduate_canary(db, rollout_id, request.new_canary_percentage)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    rollout.affected_consumers_count = affected_count
 
     log_audit(
         db,
@@ -2561,9 +2639,10 @@ def graduate_policy_canary(
         tenant_id=current_user.tenant_id,
         metadata={
             "rollout_id": rollout_id,
-            "previous_percentage": rollout.current_canary_percentage,
+            "previous_percentage": previous_percentage,
             "new_percentage": request.new_canary_percentage,
-            "affected_consumers": int(200 * request.new_canary_percentage / 100),
+            "affected_consumers": affected_count,
+            "safety_reason": safety_reason,
         },
     )
     db.commit()
@@ -2573,7 +2652,7 @@ def graduate_policy_canary(
         approval_request_id=rollout.approval_request_id,
         policy_type=rollout.policy_type,
         current_canary_percentage=rollout.current_canary_percentage,
-        affected_consumers_count=int(200 * rollout.current_canary_percentage / 100),
+        affected_consumers_count=rollout.affected_consumers_count,
         status=rollout.status,
         error_rate_baseline=rollout.error_rate_baseline,
         error_rate_current=rollout.error_rate_current,
@@ -2631,6 +2710,7 @@ def complete_policy_rollout(
     from app.models.policy_canary_rollout import PolicyCanaryRollout
     from app.models.policy_approval_request import PolicyApprovalRequest
     from app.services.jobs.policy_canary_enforcement import complete_rollout
+    from app.services.jobs.policy_metrics_monitoring import evaluate_safe_to_graduate
 
     _require_enqueue(current_user)
 
@@ -2642,8 +2722,26 @@ def complete_policy_rollout(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Can only complete in-progress rollouts; status is '{rollout.status}'",
         )
+    if rollout.current_canary_percentage != 100:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Canary must reach 100% and complete its observation window first",
+        )
+    is_safe, safety_reason = evaluate_safe_to_graduate(rollout)
+    if not is_safe:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Rollout completion blocked: {safety_reason}",
+        )
 
     complete_rollout(db, rollout_id)
+    runtime = get_settings()
+    rollout.affected_consumers_count = len(
+        {
+            runtime.jobs_event_consumer_name,
+            runtime.jobs_event_automation_consumer_name,
+        }
+    )
 
     # Update approval request status to rolled_out
     approval = db.query(PolicyApprovalRequest).filter_by(id=rollout.approval_request_id).first()
@@ -2662,6 +2760,7 @@ def complete_policy_rollout(
             "approval_request_id": rollout.approval_request_id,
             "policy_type": rollout.policy_type,
             "final_canary_percentage": 100,
+            "safety_reason": safety_reason,
         },
     )
     db.commit()
@@ -2671,7 +2770,7 @@ def complete_policy_rollout(
         approval_request_id=rollout.approval_request_id,
         policy_type=rollout.policy_type,
         current_canary_percentage=rollout.current_canary_percentage,
-        affected_consumers_count=200,  # 100% = all consumers
+        affected_consumers_count=rollout.affected_consumers_count,
         status=rollout.status,
         error_rate_baseline=rollout.error_rate_baseline,
         error_rate_current=rollout.error_rate_current,
@@ -2696,7 +2795,7 @@ def update_canary_rollout_metrics(
     from app.models.policy_canary_rollout import PolicyCanaryRollout
     from app.services.jobs.policy_metrics_monitoring import update_rollout_metrics
 
-    _require_read(current_user)
+    _require_enqueue(current_user)
 
     rollout = db.query(PolicyCanaryRollout).filter_by(id=rollout_id).first()
     if not rollout:
@@ -2707,11 +2806,20 @@ def update_canary_rollout_metrics(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Can only update metrics on in-progress rollouts; status is '{rollout.status}'",
         )
+    if request.rollout_id != rollout_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="rollout_id must match the route",
+        )
 
     metrics = {
         "error_rate": request.error_rate,
         "latency_p99_ms": request.latency_p99_ms,
         "throughput_eps": request.throughput_eps,
+        "source": request.metrics_source,
+        "evidence_ref": request.evidence_ref,
+        "recorded_at": datetime.now(UTC).isoformat(),
+        "recorded_by": current_user.email,
     }
 
     update_rollout_metrics(db, rollout_id, metrics)
@@ -2728,6 +2836,8 @@ def update_canary_rollout_metrics(
             "error_rate": request.error_rate,
             "latency_p99_ms": request.latency_p99_ms,
             "throughput_eps": request.throughput_eps,
+            "metrics_source": request.metrics_source,
+            "evidence_ref": request.evidence_ref,
         },
     )
     db.commit()
@@ -3509,35 +3619,63 @@ async def replay_dead_letter_job(
     if job.status != "dead_letter":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only dead-letter jobs can be replayed")
 
-    previous_status = job.status
-    job.status = "queued"
-    job.attempts = 0
-    job.error_message = None
-    job.result_json = None
-    job.started_at = None
-    job.finished_at = None
-    job.duration_ms = None
-    db.flush()
-    create_job_lifecycle_event(
-        db,
-        job=job,
-        event_type="replayed",
-        previous_status=previous_status,
-        current_status=job.status,
-        payload={"attempts_reset_to": 0},
-    )
-
-    if settings.jobs_executor_mode == "redis":
-        try:
-            create_outbox_entry(db, job_id=job.id, queue_name=settings.jobs_queue_name)
-        except Exception as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Unable to replay job") from exc
-    else:
+    queue_name = settings.jobs_queue_name if settings.jobs_executor_mode == "redis" else None
+    try:
+        prepare_dead_letter_replay(db, job=job, queue_name=queue_name)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Unable to replay job") from exc
+    if settings.jobs_executor_mode != "redis":
         await execute_job(db, job)
 
     db.commit()
     db.refresh(job)
     return _to_response(job)
+
+
+@router.post(
+    "/{job_id}/dead-letter/acknowledge",
+    response_model=DeadLetterAcknowledgeResponse,
+)
+def acknowledge_dead_letter_job(
+    job_id: str,
+    request: DeadLetterAcknowledgeRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DeadLetterAcknowledgeResponse:
+    """Remove a triaged job from the operational DLQ without erasing history."""
+
+    _require_enqueue(current_user)
+    settings = get_settings()
+    job = service_get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if job.status != "dead_letter":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only dead-letter jobs can be acknowledged",
+        )
+
+    try:
+        removed = acknowledge_dead_letter(
+            db,
+            job=job,
+            redis_url=settings.redis_url,
+            queue_name=settings.jobs_dead_letter_queue_name,
+            actor_email=current_user.email,
+            resolution_code=request.resolution_code,
+            reason=request.reason,
+        )
+    except RedisError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to acknowledge dead-letter job",
+        ) from exc
+    db.commit()
+    return DeadLetterAcknowledgeResponse(
+        job_id=job.id,
+        status=job.status,
+        removed_occurrences=removed,
+    )
 
 
 @router.post("/enqueue", response_model=JobRunResponse, status_code=status.HTTP_201_CREATED)
@@ -4210,7 +4348,7 @@ async def detect_rollout_anomalies(
     if not error_rates:
         # Fallback: get from ORM
         from app.models import PolicyRolloutMetricsHistory
-        cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back)
+        cutoff_time = datetime.now(UTC) - timedelta(minutes=minutes_back)
         records = db.query(PolicyRolloutMetricsHistory).filter(
             PolicyRolloutMetricsHistory.rollout_id == rollout_id,
             PolicyRolloutMetricsHistory.collected_at >= cutoff_time,
@@ -4254,7 +4392,7 @@ async def correlate_rollout_metrics(
     
     # Get historical metrics
     from app.models import PolicyRolloutMetricsHistory
-    cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back)
+    cutoff_time = datetime.now(UTC) - timedelta(minutes=minutes_back)
     records = db.query(PolicyRolloutMetricsHistory).filter(
         PolicyRolloutMetricsHistory.rollout_id == rollout_id,
         PolicyRolloutMetricsHistory.collected_at >= cutoff_time,
@@ -4310,7 +4448,7 @@ async def forecast_metric_trend(
     
     # Get historical metrics
     from app.models import PolicyRolloutMetricsHistory
-    cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back)
+    cutoff_time = datetime.now(UTC) - timedelta(minutes=minutes_back)
     records = db.query(PolicyRolloutMetricsHistory).filter(
         PolicyRolloutMetricsHistory.rollout_id == rollout_id,
         PolicyRolloutMetricsHistory.collected_at >= cutoff_time,
@@ -4423,7 +4561,7 @@ async def assess_rollout_health(
 async def determine_alert_routing(
     rollout_id: str,
     current_user: AuthUserResponse = Depends(get_current_user),
-    severity: str = Query("medium", regex="^(info|low|medium|high|critical)$"),
+    severity: str = Query("medium", pattern="^(info|low|medium|high|critical)$"),
     metric_type: str = Query("error_rate"),
 ) -> RoutingDecisionResponse:
     """Determine notification routing for alert.
@@ -4453,11 +4591,11 @@ async def determine_alert_routing(
     tags=["stage_034_notifications"],
 )
 async def trigger_alert_notification(
-    alert_rule_id: str,
-    rollout_id: str,
+    alert_rule_id: str = Path(..., min_length=1, max_length=100),
+    rollout_id: str = Query(..., min_length=1, max_length=100),
     title: str = Query(..., min_length=1, max_length=200),
     message: str = Query(..., min_length=1, max_length=2000),
-    severity: str = Query("medium", regex="^(info|low|medium|high|critical)$"),
+    severity: str = Query("medium", pattern="^(info|low|medium|high|critical)$"),
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AlertExecutionResponse:
@@ -4465,15 +4603,27 @@ async def trigger_alert_notification(
     
     Automatically routes to appropriate channels based on severity.
     """
-    _require_read(current_user)
+    _require_enqueue(current_user)
     
     try:
         severity_enum = AlertSeverity(severity)
     except ValueError:
         severity_enum = AlertSeverity.MEDIUM
     
-    # Create notification service
-    notification_service = NotificationService()
+    runtime = get_settings()
+    notification_service = NotificationService(
+        smtp_host=runtime.jobs_alert_smtp_host,
+        smtp_port=runtime.jobs_alert_smtp_port,
+        smtp_from_address=runtime.jobs_alert_smtp_from_address,
+        smtp_username=runtime.jobs_alert_smtp_username,
+        smtp_password=runtime.jobs_alert_smtp_password,
+        smtp_starttls=runtime.jobs_alert_smtp_starttls,
+        email_recipients=list(runtime.jobs_alert_email_recipients),
+        slack_webhook_url=runtime.jobs_alert_slack_webhook_url,
+        pagerduty_routing_key=runtime.jobs_alert_pagerduty_routing_key,
+        webhook_url=runtime.jobs_alert_webhook_url,
+        timeout_seconds=int(runtime.jobs_alert_timeout_seconds),
+    )
     
     # Execute alert
     result = await execute_alert(
@@ -4485,6 +4635,22 @@ async def trigger_alert_notification(
         severity=severity_enum,
         notification_service=notification_service,
     )
+    log_audit(
+        db,
+        action="jobs.alert.delivery_attempted",
+        entity_type="alert_rule",
+        entity_id=alert_rule_id,
+        actor_email=current_user.email,
+        tenant_id=current_user.tenant_id,
+        metadata={
+            "rollout_id": rollout_id,
+            "severity": severity_enum.value,
+            "channels_attempted": int(result.get("channels_attempted") or 0),
+            "channels_succeeded": int(result.get("channels_succeeded") or 0),
+            "delivery_confirmed": int(result.get("channels_succeeded") or 0) > 0,
+        },
+    )
+    db.commit()
     
     notification_results = [
         NotificationResultItem(
@@ -4519,16 +4685,24 @@ async def collect_prometheus_metrics(
     rollout_id: str,
     consumer_name: str = Query(..., min_length=1, max_length=100),
     current_user: AuthUserResponse = Depends(get_current_user),
-    prometheus_url: str = Query("http://localhost:9090"),
 ) -> PrometheusMetricsResponse:
     """Collect metrics from Prometheus.
     
     Queries real Prometheus instance for error rate, latency, throughput.
     """
     _require_read(current_user)
-    
-    collector = PrometheusMetricsCollector(prometheus_url=prometheus_url)
-    metrics = await collector.collect_metrics(rollout_id, consumer_name)
+    runtime = get_settings()
+    collector = PrometheusMetricsCollector(
+        prometheus_url=runtime.prometheus_url,
+        timeout_seconds=runtime.prometheus_timeout_seconds,
+    )
+    try:
+        metrics = await collector.collect_metrics(rollout_id, consumer_name)
+    except MetricsCollectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Prometheus metrics evidence is unavailable",
+        ) from exc
     
     return PrometheusMetricsResponse(
         rollout_id=rollout_id,
@@ -4536,7 +4710,7 @@ async def collect_prometheus_metrics(
         error_rate=metrics.get("error_rate"),
         latency_p99_ms=metrics.get("latency_p99_ms"),
         throughput_eps=metrics.get("throughput_eps"),
-        collected_at=datetime.utcnow().isoformat() + "Z",
+        collected_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         source="prometheus",
     )
 
@@ -4550,7 +4724,6 @@ async def collect_cloudwatch_metrics(
     rollout_id: str,
     consumer_name: str = Query(..., min_length=1, max_length=100),
     current_user: AuthUserResponse = Depends(get_current_user),
-    region: str = Query("us-east-1"),
 ) -> CloudWatchMetricsResponse:
     """Collect metrics from CloudWatch.
     
@@ -4558,9 +4731,18 @@ async def collect_cloudwatch_metrics(
     Requires AWS credentials configured in environment.
     """
     _require_read(current_user)
-    
-    collector = CloudWatchMetricsCollector(region=region)
+    runtime = get_settings()
+    collector = await asyncio.to_thread(
+        CloudWatchMetricsCollector,
+        region=runtime.cloudwatch_region,
+        namespace=runtime.cloudwatch_namespace,
+    )
     metrics = await collector.collect_metrics(rollout_id, consumer_name)
+    if any(metrics.get(name) is None for name in metrics):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CloudWatch metrics evidence is unavailable",
+        )
     
     return CloudWatchMetricsResponse(
         rollout_id=rollout_id,
@@ -4568,7 +4750,7 @@ async def collect_cloudwatch_metrics(
         error_rate=metrics.get("error_rate"),
         latency_p99_ms=metrics.get("latency_p99_ms"),
         throughput_eps=metrics.get("throughput_eps"),
-        collected_at=datetime.utcnow().isoformat() + "Z",
+        collected_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         source="cloudwatch",
     )
 
@@ -4596,6 +4778,7 @@ def get_dashboard(
     return DashboardSummaryResponse(
         timestamp=summary.get("timestamp"),
         active_rollouts=summary.get("active_rollouts", 0),
+        active_rollout_ids=summary.get("active_rollout_ids", []),
         avg_health_score=summary.get("avg_health_score", 0),
         health_status=summary.get("health_status", "unknown"),
         active_alerts=summary.get("active_alerts", 0),
@@ -4614,7 +4797,7 @@ def get_metrics_chart(
     rollout_id: str,
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
-    metric_type: str = Query("error_rate", regex="^(error_rate|latency_p99|throughput|cpu|memory)$"),
+    metric_type: str = Query("error_rate", pattern="^(error_rate|latency_p99|throughput|cpu|memory)$"),
     minutes_back: int = Query(60, ge=5, le=1440),
 ) -> MetricsTimelineResponse:
     """Get metrics timeline for dashboard charting.
@@ -4643,7 +4826,7 @@ def get_metrics_chart(
 def get_active_alerts_dashboard(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
-    severity: str | None = Query(None, regex="^(critical|high|medium|low)$"),
+    severity: str | None = Query(None, pattern="^(critical|high|medium|low)$"),
     limit: int = Query(50, ge=1, le=200),
 ) -> ActiveAlertsResponse:
     """Get active alerts for dashboard.
@@ -4704,12 +4887,18 @@ def compare_rollouts(
     comparison_items = [
         RolloutComparisonItem(
             rollout_id=item["rollout_id"],
+            name=item["name"],
+            status=item["status"],
+            canary_percentage=item["canary_percentage"],
             error_rate=item["error_rate"],
             latency_p99_ms=item["latency_p99_ms"],
             throughput_eps=item["throughput_eps"],
             health_score=item["health_score"],
             health_status=item["health_status"],
             active_alerts=item["active_alerts"],
+            unresolved_anomalies=item["unresolved_anomalies"],
+            duration_hours=item["duration_hours"],
+            started_at=item["started_at"],
             error_trend=item["error_trend"],
         )
         for item in comparison_data.get("comparison", [])
@@ -4799,7 +4988,7 @@ def get_correlation_dashboard(
 
 class SocketTokenResponse(BaseModel):
     """Response with temporary WebSocket token for real-time updates."""
-    socket_token: str = Field(..., description="Temporary token for WebSocket connection (1-hour TTL)")
+    socket_token: str = Field(..., description="Short-lived one-time WebSocket handshake token")
     expires_in: int = Field(..., description="Token expiration time in seconds")
     connection_url: str = Field(..., description="WebSocket connection URL with token parameter")
 
@@ -4814,9 +5003,8 @@ def create_socket_token(
 ) -> SocketTokenResponse:
     """Create a temporary token for WebSocket real-time dashboard connection.
     
-    This endpoint issues a short-lived token (1 hour TTL) specifically for
-    WebSocket connections. This improves security compared to passing JWT
-    directly in the query parameter.
+    This endpoint issues a short-lived, one-time token specifically for the
+    WebSocket handshake. The established socket has a separate bounded lifetime.
     
     The client should:
     1. Call this endpoint with Bearer authentication (normal JWT)
@@ -4824,37 +5012,29 @@ def create_socket_token(
     3. Connect to WebSocket with: wss://host/api/v1/jobs/dashboard/ws?token=<socket_token>
     
     Returns:
-    - socket_token: Temporary token for WebSocket (valid for 1 hour)
+    - socket_token: One-time WebSocket handshake token
     - expires_in: Token TTL in seconds
     - connection_url: Pre-formatted WebSocket URL for convenience
     """
     _require_read(current_user)
     
-    from jose import jwt
-    
     settings = get_settings()
-    
-    # Create temporary socket token with 1-hour TTL
-    expires = timedelta(hours=1)
-    expire = datetime.now(UTC) + expires
-    
+    expires_in_seconds = settings.dashboard_socket_token_ttl_seconds
     socket_token_payload = {
-        "sub": current_user.user_id,
-        "tenant_id": current_user.tenant_id,
-        "type": "socket",  # Mark as socket token, not regular JWT
-        "exp": expire,
+        "sub": current_user.id,
+        "email": current_user.email,
+        # Root sessions are intentionally platform-scoped. Use an explicit
+        # signed scope key so their one-time WebSocket token remains valid
+        # without pretending that root belongs to an organization.
+        "tenant_id": current_user.tenant_id or "global",
+        "role": current_user.role,
     }
-    
-    socket_token = jwt.encode(
+    socket_token = create_token(
         socket_token_payload,
-        settings.SECRET_KEY,
-        algorithm="HS256"
+        expires_in_seconds=expires_in_seconds,
+        token_type="socket",
     )
-    
-    expires_in_seconds = int(expires.total_seconds())
-    
-    # Construct connection URL (client can use or not - it's just for convenience)
-    connection_url = f"wss://api/v1/jobs/dashboard/ws?token={socket_token}"
+    connection_url = f"/api/v1/jobs/dashboard/ws?token={socket_token}"
     
     return SocketTokenResponse(
         socket_token=socket_token,
@@ -4883,59 +5063,64 @@ async def websocket_dashboard(
     
     Authentication:
     - Must provide socket_token obtained from POST /dashboard/socket-token
-    - Token is temporary (1-hour TTL) and specific to WebSocket connections
-    - Token must not be expired
+    - Token is short-lived, one-time and specific to WebSocket handshakes
+    - Established connections have a bounded session lifetime
     """
     # Authenticate the WebSocket connection using socket token
     try:
-        from jose import jwt, JWTError, ExpiredSignatureError
-        
-        settings = get_settings()
-        try:
-            # Decode and validate socket token
-            payload = jwt.decode(
-                token,
-                settings.SECRET_KEY,
-                algorithms=["HS256"]
-            )
-            
-            # Verify this is a socket token (not a regular JWT)
-            token_type = payload.get("type")
-            if token_type != "socket":
-                await websocket.close(code=4001, reason="Invalid token type - use POST /dashboard/socket-token to get a socket token")
-                return
-            
-            user_id: str = payload.get("sub")
-            tenant_id: str = payload.get("tenant_id")
-            
-            if not user_id or not tenant_id:
-                await websocket.close(code=4001, reason="Invalid token claims")
-                return
-        except ExpiredSignatureError:
-            await websocket.close(code=4001, reason="Token expired - refresh with POST /dashboard/socket-token")
+        payload = decode_token(token, expected_type="socket")
+        user_id = str(payload.get("sub") or "")
+        tenant_id = str(payload.get("tenant_id") or "")
+        token_id = str(payload.get("jti") or "")
+        token_expiry = int(payload.get("exp") or 0)
+        if not user_id or not tenant_id or not token_id or token_expiry <= int(time.time()):
+            await websocket.close(code=4001, reason="Invalid token claims")
             return
-        except JWTError as e:
-            await websocket.close(code=4001, reason=f"Invalid token: {str(e)}")
+        consumed = await ws_manager.consume_socket_token(
+            token_id,
+            max(1, token_expiry - int(time.time())),
+        )
+        if not consumed:
+            await websocket.close(code=4001, reason="Socket token already used")
             return
-    except Exception as e:
-        await websocket.close(code=4000, reason=f"Authentication error: {str(e)}")
+    except (HTTPException, TypeError, ValueError):
+        await websocket.close(code=4001, reason="Invalid socket token")
         return
 
-    async with managed_websocket(websocket, tenant_id):
+    settings = get_settings()
+    session_deadline = time.monotonic() + settings.dashboard_ws_session_ttl_seconds
+    async with managed_websocket(websocket, tenant_id) as connected:
+        if not connected:
+            return
         try:
             while True:
-                # Receive message from client
-                data = await websocket.receive_json()
+                remaining = session_deadline - time.monotonic()
+                if remaining <= 0:
+                    await websocket.close(code=4003, reason="WebSocket session expired")
+                    return
+                try:
+                    data = await asyncio.wait_for(websocket.receive_json(), timeout=min(60.0, remaining))
+                except TimeoutError:
+                    continue
+                if not isinstance(data, dict):
+                    await ws_manager.send_error(websocket, "Message must be a JSON object")
+                    continue
                 message_type = data.get("type")
                 
                 if message_type == "subscribe":
                     # Client wants to subscribe to specific streams
                     streams = data.get("streams", [])
+                    if not isinstance(streams, list) or len(streams) > 6:
+                        await ws_manager.send_error(websocket, "Invalid stream subscription")
+                        continue
                     await ws_manager.subscribe(websocket, streams)
                 
                 elif message_type == "unsubscribe":
                     # Client wants to unsubscribe from specific streams
                     streams = data.get("streams", [])
+                    if not isinstance(streams, list) or len(streams) > 6:
+                        await ws_manager.send_error(websocket, "Invalid stream subscription")
+                        continue
                     await ws_manager.unsubscribe(websocket, streams)
                 
                 elif message_type == "ping":
@@ -4954,5 +5139,3 @@ async def websocket_dashboard(
         
         except WebSocketDisconnect:
             ws_manager.disconnect(websocket, tenant_id)
-
-

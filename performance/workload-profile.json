@@ -1,0 +1,56 @@
+{
+  "schema_version": "2026.07.1",
+  "profiles": {
+    "baseline": {
+      "duration_seconds": 180,
+      "concurrency": 10,
+      "websocket_connections": 5,
+      "think_time_ms": 250,
+      "write_percent": 2,
+      "thresholds": {
+        "http_error_percent_max": 0.5,
+        "http_p95_ms_max": 750,
+        "http_p99_ms_max": 1500,
+        "websocket_failure_percent_max": 1.0
+      }
+    },
+    "peak": {
+      "duration_seconds": 300,
+      "concurrency": 50,
+      "websocket_connections": 25,
+      "think_time_ms": 100,
+      "write_percent": 5,
+      "thresholds": {
+        "http_error_percent_max": 1.0,
+        "http_p95_ms_max": 1000,
+        "http_p99_ms_max": 2000,
+        "websocket_failure_percent_max": 1.0
+      }
+    },
+    "soak": {
+      "duration_seconds": 3600,
+      "concurrency": 25,
+      "websocket_connections": 10,
+      "think_time_ms": 150,
+      "write_percent": 2,
+      "thresholds": {
+        "http_error_percent_max": 1.0,
+        "http_p95_ms_max": 1000,
+        "http_p99_ms_max": 2000,
+        "websocket_failure_percent_max": 1.0
+      }
+    }
+  },
+  "read_mix": [
+    {"name": "tickets", "path": "tickets?page=1&page_size=20", "weight": 45},
+    {"name": "search", "path": "search?q=network&total_limit=20", "weight": 20},
+    {"name": "notifications", "path": "notifications?page=1&page_size=20", "weight": 20},
+    {"name": "health", "path": "health", "weight": 15}
+  ],
+  "write_flow": {
+    "name": "ticket_lifecycle",
+    "create_path": "tickets",
+    "transition_path_template": "tickets/{ticket_id}/transition",
+    "transitions": ["assigned", "in_progress", "resolved", "closed"]
+  }
+}

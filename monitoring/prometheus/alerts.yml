@@ -1,0 +1,310 @@
+groups:
+  - name: sbs-platform-recording
+    interval: 30s
+    rules:
+      - record: sbs:slo:http_error_ratio_5m
+        expr: |
+          sum(rate(sbs_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(sbs_http_requests_total[5m])), 0.001)
+
+      - record: sbs:slo:http_latency_p95_seconds_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(sbs_http_request_duration_seconds_bucket[5m])
+            )
+          )
+
+      - record: sbs:slo:ai_unsuccessful_ratio_5m
+        expr: |
+          sum(sbs_ai_requests_window{outcome=~"ERROR|FALLBACK"})
+          /
+          clamp_min(sum(sbs_ai_requests_window), 1)
+
+  - name: sbs-platform-slo
+    rules:
+      - alert: SbsBackendTargetDown
+        expr: up{job="sbs-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-operations
+          service: api
+          slo: availability
+        annotations:
+          summary: SBS backend target is unavailable
+          description: Prometheus has been unable to scrape a backend replica for two minutes.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#backend-or-dependency-unavailable
+
+      - alert: SbsHighHttpErrorRate
+        expr: |
+          sbs:slo:http_error_ratio_5m > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          owner: application-operations
+          service: api
+          slo: error-rate
+        annotations:
+          summary: SBS HTTP 5xx ratio is above 5%
+          description: The platform has exceeded its 5xx error budget threshold for ten minutes.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#http-error-rate
+
+      - alert: SbsHighP95Latency
+        expr: |
+          sbs:slo:http_latency_p95_seconds_5m > 1
+        for: 10m
+        labels:
+          severity: warning
+          owner: application-operations
+          service: api
+          slo: latency
+        annotations:
+          summary: SBS p95 request latency is above one second
+          description: The p95 backend latency has remained above one second for ten minutes.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#http-latency
+
+      - alert: SbsDashboardTransportUnavailable
+        expr: min(sbs_dashboard_transport_ready) < 1
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-operations
+          service: redis
+          slo: realtime-transport
+        annotations:
+          summary: Dashboard Redis Pub/Sub transport is unavailable
+          description: At least one backend replica cannot consume real-time dashboard events.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#backend-or-dependency-unavailable
+
+      - alert: SbsBackendRestartedRecently
+        expr: time() - sbs_process_start_time_seconds < 300
+        for: 1m
+        labels:
+          severity: info
+          owner: platform-operations
+          service: api
+          slo: process-continuity
+        annotations:
+          summary: SBS backend replica restarted recently
+          description: A backend process started less than five minutes ago.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#unexpected-process-restart
+
+      - alert: SbsRequiredDependencyUnavailable
+        expr: min by (dependency) (sbs_dependency_ready) < 1
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-operations
+          service: dependency
+          slo: availability
+        annotations:
+          summary: Required SBS dependency is unavailable
+          description: Dependency {{ $labels.dependency }} has failed consecutive probes.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#backend-or-dependency-unavailable
+
+      - alert: SbsOperationalCollectorFailed
+        expr: min by (collector) (sbs_operational_snapshot_success) < 1
+        for: 5m
+        labels:
+          severity: warning
+          owner: platform-operations
+          service: monitoring
+          slo: telemetry
+        annotations:
+          summary: SBS operational metric collection is incomplete
+          description: Collector {{ $labels.collector }} has failed for five minutes.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#telemetry-collector-failure
+
+      - alert: SbsDatabasePoolSaturation
+        expr: |
+          sum(sbs_database_pool_connections{state="checked_out"})
+          /
+          clamp_min(sum(sbs_database_pool_connections{state="size"}), 1)
+          > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          owner: database-operations
+          service: postgres
+          slo: capacity
+        annotations:
+          summary: SBS database pool is above 80% utilization
+          description: Sustained pool pressure can cause request queuing and timeouts.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#database-pool-saturation
+
+      - alert: SbsJobsWorkerUnavailable
+        expr: min(sbs_worker_ready{worker="jobs"}) < 1
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-operations
+          service: jobs-worker
+          slo: queue-processing
+        annotations:
+          summary: SBS jobs worker heartbeat is stale
+          description: No current jobs worker heartbeat is visible through Redis.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#worker-or-queue-lag
+
+      - alert: SbsSchedulerUnavailable
+        expr: min(sbs_scheduler_ready) < 1
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-operations
+          service: scheduler
+          slo: periodic-processing
+        annotations:
+          summary: SBS periodic scheduler heartbeat is stale
+          description: No leader-elected scheduler heartbeat is visible through Redis.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#scheduler-unavailable
+
+      - alert: SbsJobQueueLagHigh
+        expr: max(sbs_job_queue_oldest_age_seconds) > 300
+        for: 5m
+        labels:
+          severity: warning
+          owner: platform-operations
+          service: jobs-worker
+          slo: queue-lag
+        annotations:
+          summary: SBS oldest queued job is older than five minutes
+          description: Queue processing is not keeping up with persisted jobs.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#worker-or-queue-lag
+
+      - alert: SbsJobDeadLetterQueueNotEmpty
+        expr: sum(sbs_job_queue_depth{queue="dead_letter"}) > 0
+        for: 2m
+        labels:
+          severity: critical
+          owner: application-operations
+          service: jobs-worker
+          slo: queue-success
+        annotations:
+          summary: SBS job dead-letter queue is not empty
+          description: At least one job exhausted its retry policy and requires triage.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#worker-or-queue-lag
+
+      - alert: SbsJobOutboxLagHigh
+        expr: max(sbs_job_outbox_oldest_age_seconds) > 120
+        for: 5m
+        labels:
+          severity: warning
+          owner: platform-operations
+          service: jobs-outbox
+          slo: queue-publication
+        annotations:
+          summary: SBS job outbox publication is delayed
+          description: The oldest unpublished outbox record is older than two minutes.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#worker-or-queue-lag
+
+      - alert: SbsDeliveryQueueLagHigh
+        expr: max by (channel) (sbs_delivery_queue_oldest_age_seconds) > 300
+        for: 5m
+        labels:
+          severity: warning
+          owner: integration-operations
+          service: delivery
+          slo: notification-lag
+        annotations:
+          summary: SBS delivery queue lag is high
+          description: Channel {{ $labels.channel }} has waited items older than five minutes.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#delivery-failure-or-lag
+
+      - alert: SbsRecentDeliveryFailures
+        expr: sum by (channel) (sbs_delivery_failures_window) > 0
+        for: 1m
+        labels:
+          severity: warning
+          owner: integration-operations
+          service: delivery
+          slo: notification-success
+        annotations:
+          summary: SBS observed recent delivery failures
+          description: Channel {{ $labels.channel }} has terminal failures in the latest five-minute window.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#delivery-failure-or-lag
+
+      - alert: SbsAuthenticationFailureSpike
+        expr: |
+          sum(
+            max by (event) (
+              sbs_auth_events_window{event=~"login_failed|login_mfa_failed|oidc_login_failed"}
+            )
+          ) > 25
+        for: 2m
+        labels:
+          severity: warning
+          owner: security-operations
+          service: authentication
+          slo: abuse-detection
+        annotations:
+          summary: SBS authentication failures exceed the five-minute threshold
+          description: More than 25 password, MFA or OIDC failures were recorded in the latest window.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#authentication-failure-spike
+
+      - alert: SbsAttachmentScannerErrors
+        expr: max(sbs_attachment_scan_items{status="ERROR"}) > 0
+        for: 2m
+        labels:
+          severity: critical
+          owner: security-operations
+          service: attachment-scanner
+          slo: malware-screening
+        annotations:
+          summary: SBS has attachments with malware scanner errors
+          description: One or more attachments remain quarantined because scanning did not complete successfully.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#attachment-scanner-error-or-backlog
+
+      - alert: SbsAttachmentScanBacklog
+        expr: max(sbs_attachment_quarantine_oldest_age_seconds) > 300
+        for: 5m
+        labels:
+          severity: warning
+          owner: security-operations
+          service: attachment-scanner
+          slo: malware-screening-latency
+        annotations:
+          summary: SBS attachment scan quarantine is older than five minutes
+          description: At least one pending or failed attachment scan has remained quarantined too long.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#attachment-scanner-error-or-backlog
+
+      - alert: SbsAiProviderErrorRateHigh
+        expr: sbs:slo:ai_unsuccessful_ratio_5m > 0.10
+        for: 10m
+        labels:
+          severity: warning
+          owner: ai-operations
+          service: ai-provider
+          slo: ai-success
+        annotations:
+          summary: SBS AI fallback or error ratio is above 10%
+          description: External AI calls are failing or falling back above the accepted threshold.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#ai-provider-degradation
+
+      - alert: SbsAiProviderCircuitOpen
+        expr: sum(sbs_ai_provider_circuits{state="OPEN"}) > 0
+        for: 2m
+        labels:
+          severity: warning
+          owner: ai-operations
+          service: ai-provider
+          slo: ai-availability
+        annotations:
+          summary: SBS AI provider circuit is open
+          description: A tenant AI provider circuit is actively blocking external calls.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#ai-provider-degradation
+
+      - alert: SbsRecentSlaBreaches
+        expr: max(sbs_sla_breaches_window) > 0
+        for: 1m
+        labels:
+          severity: critical
+          owner: service-management
+          service: sla-engine
+          slo: business-sla
+        annotations:
+          summary: SBS observed new ticket SLA breaches
+          description: At least one SLA target breached during the latest five-minute window.
+          runbook_url: docs/operations/OBSERVABILITY-RUNBOOK.md#sla-breach

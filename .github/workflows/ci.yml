@@ -1,0 +1,186 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate production compose
+        run: |
+          cp .env.production.example .env.production
+          docker compose -f docker-compose.prod.yml --env-file .env.production config --quiet
+          docker compose -f docker-compose.prod.yml -f docker-compose.bootstrap.yml --env-file .env.production config --quiet
+      - name: Validate production utilities and dashboards
+        run: |
+          python3 -m py_compile scripts/init-production-secrets.py scripts/smoke-production.py scripts/synthetic_core_flow.py scripts/run_performance_acceptance.py scripts/run_resilience_acceptance.py scripts/validate_observability_contract.py scripts/validate_prg006_contract.py scripts/validate_m1_release_gate.py scripts/validate_m2_m8_stage_matrix.py scripts/validate_authorization_acceptance.py scripts/validate_route_authentication.py scripts/validate_edge_security.py scripts/validate_session_security.py scripts/validate_canary_evidence.py scripts/validate_alert_delivery.py scripts/validate_legacy_integration_boundary.py scripts/validate_automation_execution_integrity.py scripts/validate_email_delivery_integrity.py scripts/validate_teams_delivery_integrity.py scripts/validate_ai_provider_evidence.py scripts/validate_permission_aware_ui.py
+          python3 scripts/validate_observability_contract.py
+          python3 scripts/validate_prg006_contract.py
+          python3 scripts/validate_m1_release_gate.py
+          python3 scripts/validate_m2_m8_stage_matrix.py
+          python3 scripts/validate_authorization_acceptance.py
+          python3 scripts/validate_route_authentication.py
+          python3 scripts/validate_edge_security.py
+          python3 scripts/validate_session_security.py
+          python3 scripts/validate_canary_evidence.py
+          python3 scripts/validate_alert_delivery.py
+          python3 scripts/validate_legacy_integration_boundary.py
+          python3 scripts/validate_automation_execution_integrity.py
+          python3 scripts/validate_email_delivery_integrity.py
+          python3 scripts/validate_teams_delivery_integrity.py
+          python3 scripts/validate_ai_provider_evidence.py
+          python3 scripts/validate_permission_aware_ui.py
+          python3 -m json.tool monitoring/grafana/dashboards/sbs-platform-overview.json > /dev/null
+          python3 -m json.tool monitoring/slo-catalog.json > /dev/null
+          python3 -m json.tool performance/workload-profile.json > /dev/null
+          python3 -m json.tool security/acceptance-catalog.json > /dev/null
+          python3 -m json.tool security/authorization-acceptance.json > /dev/null
+          python3 -m json.tool release/m1-gate.json > /dev/null
+          python3 -m json.tool release/m2-m8-stage-matrix.json > /dev/null
+      - name: Validate Prometheus configuration
+        run: |
+          docker run --rm --entrypoint /bin/promtool \
+            -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" \
+            -v "$PWD/secrets.example:/run/secrets:ro" \
+            prom/prometheus:v3.13.1 \
+            check config /etc/prometheus/prometheus.yml
+          docker run --rm --entrypoint /bin/amtool \
+            -v "$PWD/monitoring/alertmanager:/etc/alertmanager:ro" \
+            prom/alertmanager:v0.33.1 \
+            check-config /etc/alertmanager/alertmanager.yml
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install backend
+        working-directory: backend
+        run: pip install -e '.[dev]'
+      - name: Lint backend
+        working-directory: backend
+        run: ruff check app tests
+      - name: Test backend
+        working-directory: backend
+        run: pytest
+      - name: Validate migration graph
+        working-directory: backend
+        run: alembic heads
+
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: sbs_itsm_ci
+          POSTGRES_USER: sbs_ci
+          POSTGRES_PASSWORD: sbs_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sbs_ci -d sbs_itsm_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://sbs_ci:sbs_ci@127.0.0.1:5432/sbs_itsm_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install backend
+        working-directory: backend
+        run: pip install -e '.[dev]'
+      - name: Upgrade clean PostgreSQL database
+        working-directory: backend
+        run: |
+          alembic upgrade head
+          alembic current
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - name: Audit frontend translations
+        working-directory: frontend
+        run: npm run check:i18n
+      - name: Audit frontend accessibility and interactive controls
+        working-directory: frontend
+        run: |
+          npm run check:a11y
+          npm run check:controls
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install backend security gates
+        working-directory: backend
+        run: pip install -e '.[security]'
+      - name: Python dependency audit
+        working-directory: backend
+        run: pip-audit
+      - name: Python security lint
+        working-directory: backend
+        run: bandit -r app -x tests -ll -ii
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend dependency audit
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high
+      - name: Build production images
+        run: |
+          docker build -t sbs-ai-itsm-backend:ci ./backend
+          docker build -t sbs-ai-itsm-frontend:ci ./frontend
+      - name: Scan backend image
+        uses: anchore/scan-action@v7
+        with:
+          image: sbs-ai-itsm-backend:ci
+          fail-build: true
+          severity-cutoff: high
+      - name: Scan frontend image
+        uses: anchore/scan-action@v7
+        with:
+          image: sbs-ai-itsm-frontend:ci
+          fail-build: true
+          severity-cutoff: high
+      - name: Secret scan
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            detect --source /repo --no-banner --redact

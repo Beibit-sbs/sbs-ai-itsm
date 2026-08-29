@@ -1,9 +1,7 @@
 """Unit tests for Stage 031: Background Worker Task Scheduler."""
 import time
-from datetime import UTC, datetime, timedelta
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, patch
 
-import pytest
 
 from app.services.jobs.background_scheduler import (
     start_scheduler,

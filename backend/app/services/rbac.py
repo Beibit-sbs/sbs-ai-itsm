@@ -27,14 +27,73 @@ def ensure_same_tenant_or_root(current_user: AuthUserResponse, tenant_id: str | 
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant access denied")
 
 
-def can_read_ticket(current_user: AuthUserResponse, ticket: Ticket) -> bool:
+def ticket_visibility_scopes(current_user: AuthUserResponse) -> frozenset[str]:
     if is_saas_root(current_user):
-        return True
-    if current_user.tenant_id != ticket.tenant_id:
+        return frozenset({"all"})
+    scopes = {
+        scope
+        for scope in ("all", "assigned", "requester")
+        if has_permission(current_user, f"tickets.scope.{scope}")
+    }
+    if has_permission(current_user, "tickets.assign"):
+        scopes.add("all")
+    elif has_permission(current_user, "tickets.self_assign"):
+        scopes.add("assigned")
+    return frozenset(scopes)
+
+
+def is_ticket_requester_only(current_user: AuthUserResponse) -> bool:
+    scopes = ticket_visibility_scopes(current_user)
+    return "requester" in scopes and not scopes.intersection({"all", "assigned"})
+
+
+def is_ticket_assigned_only(current_user: AuthUserResponse) -> bool:
+    scopes = ticket_visibility_scopes(current_user)
+    return "assigned" in scopes and "all" not in scopes
+
+
+def ticket_requested_by_current(
+    current_user: AuthUserResponse,
+    ticket: Ticket,
+) -> bool:
+    return bool(
+        ticket.requester_id == current_user.id
+        or ticket.requester_email.lower() == current_user.email.lower()
+    )
+
+
+def ticket_assigned_to_current(
+    current_user: AuthUserResponse,
+    ticket: Ticket,
+) -> bool:
+    return bool(
+        ticket.assignee_id == current_user.id
+        or (
+            ticket.assignee_name
+            and ticket.assignee_name.lower() == current_user.full_name.lower()
+        )
+    )
+
+
+def ticket_is_unassigned(ticket: Ticket) -> bool:
+    return ticket.assignee_id is None and not (ticket.assignee_name or "").strip()
+
+
+def can_read_ticket(current_user: AuthUserResponse, ticket: Ticket) -> bool:
+    if not is_saas_root(current_user) and current_user.tenant_id != ticket.tenant_id:
         return False
-    if current_user.role == "requester":
-        return current_user.email.lower() == ticket.requester_email.lower()
-    if current_user.role == "it_agent":
-        if ticket.assignee_name and current_user.full_name.lower() == ticket.assignee_name.lower():
-            return True
-    return True
+    scopes = ticket_visibility_scopes(current_user)
+    return bool(
+        "all" in scopes
+        or (
+            "requester" in scopes
+            and ticket_requested_by_current(current_user, ticket)
+        )
+        or (
+            "assigned" in scopes
+            and (
+                ticket_assigned_to_current(current_user, ticket)
+                or ticket_is_unassigned(ticket)
+            )
+        )
+    )

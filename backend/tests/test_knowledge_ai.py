@@ -139,12 +139,15 @@ def test_create_article_from_resolved_ticket(app) -> None:
         token = _login_admin(client)
         ticket_id = client.get("/api/v1/tickets", headers={"Authorization": f"Bearer {token}"}).json()["items"][0]["id"]
 
-        patch_response = client.patch(
-            f"/api/v1/tickets/{ticket_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"status": "RESOLVED"},
-        )
-        assert patch_response.status_code == 200
+        # Gate 0 makes the lifecycle graph authoritative: a NEW ticket cannot
+        # jump directly to RESOLVED, even in a knowledge-flow fixture.
+        for target_status in ("TRIAGE", "ASSIGNED", "IN_PROGRESS", "RESOLVED"):
+            patch_response = client.patch(
+                f"/api/v1/tickets/{ticket_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"status": target_status},
+            )
+            assert patch_response.status_code == 200
 
         article_response = client.post(
             f"/api/v1/ai/create-article-from-ticket/{ticket_id}",

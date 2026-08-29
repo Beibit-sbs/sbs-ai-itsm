@@ -23,7 +23,8 @@ def test_create_ticket_links_asset_and_assigns_sla(app) -> None:
                 "title": "Ноутбук требует замены SSD",
                 "description": "Пользователь жалуется на медленную работу устройства.",
                 "requester_name": "Ирина Соколова",
-                "requester_email": "irina.sokolova@sbs.local",
+                    "requester_email": "irina.sokolova@sbs.local",
+                    "on_behalf_reason": "Requester reported the hardware issue",
                 "department": "Учебный центр",
                 "location": "Moscow / HQ / Floor 4",
                 "category": "HARDWARE_WORKSTATION",
@@ -69,7 +70,11 @@ def test_sla_overview_and_breach_endpoints(app) -> None:
         assert policies_response.status_code == 200
         policies = policies_response.json()
         assert len(policies) >= 3
-        assert {policy["priority"] for policy in policies} >= {"critical", "high", "medium"}
+        assert {policy["priority"] for policy in policies} >= {
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+        }
 
         overview_response = client.get(
             "/api/v1/sla/overview",

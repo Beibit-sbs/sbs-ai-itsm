@@ -1,0 +1,103 @@
+{
+  "catalog_version": "2026.08.1",
+  "evaluation_timezone": "UTC",
+  "default_window": "30d",
+  "services": [
+    {
+      "id": "api-availability",
+      "service": "api",
+      "owner": "platform-operations",
+      "sli": "Successful Prometheus scrapes and non-5xx HTTP requests",
+      "objective": "99.9%",
+      "window": "30d",
+      "query": "1 - sbs:slo:http_error_ratio_5m",
+      "alert": "SbsBackendTargetDown",
+      "dashboard_uid": "sbs-platform-overview",
+      "runbook": "docs/operations/OBSERVABILITY-RUNBOOK.md#backend-or-dependency-unavailable"
+    },
+    {
+      "id": "api-latency",
+      "service": "api",
+      "owner": "application-operations",
+      "sli": "P95 HTTP request duration",
+      "objective": "<= 1 second",
+      "window": "30d",
+      "query": "sbs:slo:http_latency_p95_seconds_5m",
+      "alert": "SbsHighP95Latency",
+      "dashboard_uid": "sbs-platform-overview",
+      "runbook": "docs/operations/OBSERVABILITY-RUNBOOK.md#http-latency"
+    },
+    {
+      "id": "api-error-rate",
+      "service": "api",
+      "owner": "application-operations",
+      "sli": "HTTP 5xx responses divided by all HTTP responses",
+      "objective": "<= 1%",
+      "window": "30d",
+      "query": "sbs:slo:http_error_ratio_5m",
+      "alert": "SbsHighHttpErrorRate",
+      "dashboard_uid": "sbs-platform-overview",
+      "runbook": "docs/operations/OBSERVABILITY-RUNBOOK.md#http-error-rate"
+    },
+    {
+      "id": "queue-lag",
+      "service": "jobs-worker",
+      "owner": "platform-operations",
+      "sli": "Age of the oldest persisted queued job",
+      "objective": "99% of five-minute evaluations <= 300 seconds",
+      "window": "30d",
+      "query": "sbs_job_queue_oldest_age_seconds",
+      "alert": "SbsJobQueueLagHigh",
+      "dashboard_uid": "sbs-platform-overview",
+      "runbook": "docs/operations/OBSERVABILITY-RUNBOOK.md#worker-or-queue-lag"
+    },
+    {
+      "id": "scheduler-continuity",
+      "service": "scheduler",
+      "owner": "platform-operations",
+      "sli": "Current heartbeat from the Redis leader-elected periodic scheduler",
+      "objective": "99.9% of evaluations report a current leader heartbeat",
+      "window": "30d",
+      "query": "sbs_scheduler_ready",
+      "alert": "SbsSchedulerUnavailable",
+      "dashboard_uid": "sbs-platform-overview",
+      "runbook": "docs/operations/OBSERVABILITY-RUNBOOK.md#scheduler-unavailable"
+    },
+    {
+      "id": "notification-delivery",
+      "service": "delivery",
+      "owner": "integration-operations",
+      "sli": "Terminal email, Teams and webhook failures",
+      "objective": ">= 99% successful terminal outcomes",
+      "window": "30d",
+      "query": "sbs_delivery_failures_window",
+      "alert": "SbsRecentDeliveryFailures",
+      "dashboard_uid": "sbs-platform-overview",
+      "runbook": "docs/operations/OBSERVABILITY-RUNBOOK.md#delivery-failure-or-lag"
+    },
+    {
+      "id": "ai-provider-success",
+      "service": "ai-provider",
+      "owner": "ai-operations",
+      "sli": "AI SUCCESS outcomes divided by all governed AI outcomes",
+      "objective": ">= 99%",
+      "window": "30d",
+      "query": "1 - sbs:slo:ai_unsuccessful_ratio_5m",
+      "alert": "SbsAiProviderErrorRateHigh",
+      "dashboard_uid": "sbs-platform-overview",
+      "runbook": "docs/operations/OBSERVABILITY-RUNBOOK.md#ai-provider-degradation"
+    },
+    {
+      "id": "business-sla",
+      "service": "sla-engine",
+      "owner": "service-management",
+      "sli": "Ticket SLA targets completed before breach",
+      "objective": ">= 99.5%",
+      "window": "30d",
+      "query": "sbs_sla_breaches_window",
+      "alert": "SbsRecentSlaBreaches",
+      "dashboard_uid": "sbs-platform-overview",
+      "runbook": "docs/operations/OBSERVABILITY-RUNBOOK.md#sla-breach"
+    }
+  ]
+}

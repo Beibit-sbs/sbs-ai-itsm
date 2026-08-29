@@ -1,0 +1,122 @@
+{
+  "schema_version": "2026.08.1",
+  "captured_at": "2026-08-14T11:43:35.1690088+05:00",
+  "application": {
+    "name": "SBS AI ITSM",
+    "version": "0.1.0",
+    "environment": "development"
+  },
+  "git": {
+    "branch": "main",
+    "revision": "0b04ada23744349f565b44d60d52182da7f6da38",
+    "ahead_of_origin": 101,
+    "dirty": true,
+    "initial_tracked_changed_files": 146,
+    "initial_untracked_files_observed": 438,
+    "initial_tracked_diff_hash": "6a3b1e86ee058f7abe6139ca49445a6e2823cc8f",
+    "initial_untracked_path_hash": "6460c73fe962c0ae91ed685f269f57fdeae883a2"
+  },
+  "database": {
+    "baseline_runtime": "sqlite",
+    "production_required": "postgresql",
+    "migration_head": "20260729_0072",
+    "migration_head_count": 1,
+    "local_migration_mode_before_fix": "out_of_date",
+    "local_migration_mode_after_fix": "development_startup_ddl",
+    "table_count": 205,
+    "row_counts": {
+      "tenants": 2,
+      "users": 11,
+      "tickets": 13,
+      "ticket_comments": 13,
+      "ticket_history": 29,
+      "service_requests": 1,
+      "requested_items": 1,
+      "assets": 3,
+      "knowledge_articles": 20,
+      "audit_logs": 64,
+      "change_requests": 0,
+      "problems": 0,
+      "major_incidents": 0,
+      "release_records": 0
+    }
+  },
+  "backup": {
+    "artifact": "backups/baseline/20260814_1048/sbs-ai-itsm-visible.snapshot.db",
+    "restore_verification": "backups/baseline/20260814_1048/sbs-ai-itsm-visible.restore-verification.db",
+    "manifest": "backups/baseline/20260814_1048/manifest.json",
+    "artifact_sha256": "5722f0477e8c1ee3165a70bf11bc6a01da2283109c02de74263058d373eeead8",
+    "manifest_sha256": "87921a2c1b116a859237db1269c52d483656f4b791b19e604eb97b4085475dc2",
+    "integrity_check": "ok",
+    "logical_state_matches": true
+  },
+  "api": {
+    "route_count": 709,
+    "protected_route_count": 702,
+    "governed_public_route_count": 7,
+    "openapi_path_count": 591
+  },
+  "frontend": {
+    "application_route_count": 30,
+    "fallback_route_count": 1,
+    "production_build": "PASS",
+    "vite_modules_transformed": 140,
+    "browser_smoke_role": "manager",
+    "browser_smoke_routes": 25,
+    "browser_alert_errors": 0,
+    "browser_console_errors": 0,
+    "accessibility_source_files": 75,
+    "dialogs": 16,
+    "non_semantic_clickable_divs_for_review": 18,
+    "buttons_audited": 651,
+    "links_audited": 39
+  },
+  "tests": {
+    "backend_collected": 729,
+    "backend_passed": 713,
+    "backend_skipped": 16,
+    "backend_failed": 0,
+    "backend_errors": 0,
+    "backend_shards": 4,
+    "ruff": "PASS",
+    "compileall": "PASS",
+    "typescript": "PASS",
+    "m1_local_static": "PASS",
+    "m1_checks_passed": 27,
+    "m1_checks_total": 27
+  },
+  "runtime": {
+    "health": "ok",
+    "readiness_before_fix": "not_ready",
+    "readiness_after_fix": "ready",
+    "database": "ok",
+    "redis": "optional",
+    "runtime": "ready",
+    "websocket_transport": "ready",
+    "frontend_http_status": 200,
+    "production_runtime_acceptance": "NOT_EXECUTED"
+  },
+  "contracts": {
+    "slos": 7,
+    "alerts": 17,
+    "grafana_panels": 17,
+    "load_profiles": 3,
+    "security_controls": 31
+  },
+  "evidence": [
+    {
+      "path": "docs/audit/evidence/M1-LOCAL-STATIC-2026-08-14.json",
+      "sha256": "25c57d40fc85a7fee0cfe09a18054f6dad1d7d75ff280e6cfc0f23944c200158"
+    },
+    {
+      "path": "docs/manuals/SBS-AI-ITSM-FULL-GUIDE-RU-v0.1.0.docx",
+      "sha256": "3458f668b96ac502d72a7fef7d4f91da451122adc6a0c6bbeee38dcbbd130523"
+    }
+  ],
+  "decision": {
+    "local_uat": "GO",
+    "public_production": "NO_GO",
+    "overall": "PARTIAL",
+    "external_integrations": "BLOCKED_EXTERNAL"
+  }
+}

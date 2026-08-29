@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-14T13:26:56+05:00",
+  "status": "PASS",
+  "scope": "isolated_production_like_backend_worker_restart",
+  "restart_started_at": "2026-08-14T08:26:27Z",
+  "source_revision": "0b04ada23744349f565b44d60d52182da7f6da38",
+  "source_worktree_dirty": true,
+  "primary_local_database_changed": false,
+  "container_identity_stable": {
+    "backend": true,
+    "worker": true
+  },
+  "lifecycle_log_events": {
+    "application_draining": 1,
+    "application_stopped": 1,
+    "application_ready": 1,
+    "jobs_worker_draining": 1,
+    "jobs_worker_stopped": 1,
+    "jobs_worker_started": 1
+  },
+  "post_restart": {
+    "backend_health": "healthy",
+    "authenticated_production_smoke": "PASS",
+    "queue_exercise_run_id": "cd7dc70a98d5",
+    "queue_exercise_status": "PASS",
+    "job_rows": 3,
+    "outbox_rows": 4,
+    "outbox_all_published": true,
+    "replay_distinct_dedup_keys": true,
+    "dead_letter_occurrences": 2,
+    "main_queue_depth": 0,
+    "scheduled_queue_depth": 0,
+    "deterministic_lifecycle_sequences": true
+  }
+}

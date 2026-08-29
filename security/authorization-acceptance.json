@@ -1,0 +1,459 @@
+{
+  "schema_version": "2026.07.1",
+  "scope": "M2-M8 critical authorization boundaries",
+  "runtime_acceptance": "PENDING",
+  "required_actors": [
+    "anonymous",
+    "requester",
+    "it_agent",
+    "it_manager",
+    "organization_admin",
+    "security_officer",
+    "saas_root",
+    "service_account"
+  ],
+  "allowed_expected_results": [
+    "DENY_401",
+    "DENY_403",
+    "HIDE_404",
+    "EMPTY_RESULT",
+    "CONFLICT_409",
+    "FAIL_CLOSED",
+    "ALLOW_200"
+  ],
+  "controls": [
+    {
+      "id": "AUTH-ADMIN-REQUESTER-001",
+      "domain": "administration",
+      "risk": "CRITICAL",
+      "actor": "requester",
+      "boundary": "user and role administration",
+      "expected": "DENY_403",
+      "owner": "Application Security",
+      "implementation": ["backend/app/api/v1/routes/admin.py"],
+      "evidence": {
+        "file": "backend/tests/test_admin_security.py",
+        "test": "test_requester_cannot_access_admin_endpoints"
+      }
+    },
+    {
+      "id": "AUTH-ADMIN-AGENT-002",
+      "domain": "administration",
+      "risk": "CRITICAL",
+      "actor": "it_agent",
+      "boundary": "user and role administration",
+      "expected": "DENY_403",
+      "owner": "Application Security",
+      "implementation": ["backend/app/api/v1/routes/admin.py"],
+      "evidence": {
+        "file": "backend/tests/test_admin_security.py",
+        "test": "test_it_agent_cannot_access_admin_endpoints"
+      }
+    },
+    {
+      "id": "AUTH-SECURITY-REQUESTER-003",
+      "domain": "security",
+      "risk": "HIGH",
+      "actor": "requester",
+      "boundary": "sessions, MFA, and security telemetry",
+      "expected": "DENY_403",
+      "owner": "Security Operations",
+      "implementation": ["backend/app/api/v1/routes/security.py"],
+      "evidence": {
+        "file": "backend/tests/test_admin_security.py",
+        "test": "test_requester_cannot_access_security_endpoints"
+      }
+    },
+    {
+      "id": "AUTH-TENANT-LIST-004",
+      "domain": "tenancy",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "global tenant registry",
+      "expected": "DENY_403",
+      "owner": "Application Security",
+      "implementation": ["backend/app/api/v1/routes/tenants.py"],
+      "evidence": {
+        "file": "backend/tests/test_auth.py",
+        "test": "test_tenant_admin_cannot_list_tenants"
+      }
+    },
+    {
+      "id": "AUTH-CROSS-TENANT-USER-005",
+      "domain": "administration",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "another tenant's user directory",
+      "expected": "EMPTY_RESULT",
+      "owner": "Application Security",
+      "implementation": ["backend/app/api/v1/routes/admin.py"],
+      "evidence": {
+        "file": "backend/tests/test_admin_security.py",
+        "test": "test_organization_admin_cannot_see_other_tenant_users"
+      }
+    },
+    {
+      "id": "AUTH-GLOBAL-ROOT-ROLE-006",
+      "domain": "administration",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "global root-role assignment and mutation",
+      "expected": "DENY_403",
+      "owner": "Application Security",
+      "implementation": ["backend/app/api/v1/routes/admin.py"],
+      "evidence": {
+        "file": "backend/tests/test_admin_security.py",
+        "test": "test_organization_admin_cannot_assign_global_root_role"
+      }
+    },
+    {
+      "id": "AUTH-BOUNDED-DELEGATION-007",
+      "domain": "administration",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "permissions not held by the role manager",
+      "expected": "DENY_403",
+      "owner": "Application Security",
+      "implementation": ["backend/app/api/v1/routes/admin.py"],
+      "evidence": {
+        "file": "backend/tests/test_admin_security.py",
+        "test": "test_organization_admin_cannot_amplify_or_delegate_privileges"
+      }
+    },
+    {
+      "id": "AUTH-TICKET-ASSIGN-008",
+      "domain": "tickets",
+      "risk": "HIGH",
+      "actor": "requester",
+      "boundary": "ticket assignment",
+      "expected": "DENY_403",
+      "owner": "Service Management",
+      "implementation": ["backend/app/api/v1/routes/tickets.py"],
+      "evidence": {
+        "file": "backend/tests/test_tickets.py",
+        "test": "test_requester_cannot_assign_ticket"
+      }
+    },
+    {
+      "id": "AUTH-TICKET-INTERNAL-009",
+      "domain": "tickets",
+      "risk": "HIGH",
+      "actor": "requester",
+      "boundary": "internal ticket comments",
+      "expected": "DENY_403",
+      "owner": "Service Management",
+      "implementation": ["backend/app/api/v1/routes/tickets.py"],
+      "evidence": {
+        "file": "backend/tests/test_tickets.py",
+        "test": "test_requester_cannot_write_internal_comment"
+      }
+    },
+    {
+      "id": "AUTH-CATALOG-TENANT-010",
+      "domain": "catalog",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "another tenant's catalog lifecycle",
+      "expected": "HIDE_404",
+      "owner": "Service Management",
+      "implementation": ["backend/app/api/v1/routes/catalog.py"],
+      "evidence": {
+        "file": "backend/tests/test_service_catalog.py",
+        "test": "test_catalog_rbac_and_tenant_isolation"
+      }
+    },
+    {
+      "id": "AUTH-SEARCH-OBJECT-011",
+      "domain": "search",
+      "risk": "CRITICAL",
+      "actor": "requester",
+      "boundary": "other requesters and user directory search",
+      "expected": "EMPTY_RESULT",
+      "owner": "Application Security",
+      "implementation": ["backend/app/api/v1/routes/global_search.py"],
+      "evidence": {
+        "file": "backend/tests/test_global_search.py",
+        "test": "test_requester_search_cannot_discover_other_requesters_or_users"
+      }
+    },
+    {
+      "id": "AUTH-CMDB-CLASS-012",
+      "domain": "cmdb",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "another tenant's CI class and CI records",
+      "expected": "HIDE_404",
+      "owner": "Configuration Management",
+      "implementation": ["backend/app/api/v1/routes/cmdb.py"],
+      "evidence": {
+        "file": "backend/tests/test_cmdb_ci_classes.py",
+        "test": "test_cmdb_class_inheritance_schema_snapshots_and_ci_governance"
+      }
+    },
+    {
+      "id": "AUTH-CMDB-RELATIONSHIP-013",
+      "domain": "cmdb",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "cross-tenant CI relationships and topology",
+      "expected": "HIDE_404",
+      "owner": "Configuration Management",
+      "implementation": ["backend/app/api/v1/routes/cmdb_relationships.py"],
+      "evidence": {
+        "file": "backend/tests/test_cmdb_relationships.py",
+        "test": "test_relationship_cardinality_cycle_topology_history_and_tenant_isolation"
+      }
+    },
+    {
+      "id": "AUTH-CMDB-RECONCILIATION-014",
+      "domain": "cmdb",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "source ingestion and reconciliation across tenants",
+      "expected": "HIDE_404",
+      "owner": "Configuration Management",
+      "implementation": ["backend/app/api/v1/routes/cmdb_reconciliation.py"],
+      "evidence": {
+        "file": "backend/tests/test_cmdb_reconciliation.py",
+        "test": "test_reconciliation_identity_idempotency_precedence_and_tenant_isolation"
+      }
+    },
+    {
+      "id": "AUTH-CMDB-IMPACT-015",
+      "domain": "cmdb",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "impact graph, cached assessment, and snapshot across tenants",
+      "expected": "HIDE_404",
+      "owner": "Configuration Management",
+      "implementation": ["backend/app/api/v1/routes/cmdb_impact.py"],
+      "evidence": {
+        "file": "backend/tests/test_cmdb_impact.py",
+        "test": "test_impact_graph_cache_assessment_staleness_and_tenant_isolation"
+      }
+    },
+    {
+      "id": "AUTH-AI-RAG-016",
+      "domain": "ai",
+      "risk": "CRITICAL",
+      "actor": "requester",
+      "boundary": "tenant and ticket object ACL during retrieval",
+      "expected": "EMPTY_RESULT",
+      "owner": "AI Governance",
+      "implementation": [
+        "backend/app/api/v1/routes/ai_retrieval.py",
+        "backend/app/services/ai_retrieval.py"
+      ],
+      "evidence": {
+        "file": "backend/tests/test_ai_retrieval.py",
+        "test": "test_retrieval_enforces_tenant_and_ticket_object_acl"
+      }
+    },
+    {
+      "id": "AUTH-WORKFLOW-FOUR-EYES-017",
+      "domain": "workflow",
+      "risk": "HIGH",
+      "actor": "it_manager",
+      "boundary": "self-review of governed workflow publication",
+      "expected": "CONFLICT_409",
+      "owner": "Automation Governance",
+      "implementation": ["backend/app/api/v1/routes/workflow_engine.py"],
+      "evidence": {
+        "file": "backend/tests/test_workflow_engine.py",
+        "test": "test_four_eyes_review_and_structural_diff"
+      }
+    },
+    {
+      "id": "AUTH-AI-RELEASE-018",
+      "domain": "ai",
+      "risk": "CRITICAL",
+      "actor": "it_manager",
+      "boundary": "self-evaluation, approval, and deployment of prompts",
+      "expected": "CONFLICT_409",
+      "owner": "AI Governance",
+      "implementation": ["backend/app/api/v1/routes/ai_governance.py"],
+      "evidence": {
+        "file": "backend/tests/test_ai_governance.py",
+        "test": "test_api_enforces_evaluation_and_three_actor_release"
+      }
+    },
+    {
+      "id": "AUTH-AI-ACTION-019",
+      "domain": "ai",
+      "risk": "CRITICAL",
+      "actor": "it_manager",
+      "boundary": "self-approval and stale execution of consequential AI actions",
+      "expected": "FAIL_CLOSED",
+      "owner": "AI Governance",
+      "implementation": ["backend/app/api/v1/routes/ai_actions.py"],
+      "evidence": {
+        "file": "backend/tests/test_ai_actions.py",
+        "test": "test_api_enforces_policy_four_eyes_idempotency_and_rollback"
+      }
+    },
+    {
+      "id": "AUTH-CONFIG-PACKAGE-020",
+      "domain": "configuration",
+      "risk": "CRITICAL",
+      "actor": "it_manager",
+      "boundary": "stale or tampered configuration-package deployment",
+      "expected": "CONFLICT_409",
+      "owner": "Platform Operations",
+      "implementation": ["backend/app/api/v1/routes/configuration_packages.py"],
+      "evidence": {
+        "file": "backend/tests/test_configuration_packages.py",
+        "test": "test_apply_refuses_target_drift_after_dry_run"
+      }
+    },
+    {
+      "id": "AUTH-SERVICE-TOKEN-021",
+      "domain": "integrations",
+      "risk": "CRITICAL",
+      "actor": "service_account",
+      "boundary": "wrong scope, source IP, revoked token, and token ceiling",
+      "expected": "DENY_403",
+      "owner": "Integration Operations",
+      "implementation": ["backend/app/api/v1/routes/integration_platform.py"],
+      "evidence": {
+        "file": "backend/tests/test_integration_platform.py",
+        "test": "test_service_token_rejects_wrong_scope_ip_revocation_and_active_token_limit"
+      }
+    },
+    {
+      "id": "AUTH-TENANT-EXPERIENCE-022",
+      "domain": "configuration",
+      "risk": "HIGH",
+      "actor": "organization_admin",
+      "boundary": "another tenant's branding, locale, and revision history",
+      "expected": "HIDE_404",
+      "owner": "Platform Operations",
+      "implementation": ["backend/app/api/v1/routes/tenant_experience.py"],
+      "evidence": {
+        "file": "backend/tests/test_tenant_experience.py",
+        "test": "test_logo_history_rollback_and_cross_tenant_denial"
+      }
+    },
+    {
+      "id": "AUTH-ANONYMOUS-023",
+      "domain": "identity",
+      "risk": "CRITICAL",
+      "actor": "anonymous",
+      "boundary": "authenticated identity and session context",
+      "expected": "DENY_401",
+      "owner": "Application Security",
+      "implementation": ["backend/app/api/v1/routes/auth.py"],
+      "evidence": {
+        "file": "backend/tests/test_auth.py",
+        "test": "test_protected_identity_endpoint_rejects_anonymous_access"
+      }
+    },
+    {
+      "id": "AUTH-SECURITY-OFFICER-024",
+      "domain": "security",
+      "risk": "HIGH",
+      "actor": "security_officer",
+      "boundary": "tenant-scoped audit access",
+      "expected": "ALLOW_200",
+      "owner": "Security Operations",
+      "implementation": ["backend/app/api/v1/routes/admin.py"],
+      "evidence": {
+        "file": "backend/tests/test_admin_security.py",
+        "test": "test_audit_logs_list"
+      }
+    },
+    {
+      "id": "AUTH-SAAS-ROOT-025",
+      "domain": "tenancy",
+      "risk": "CRITICAL",
+      "actor": "saas_root",
+      "boundary": "explicit global tenant registry access",
+      "expected": "ALLOW_200",
+      "owner": "Platform Operations",
+      "implementation": ["backend/app/api/v1/routes/tenants.py"],
+      "evidence": {
+        "file": "backend/tests/test_auth.py",
+        "test": "test_root_user_can_list_tenants"
+      }
+    },
+    {
+      "id": "AUTH-SYSTEM-ROLE-INTEGRITY-026",
+      "domain": "administration",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "built-in tenant system-role definition and permissions",
+      "expected": "DENY_403",
+      "owner": "Application Security",
+      "implementation": [
+        "backend/app/api/v1/routes/admin.py",
+        "frontend/src/pages/AdminPage.tsx"
+      ],
+      "evidence": {
+        "file": "backend/tests/test_admin_security.py",
+        "test": "test_system_tenant_roles_are_read_only_for_organization_admin"
+      }
+    },
+    {
+      "id": "AUTH-TENANT-ADMIN-CONTINUITY-027",
+      "domain": "administration",
+      "risk": "CRITICAL",
+      "actor": "organization_admin",
+      "boundary": "last active tenant administrator role and account lifecycle",
+      "expected": "CONFLICT_409",
+      "owner": "Identity Operations",
+      "implementation": [
+        "backend/app/api/v1/routes/admin.py",
+        "frontend/src/pages/AdminPage.tsx"
+      ],
+      "evidence": {
+        "file": "backend/tests/test_admin_security.py",
+        "test": "test_last_active_organization_admin_cannot_remove_own_admin_role"
+      }
+    },
+    {
+      "id": "AUTH-MULTI-ROLE-UNION-028",
+      "domain": "administration",
+      "risk": "HIGH",
+      "actor": "organization_admin",
+      "boundary": "exact multi-role assignment and deduplicated effective permissions",
+      "expected": "ALLOW_200",
+      "owner": "Identity Operations",
+      "implementation": [
+        "backend/app/api/v1/routes/admin.py",
+        "backend/app/api/v1/routes/auth.py",
+        "frontend/src/pages/AdminPage.tsx"
+      ],
+      "evidence": {
+        "file": "backend/tests/test_admin_security.py",
+        "test": "test_multiple_roles_produce_an_effective_permission_union"
+      }
+    },
+    {
+      "id": "AUTH-LEGACY-WEBHOOK-ANON-029",
+      "domain": "integrations",
+      "risk": "CRITICAL",
+      "actor": "anonymous",
+      "boundary": "legacy demo inbound webhook write",
+      "expected": "DENY_401",
+      "owner": "Application Security",
+      "implementation": ["backend/app/api/v1/routes/integrations.py"],
+      "evidence": {
+        "file": "backend/tests/test_integrations.py",
+        "test": "test_legacy_inbound_webhook_requires_permission_and_tenant_scope"
+      }
+    },
+    {
+      "id": "AUTH-LEGACY-WEBHOOK-RBAC-030",
+      "domain": "integrations",
+      "risk": "CRITICAL",
+      "actor": "requester",
+      "boundary": "tenant-scoped legacy demo inbound webhook write",
+      "expected": "DENY_403",
+      "owner": "Application Security",
+      "implementation": ["backend/app/api/v1/routes/integrations.py"],
+      "evidence": {
+        "file": "backend/tests/test_integrations.py",
+        "test": "test_legacy_inbound_webhook_requires_permission_and_tenant_scope"
+      }
+    }
+  ]
+}

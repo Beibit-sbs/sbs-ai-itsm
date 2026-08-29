@@ -87,44 +87,46 @@ def upgrade() -> None:
 
     if _has_column("knowledge_articles", "view_count"):
         op.execute("UPDATE knowledge_articles SET view_count = 0 WHERE view_count IS NULL")
-        op.alter_column("knowledge_articles", "view_count", nullable=False, server_default="0")
-
-    if _has_column("knowledge_articles", "source_ticket_id"):
-        op.create_foreign_key(
-            "fk_knowledge_articles_source_ticket_id",
-            "knowledge_articles",
-            "tickets",
-            ["source_ticket_id"],
-            ["id"],
-            ondelete="SET NULL",
-        )
-    if _has_column("knowledge_articles", "source_asset_id"):
-        op.create_foreign_key(
-            "fk_knowledge_articles_source_asset_id",
-            "knowledge_articles",
-            "assets",
-            ["source_asset_id"],
-            ["id"],
-            ondelete="SET NULL",
-        )
-    if _has_column("knowledge_articles", "created_by_id"):
-        op.create_foreign_key(
-            "fk_knowledge_articles_created_by_id",
-            "knowledge_articles",
-            "users",
-            ["created_by_id"],
-            ["id"],
-            ondelete="SET NULL",
-        )
-    if _has_column("knowledge_articles", "updated_by_id"):
-        op.create_foreign_key(
-            "fk_knowledge_articles_updated_by_id",
-            "knowledge_articles",
-            "users",
-            ["updated_by_id"],
-            ["id"],
-            ondelete="SET NULL",
-        )
+    with op.batch_alter_table("knowledge_articles") as batch_op:
+        if _has_column("knowledge_articles", "view_count"):
+            batch_op.alter_column(
+                "view_count",
+                existing_type=sa.Integer(),
+                nullable=False,
+                server_default="0",
+            )
+        if _has_column("knowledge_articles", "source_ticket_id"):
+            batch_op.create_foreign_key(
+                "fk_knowledge_articles_source_ticket_id",
+                "tickets",
+                ["source_ticket_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
+        if _has_column("knowledge_articles", "source_asset_id"):
+            batch_op.create_foreign_key(
+                "fk_knowledge_articles_source_asset_id",
+                "assets",
+                ["source_asset_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
+        if _has_column("knowledge_articles", "created_by_id"):
+            batch_op.create_foreign_key(
+                "fk_knowledge_articles_created_by_id",
+                "users",
+                ["created_by_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
+        if _has_column("knowledge_articles", "updated_by_id"):
+            batch_op.create_foreign_key(
+                "fk_knowledge_articles_updated_by_id",
+                "users",
+                ["updated_by_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
 
     suggestion_columns = {
         "asset_id": sa.String(length=36),
@@ -144,26 +146,55 @@ def upgrade() -> None:
 
     if _has_column("ai_suggestions", "suggestion_type"):
         op.execute("UPDATE ai_suggestions SET suggestion_type = 'resolution' WHERE suggestion_type IS NULL")
-        op.alter_column("ai_suggestions", "suggestion_type", nullable=False, server_default="resolution")
     if _has_column("ai_suggestions", "status"):
         op.execute("UPDATE ai_suggestions SET status = 'proposed' WHERE status IS NULL")
-        op.alter_column("ai_suggestions", "status", nullable=False, server_default="proposed")
-
-    if _has_column("ai_suggestions", "asset_id"):
-        op.create_foreign_key("fk_ai_suggestions_asset_id", "ai_suggestions", "assets", ["asset_id"], ["id"], ondelete="SET NULL")
-    if _has_column("ai_suggestions", "article_id"):
-        op.create_foreign_key(
-            "fk_ai_suggestions_article_id",
-            "ai_suggestions",
-            "knowledge_articles",
-            ["article_id"],
-            ["id"],
-            ondelete="SET NULL",
-        )
-    if _has_column("ai_suggestions", "accepted_by_id"):
-        op.create_foreign_key("fk_ai_suggestions_accepted_by_id", "ai_suggestions", "users", ["accepted_by_id"], ["id"], ondelete="SET NULL")
-    if _has_column("ai_suggestions", "rejected_by_id"):
-        op.create_foreign_key("fk_ai_suggestions_rejected_by_id", "ai_suggestions", "users", ["rejected_by_id"], ["id"], ondelete="SET NULL")
+    with op.batch_alter_table("ai_suggestions") as batch_op:
+        if _has_column("ai_suggestions", "suggestion_type"):
+            batch_op.alter_column(
+                "suggestion_type",
+                existing_type=sa.String(length=40),
+                nullable=False,
+                server_default="resolution",
+            )
+        if _has_column("ai_suggestions", "status"):
+            batch_op.alter_column(
+                "status",
+                existing_type=sa.String(length=20),
+                nullable=False,
+                server_default="proposed",
+            )
+        if _has_column("ai_suggestions", "asset_id"):
+            batch_op.create_foreign_key(
+                "fk_ai_suggestions_asset_id",
+                "assets",
+                ["asset_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
+        if _has_column("ai_suggestions", "article_id"):
+            batch_op.create_foreign_key(
+                "fk_ai_suggestions_article_id",
+                "knowledge_articles",
+                ["article_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
+        if _has_column("ai_suggestions", "accepted_by_id"):
+            batch_op.create_foreign_key(
+                "fk_ai_suggestions_accepted_by_id",
+                "users",
+                ["accepted_by_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
+        if _has_column("ai_suggestions", "rejected_by_id"):
+            batch_op.create_foreign_key(
+                "fk_ai_suggestions_rejected_by_id",
+                "users",
+                ["rejected_by_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
 
     if not _has_index("knowledge_articles", "ix_knowledge_articles_slug") and _has_column("knowledge_articles", "slug"):
         op.create_index("ix_knowledge_articles_slug", "knowledge_articles", ["slug"], unique=False)

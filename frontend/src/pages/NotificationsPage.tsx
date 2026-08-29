@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -12,12 +12,9 @@ import {
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import AppShell from '../components/AppShell'
+import { useTenantExperience } from '../experience/TenantExperienceContext'
 
 type NotificationTab = 'center' | 'unread' | 'settings' | 'templates' | 'email-log'
-
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
-}
 
 const statusFilterOptions = [
   { value: 'ALL', label: 'Все' },
@@ -35,7 +32,17 @@ const tabLabels: Record<NotificationTab, string> = {
 
 export default function NotificationsPage() {
   const { session } = useAuth()
+  const { formatDateTime, translate } = useTenantExperience()
   const queryClient = useQueryClient()
+  const isRoot = session?.user.role === 'saas_root'
+  const permissions = new Set(session?.user.permissions ?? [])
+  const has = (permission: string) => isRoot || permissions.has(permission)
+  const canReadNotifications = has('notifications.read')
+  const canUpdateNotifications = has('notifications.update')
+  const canUpdatePreferences = has('notifications.preferences.update')
+  const canReadTemplates = has('notifications.templates.read')
+  const canUpdateTemplates = has('notifications.templates.update')
+  const canReadEmailLog = has('notifications.email_log.read')
   const [activeTab, setActiveTab] = useState<NotificationTab>('center')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [typeFilter, setTypeFilter] = useState('ALL')
@@ -50,19 +57,19 @@ export default function NotificationsPage() {
         page: 1,
         page_size: 50,
       }),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadNotifications && (activeTab === 'center' || activeTab === 'unread')),
   })
 
   const preferencesQuery = useQuery({
     queryKey: ['notification-preferences', session?.access_token],
     queryFn: () => fetchNotificationPreferences(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token) && activeTab === 'settings',
+    enabled: Boolean(session?.access_token && canReadNotifications) && activeTab === 'settings',
   })
 
   const templatesQuery = useQuery({
     queryKey: ['notification-templates', session?.access_token],
     queryFn: () => fetchNotificationTemplates(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token) && activeTab === 'templates',
+    enabled: Boolean(session?.access_token && canReadTemplates) && activeTab === 'templates',
   })
 
   const markReadMutation = useMutation({
@@ -112,6 +119,7 @@ export default function NotificationsPage() {
   const notificationsPage = notificationsQuery.data
   const notifications = notificationsPage?.items ?? []
   const unreadCount = notificationsPage?.unread_count ?? 0
+  const readCount = Math.max(0, notifications.length - unreadCount)
 
   const grouped = useMemo(() => {
     const unread = notifications.filter((item) => item.status !== 'READ')
@@ -120,6 +128,17 @@ export default function NotificationsPage() {
   }, [notifications])
 
   const visibleNotifications = activeTab === 'unread' ? grouped.unread : [...grouped.unread, ...grouped.read]
+  const availableTabs = useMemo(() => {
+    const result: NotificationTab[] = []
+    if (canReadNotifications) result.push('center', 'unread', 'settings')
+    if (canReadTemplates) result.push('templates')
+    return result
+  }, [canReadNotifications, canReadTemplates])
+
+  useEffect(() => {
+    if (availableTabs.includes(activeTab)) return
+    if (availableTabs[0]) setActiveTab(availableTabs[0])
+  }, [activeTab, availableTabs])
 
   return (
     <AppShell title="Уведомления" subtitle="Центр событий, настройки коммуникаций и шаблоны уведомлений.">
@@ -129,17 +148,28 @@ export default function NotificationsPage() {
           <h2>Уведомления и коммуникации</h2>
           <p>Production-ready центр событий с настройками, шаблонами и журналом email-отправок.</p>
         </div>
-        <div className="status-column">
-          <span className="unread-pill">Непрочитано: {unreadCount}</span>
-        </div>
+        {canReadNotifications ? <div className="notification-summary-grid">
+          <div className="notification-summary-card">
+            <span>Непрочитано</span>
+            <strong>{unreadCount}</strong>
+          </div>
+          <div className="notification-summary-card">
+            <span>Прочитано</span>
+            <strong>{readCount}</strong>
+          </div>
+          <div className="notification-summary-card">
+            <span>Текущий режим</span>
+            <strong>{translate(tabLabels[activeTab])}</strong>
+          </div>
+        </div> : null}
       </section>
 
-      <nav className="module-subnav" aria-label="Notifications navigation">
-        <button type="button" className={`module-subnav-tab ${activeTab === 'center' ? 'active' : ''}`} onClick={() => setActiveTab('center')}>{tabLabels.center}</button>
-        <button type="button" className={`module-subnav-tab ${activeTab === 'unread' ? 'active' : ''}`} onClick={() => setActiveTab('unread')}>{tabLabels.unread}</button>
-        <button type="button" className={`module-subnav-tab ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>{tabLabels.settings}</button>
-        <button type="button" className={`module-subnav-tab ${activeTab === 'templates' ? 'active' : ''}`} onClick={() => setActiveTab('templates')}>{tabLabels.templates}</button>
-        <Link to="/notifications/email-log" className="module-subnav-tab">{tabLabels['email-log']}</Link>
+      <nav className="module-subnav" aria-label="Навигация уведомлений">
+        {canReadNotifications ? <button type="button" className={`module-subnav-tab ${activeTab === 'center' ? 'active' : ''}`} onClick={() => setActiveTab('center')}>{translate(tabLabels.center)}</button> : null}
+        {canReadNotifications ? <button type="button" className={`module-subnav-tab ${activeTab === 'unread' ? 'active' : ''}`} onClick={() => setActiveTab('unread')}>{translate(tabLabels.unread)}</button> : null}
+        {canReadNotifications ? <button type="button" className={`module-subnav-tab ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>{translate(tabLabels.settings)}</button> : null}
+        {canReadTemplates ? <button type="button" className={`module-subnav-tab ${activeTab === 'templates' ? 'active' : ''}`} onClick={() => setActiveTab('templates')}>{translate(tabLabels.templates)}</button> : null}
+        {canReadEmailLog ? <Link to="/notifications/email-log" className="module-subnav-tab">{translate(tabLabels['email-log'])}</Link> : null}
       </nav>
 
       {(activeTab === 'center' || activeTab === 'unread') ? (
@@ -151,7 +181,7 @@ export default function NotificationsPage() {
                 <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
                   {statusFilterOptions.map((option) => (
                     <option key={option.value} value={option.value}>
-                      {option.label}
+                      {translate(option.label)}
                     </option>
                   ))}
                 </select>
@@ -165,18 +195,18 @@ export default function NotificationsPage() {
                 />
               </label>
             </div>
-            <button
+            {canUpdateNotifications ? <button
               type="button"
               className="ghost-button tickets-create-button"
               onClick={() => {
-                const confirmed = window.confirm('Отметить все текущие уведомления как прочитанные?')
+                const confirmed = window.confirm(translate('Отметить все текущие уведомления как прочитанные?'))
                 if (!confirmed) return
                 readAllMutation.mutate()
               }}
               disabled={readAllMutation.isPending || notifications.length === 0}
             >
               {readAllMutation.isPending ? 'Обновление…' : 'Отметить все как прочитанные'}
-            </button>
+            </button> : null}
           </section>
 
           <section className="section-card notification-list-shell">
@@ -197,7 +227,11 @@ export default function NotificationsPage() {
                   <article className={`notification-card ${notification.status !== 'READ' ? 'notification-card-unread' : ''}`} key={notification.id}>
                     <header>
                       <strong>{notification.title}</strong>
-                      <span>{notification.status}</span>
+                      <span>{notification.status === 'READ'
+                        ? translate('Прочитано')
+                        : notification.status === 'UNREAD'
+                          ? translate('Непрочитано')
+                          : translate(notification.status)}</span>
                     </header>
                     <p>{notification.message}</p>
                     <small>
@@ -206,7 +240,7 @@ export default function NotificationsPage() {
                     <small>
                       Получатель: {notification.recipient_name} ({notification.recipient_email})
                     </small>
-                    {notification.status !== 'READ' ? (
+                    {canUpdateNotifications && notification.status !== 'READ' ? (
                       <button
                         type="button"
                         className="ghost-button"
@@ -252,6 +286,7 @@ export default function NotificationsPage() {
                         <input
                           type="checkbox"
                           checked={item.channel_in_app}
+                          disabled={!canUpdatePreferences || togglePreferenceMutation.isPending}
                           onChange={(event) => togglePreferenceMutation.mutate({ event_type: item.event_type, key: 'channel_in_app', value: event.target.checked })}
                         />
                       </td>
@@ -259,6 +294,7 @@ export default function NotificationsPage() {
                         <input
                           type="checkbox"
                           checked={item.channel_email}
+                          disabled={!canUpdatePreferences || togglePreferenceMutation.isPending}
                           onChange={(event) => togglePreferenceMutation.mutate({ event_type: item.event_type, key: 'channel_email', value: event.target.checked })}
                         />
                       </td>
@@ -266,6 +302,7 @@ export default function NotificationsPage() {
                         <input
                           type="checkbox"
                           checked={item.is_muted}
+                          disabled={!canUpdatePreferences || togglePreferenceMutation.isPending}
                           onChange={(event) => togglePreferenceMutation.mutate({ event_type: item.event_type, key: 'is_muted', value: event.target.checked })}
                         />
                       </td>
@@ -297,12 +334,28 @@ export default function NotificationsPage() {
                 <tbody>
                   {(templatesQuery.data ?? []).map((item) => (
                     <tr key={item.id}>
-                      <td>{item.code}</td>
+                      <td>
+                        {item.code}
+                        {!item.tenant_id ? (
+                          <small className="muted"> · GLOBAL / INHERITED</small>
+                        ) : null}
+                      </td>
                       <td>{item.channel ?? 'in_app'}</td>
                       <td>
                         <input
                           type="checkbox"
                           checked={item.is_active}
+                          aria-label={`${item.code}: ${translate('toggle template activity')}`}
+                          title={
+                            !isRoot && !item.tenant_id
+                              ? 'Inherited global template is read-only'
+                              : undefined
+                          }
+                          disabled={
+                            toggleTemplateMutation.isPending
+                            || !canUpdateTemplates
+                            || (!isRoot && !item.tenant_id)
+                          }
                           onChange={(event) => toggleTemplateMutation.mutate({ templateId: item.id, isActive: event.target.checked })}
                         />
                       </td>

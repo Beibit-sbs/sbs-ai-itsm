@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -13,6 +13,31 @@ class Asset(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True)
+    ci_class_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ci_classes.id", ondelete="SET NULL"), nullable=True
+    )
+    ci_class_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ci_class_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    ci_class_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ci_class_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    ci_schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ci_schema_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ci_attributes_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="ACTIVE"
+    )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    support_group: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    criticality: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="MEDIUM"
+    )
+    environment: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="OTHER"
+    )
+    ci_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     asset_tag: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     asset_type: Mapped[str] = mapped_column(String(120), nullable=False)

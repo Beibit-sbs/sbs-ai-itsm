@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App'
 import AppErrorBoundary from './components/AppErrorBoundary'
 import { AuthProvider } from './auth/AuthContext'
+import { TenantExperienceProvider } from './experience/TenantExperienceContext'
 import './styles.css'
 
 const queryClient = new QueryClient({
@@ -15,11 +16,13 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <AppErrorBoundary>
-          <BrowserRouter>
-            <App />
-          </BrowserRouter>
-        </AppErrorBoundary>
+        <TenantExperienceProvider>
+          <AppErrorBoundary>
+            <BrowserRouter>
+              <App />
+            </BrowserRouter>
+          </AppErrorBoundary>
+        </TenantExperienceProvider>
       </AuthProvider>
     </QueryClientProvider>
   </StrictMode>,

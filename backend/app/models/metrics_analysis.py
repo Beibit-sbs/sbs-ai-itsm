@@ -20,7 +20,7 @@ class PolicyMetricsAlertRule(Base):
     __tablename__ = "policy_metrics_alert_rules"
     
     id = Column(String, primary_key=True, index=True)
-    rollout_id = Column(String, ForeignKey("policy_canary_rollout.id"), nullable=False, index=True)
+    rollout_id = Column(String, ForeignKey("policy_canary_rollouts.id"), nullable=False, index=True)
     tenant_id = Column(String, nullable=False, index=True)
     
     # Rule definition
@@ -44,7 +44,7 @@ class PolicyMetricsAlertRule(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    rollout = relationship("PolicyCanaryRollout", back_populates="alert_rules")
+    rollout = relationship("PolicyCanaryRollout")
 
 
 class PolicyMetricsAnomalyDetection(Base):
@@ -53,7 +53,7 @@ class PolicyMetricsAnomalyDetection(Base):
     __tablename__ = "policy_metrics_anomaly_detection"
     
     id = Column(String, primary_key=True, index=True)
-    rollout_id = Column(String, ForeignKey("policy_canary_rollout.id"), nullable=False, index=True)
+    rollout_id = Column(String, ForeignKey("policy_canary_rollouts.id"), nullable=False, index=True)
     tenant_id = Column(String, nullable=False, index=True)
     
     # Detection info
@@ -89,7 +89,7 @@ class PolicyMetricsHealthAssessment(Base):
     __tablename__ = "policy_metrics_health_assessment"
     
     id = Column(String, primary_key=True, index=True)
-    rollout_id = Column(String, ForeignKey("policy_canary_rollout.id"), nullable=False, index=True)
+    rollout_id = Column(String, ForeignKey("policy_canary_rollouts.id"), nullable=False, index=True)
     tenant_id = Column(String, nullable=False, index=True)
     
     # Health scores

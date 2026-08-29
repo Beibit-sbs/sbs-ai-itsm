@@ -3,7 +3,9 @@
  * Shows metric values over time with statistics (min, max, avg)
  */
 
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
+import { localizeTree } from '../../experience/LocalizedContent'
+import { useTenantExperience } from '../../experience/TenantExperienceContext'
 
 interface MetricsTimelineProps {
   rolloutId: string
@@ -28,18 +30,20 @@ export default function MetricsTimelineChart({
   isLoading = false,
   error,
 }: MetricsTimelineProps) {
+  const { formatDateTime, translate } = useTenantExperience()
+  const localize = (node: ReactNode) => localizeTree(node, translate)
   const getMetricLabel = (type: string) => {
     switch (type) {
       case 'error_rate':
-        return 'Error Rate'
+        return translate('Error Rate')
       case 'latency_p99':
-        return 'Latency (P99)'
+        return translate('Latency (P99)')
       case 'throughput':
-        return 'Throughput'
+        return translate('Throughput')
       case 'cpu':
-        return 'CPU Usage'
+        return translate('CPU Usage')
       case 'memory':
-        return 'Memory Usage'
+        return translate('Memory Usage')
       default:
         return type
     }
@@ -50,9 +54,9 @@ export default function MetricsTimelineChart({
       case 'error_rate':
         return '%'
       case 'latency_p99':
-        return 'ms'
+        return translate('ms')
       case 'throughput':
-        return 'req/s'
+        return translate('req/s')
       case 'cpu':
       case 'memory':
         return '%'
@@ -77,7 +81,7 @@ export default function MetricsTimelineChart({
   }, [values, timestamps])
 
   if (isLoading) {
-    return (
+    return localize(
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <h3 className="mb-4 text-lg font-semibold">{getMetricLabel(metricType)}</h3>
         <div className="animate-pulse space-y-2">
@@ -88,7 +92,7 @@ export default function MetricsTimelineChart({
   }
 
   if (error) {
-    return (
+    return localize(
       <div className="rounded-lg border border-red-200 bg-red-50 p-6">
         <h3 className="mb-2 text-lg font-semibold text-red-900">{getMetricLabel(metricType)}</h3>
         <p className="text-sm text-red-700">{error}</p>
@@ -97,7 +101,7 @@ export default function MetricsTimelineChart({
   }
 
   if (!chartData || chartData.length === 0) {
-    return (
+    return localize(
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <h3 className="mb-4 text-lg font-semibold">{getMetricLabel(metricType)}</h3>
         <p className="text-sm text-gray-500">No data available</p>
@@ -105,7 +109,7 @@ export default function MetricsTimelineChart({
     )
   }
 
-  return (
+  return localize(
     <div className="rounded-lg border border-gray-200 bg-white p-6">
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-lg font-semibold">{getMetricLabel(metricType)}</h3>
@@ -119,7 +123,7 @@ export default function MetricsTimelineChart({
             key={idx}
             className="flex-1 rounded-t bg-blue-400 hover:bg-blue-600"
             style={{ height: `${Math.max(point.height, 2)}px` }}
-            title={`${point.value.toFixed(2)} at ${point.timestamp}`}
+            title={`${point.value.toFixed(2)} ${translate('at')} ${formatDateTime(point.timestamp)}`}
           />
         ))}
       </div>

@@ -9,7 +9,6 @@ Models:
 
 from datetime import datetime
 from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, JSON, ForeignKey, Text
-from sqlalchemy.orm import relationship
 
 from app.db.base import Base
 
@@ -21,7 +20,7 @@ class PolicyAlertNotification(Base):
     
     id = Column(String, primary_key=True, index=True)
     alert_rule_id = Column(String, ForeignKey("policy_metrics_alert_rules.id"), nullable=False, index=True)
-    rollout_id = Column(String, ForeignKey("policy_canary_rollout.id"), nullable=False, index=True)
+    rollout_id = Column(String, ForeignKey("policy_canary_rollouts.id"), nullable=False, index=True)
     tenant_id = Column(String, nullable=False, index=True)
     
     # Notification details
@@ -55,7 +54,7 @@ class PolicyAlertHistory(Base):
     
     id = Column(String, primary_key=True, index=True)
     alert_rule_id = Column(String, ForeignKey("policy_metrics_alert_rules.id"), nullable=False, index=True)
-    rollout_id = Column(String, ForeignKey("policy_canary_rollout.id"), nullable=False, index=True)
+    rollout_id = Column(String, ForeignKey("policy_canary_rollouts.id"), nullable=False, index=True)
     tenant_id = Column(String, nullable=False, index=True)
     
     # Alert trigger details

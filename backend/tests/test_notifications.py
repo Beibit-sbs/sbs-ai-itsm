@@ -7,6 +7,40 @@ def _login_admin(client):
     return response.json()["access_token"]
 
 
+def _login(client, email: str) -> str:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "Sbs!2026"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["access_token"]
+
+
+def _headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _create_personal_ticket(client, token: str, *, title: str = "Personal notification test") -> dict:
+    profile = client.get("/api/v1/auth/me", headers=_headers(token)).json()
+    response = client.post(
+        "/api/v1/tickets",
+        headers=_headers(token),
+        json={
+            "title": title,
+            "description": "Notification recipient isolation acceptance",
+            "requester_id": profile["id"],
+            "requester_name": profile["full_name"],
+            "requester_email": profile["email"],
+            "department": "QA",
+            "location": "Test Lab",
+            "category": "NETWORK_INTERNET",
+            "priority": "HIGH",
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
 def test_notifications_list(app) -> None:
     from fastapi.testclient import TestClient
 
@@ -16,9 +50,16 @@ def test_notifications_list(app) -> None:
         assert response.status_code == 200
         payload = response.json()
         assert isinstance(payload, dict)
-        assert payload["total"] >= 12
         assert payload["page"] == 1
         assert isinstance(payload["items"], list)
+        assert all(item["recipient_email"] == "admin@sbs.local" for item in payload["items"])
+
+        tenant_response = client.get(
+            "/api/v1/notifications?scope=tenant&page_size=100",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert tenant_response.status_code == 200
+        assert tenant_response.json()["total"] >= 12
 
 
 def test_unread_count(app) -> None:
@@ -26,6 +67,7 @@ def test_unread_count(app) -> None:
 
     with TestClient(app) as client:
         token = _login_admin(client)
+        _create_personal_ticket(client, token)
         response = client.get("/api/v1/notifications/unread-count", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 200
         assert response.json()["unread_count"] >= 1
@@ -36,6 +78,7 @@ def test_mark_notification_as_read(app) -> None:
 
     with TestClient(app) as client:
         token = _login_admin(client)
+        _create_personal_ticket(client, token)
         notifications = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()["items"]
         target = next((item for item in notifications if item["status"] != "READ"), notifications[0])
 
@@ -51,12 +94,40 @@ def test_read_all_notifications(app) -> None:
 
     with TestClient(app) as client:
         token = _login_admin(client)
+        _create_personal_ticket(client, token)
         response = client.patch("/api/v1/notifications/read-all", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 200
         assert response.json()["updated"] >= 0
 
         unread = client.get("/api/v1/notifications/unread-count", headers={"Authorization": f"Bearer {token}"}).json()
         assert unread["unread_count"] == 0
+
+
+def test_notification_center_is_recipient_scoped(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        admin = _login_admin(client)
+        requester = _login(client, "requester@sbs.local")
+        _create_personal_ticket(client, admin, title="Private admin notification")
+        admin_items = client.get("/api/v1/notifications", headers=_headers(admin)).json()["items"]
+        private_item = next(item for item in admin_items if item["recipient_email"] == "admin@sbs.local")
+
+        tenant_scope = client.get(
+            "/api/v1/notifications?scope=tenant",
+            headers=_headers(requester),
+        )
+        assert tenant_scope.status_code == 403
+
+        requester_items = client.get("/api/v1/notifications", headers=_headers(requester))
+        assert requester_items.status_code == 200
+        assert all(item["recipient_email"] == "requester@sbs.local" for item in requester_items.json()["items"])
+
+        cannot_mark_other = client.patch(
+            f"/api/v1/notifications/{private_item['id']}/read",
+            headers=_headers(requester),
+        )
+        assert cannot_mark_other.status_code == 404
 
 
 def test_templates_list(app) -> None:
@@ -100,7 +171,8 @@ def test_test_email_creates_log(app) -> None:
         assert response.status_code == 201
         payload = response.json()
         assert payload["provider"] == "mock"
-        assert payload["status"] == "SENT"
+        assert payload["status"] == "SIMULATED"
+        assert payload["provider_message_id"] is None
 
 
 def test_ticket_create_creates_notification(app) -> None:
@@ -108,25 +180,8 @@ def test_ticket_create_creates_notification(app) -> None:
 
     with TestClient(app) as client:
         token = _login_admin(client)
-        before = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()["items"]
-        before_count = len(before)
-
-        create_response = client.post(
-            "/api/v1/tickets",
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "title": "Новая заявка для проверки уведомлений",
-                "description": "Тест создания уведомления",
-                "requester_name": "Тестовый пользователь",
-                "requester_email": "test.user@sbs.local",
-                "department": "QA",
-                "location": "Test Lab",
-                "category": "NETWORK_INTERNET",
-                "priority": "HIGH",
-                "assignee_name": "Инженер поддержки",
-            },
-        )
-        assert create_response.status_code == 201
+        before_count = client.get("/api/v1/notifications", headers=_headers(token)).json()["total"]
+        _create_personal_ticket(client, token, title="Новая заявка для проверки уведомлений")
 
         after = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()["items"]
         assert len(after) >= before_count + 1
@@ -138,14 +193,17 @@ def test_ticket_status_change_creates_notification(app) -> None:
 
     with TestClient(app) as client:
         token = _login_admin(client)
-        ticket_id = client.get("/api/v1/tickets", headers={"Authorization": f"Bearer {token}"}).json()["items"][0]["id"]
+        ticket_id = _create_personal_ticket(client, token, title="Status notification test")["id"]
 
-        patch_response = client.patch(
-            f"/api/v1/tickets/{ticket_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"status": "RESOLVED"},
-        )
-        assert patch_response.status_code == 200
+        # Exercise the canonical lifecycle instead of relying on the removed
+        # NEW -> RESOLVED shortcut.
+        for target_status in ("TRIAGE", "ASSIGNED", "IN_PROGRESS", "RESOLVED"):
+            patch_response = client.patch(
+                f"/api/v1/tickets/{ticket_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"status": target_status},
+            )
+            assert patch_response.status_code == 200
 
         notifications = client.get("/api/v1/notifications", headers={"Authorization": f"Bearer {token}"}).json()["items"]
         related = [item for item in notifications if item["related_ticket_id"] == ticket_id]
@@ -196,5 +254,5 @@ def test_email_log_retry(app) -> None:
             f"/api/v1/notifications/email-log/{log_id}/retry",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert retry_response.status_code == 200
-        assert retry_response.json()["attempt_count"] >= 1
+        assert retry_response.status_code == 409
+        assert "simulated" in retry_response.json()["error"]["message"].lower()

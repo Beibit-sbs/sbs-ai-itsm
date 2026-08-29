@@ -1,0 +1,29 @@
+{
+  "created": 20,
+  "cross_tenant_list_leaks": 0,
+  "cross_tenant_reads_404": 6,
+  "detail_verification_sample_per_tenant": 3,
+  "distinct_tenants": 2,
+  "generated_at": "2026-08-14T08:40:53.392601+00:00",
+  "http_statuses": {
+    "200": 8,
+    "201": 20,
+    "404": 6
+  },
+  "identities": 2,
+  "latency_ms": {
+    "max": 450.341,
+    "mean": 203.734,
+    "p50": 177.176,
+    "p95": 426.901,
+    "p99": 450.341
+  },
+  "own_reads_200": 6,
+  "primary_local_database_changed": false,
+  "schema_version": 1,
+  "scope": "isolated_production_like_postgresql_concurrent_tenant_isolation",
+  "source_worktree_dirty": true,
+  "started_at": "2026-08-14T08:40:52.671735+00:00",
+  "status": "PASS",
+  "tickets_per_tenant": 10
+}

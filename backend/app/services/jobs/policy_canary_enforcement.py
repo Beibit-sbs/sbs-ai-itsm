@@ -7,7 +7,6 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.policy_approval_request import PolicyApprovalRequest
 from app.models.policy_canary_rollout import PolicyCanaryRollout
 from app.models.consumer_policy_override import ConsumerPolicyOverride
 
@@ -88,7 +87,7 @@ def get_effective_policy(
 
 def create_canary_rollout(
     db: Session,
-    approval_id: str,
+    approval_request_id: str,
     policy_type: str,
     canary_percentage: int,
     affected_consumers_count: int,
@@ -98,7 +97,7 @@ def create_canary_rollout(
     
     Args:
         db: Database session
-        approval_id: Reference to PolicyApprovalRequest
+        approval_request_id: Reference to PolicyApprovalRequest
         policy_type: "runbook" or "autoremediation"
         canary_percentage: Initial canary percentage (5-100)
         affected_consumers_count: Number of consumers in canary
@@ -110,11 +109,16 @@ def create_canary_rollout(
     rollout_id = f"crl-{secrets.token_hex(16)}"
     rollout = PolicyCanaryRollout(
         id=rollout_id,
-        approval_request_id=approval_id,
+        approval_request_id=approval_request_id,
         policy_type=policy_type,
         current_canary_percentage=canary_percentage,
         affected_consumers_count=affected_consumers_count,
         metrics_baseline_json=json.dumps(metrics_baseline) if metrics_baseline else None,
+        error_rate_baseline=(
+            float(metrics_baseline["error_rate"])
+            if metrics_baseline and metrics_baseline.get("error_rate") is not None
+            else None
+        ),
         status="in_progress",
     )
     db.add(rollout)
@@ -126,7 +130,6 @@ def graduate_canary(
     db: Session,
     rollout_id: str,
     new_canary_percentage: int,
-    metrics_current: dict[str, Any] | None = None,
 ) -> PolicyCanaryRollout:
     """Graduate canary rollout to next percentage.
     
@@ -134,8 +137,6 @@ def graduate_canary(
         db: Database session
         rollout_id: PolicyCanaryRollout ID
         new_canary_percentage: New canary percentage (5-100)
-        metrics_current: Current metrics for comparison
-    
     Returns:
         Updated PolicyCanaryRollout record
     
@@ -152,7 +153,10 @@ def graduate_canary(
         )
     
     rollout.current_canary_percentage = new_canary_percentage
-    rollout.metrics_current_json = json.dumps(metrics_current) if metrics_current else None
+    rollout.metrics_baseline_json = rollout.metrics_current_json
+    rollout.error_rate_baseline = rollout.error_rate_current
+    rollout.metrics_current_json = None
+    rollout.error_rate_current = None
     
     return rollout
 

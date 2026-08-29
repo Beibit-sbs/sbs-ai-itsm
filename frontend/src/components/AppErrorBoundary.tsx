@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import LocalizedContent from '../experience/LocalizedContent'
 
 type AppErrorBoundaryProps = {
   children: ReactNode
@@ -22,12 +23,14 @@ export default class AppErrorBoundary extends Component<AppErrorBoundaryProps, A
   render(): ReactNode {
     if (this.state.hasError) {
       return (
+        <LocalizedContent>
         <main className="dashboard">
           <section className="foundation-card">
             <h2>Ошибка интерфейса</h2>
             <p className="error-message">Не удалось отрисовать страницу. Обновите браузер или выполните повторный вход.</p>
           </section>
         </main>
+        </LocalizedContent>
       )
     }
 

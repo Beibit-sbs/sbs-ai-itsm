@@ -10,14 +10,16 @@ import sqlalchemy as sa
 
 
 revision = "20261215_0021"
-down_revision = "20261215_0020"
+down_revision = "20261215_0020_policy_rollout_metrics"
 branch_labels = None
 depends_on = None
 
 
 def upgrade():
+    inspector = sa.inspect(op.get_bind())
     # Create policy_metrics_alert_rules table
-    op.create_table(
+    if not inspector.has_table("policy_metrics_alert_rules"):
+        op.create_table(
         "policy_metrics_alert_rules",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("rollout_id", sa.String(), nullable=False),
@@ -36,13 +38,14 @@ def upgrade():
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now()),
         sa.PrimaryKeyConstraint("id"),
-        sa.ForeignKeyConstraint(["rollout_id"], ["policy_canary_rollout.id"]),
-    )
-    op.create_index("ix_policy_metrics_alert_rules_rollout_id", "policy_metrics_alert_rules", ["rollout_id"])
-    op.create_index("ix_policy_metrics_alert_rules_tenant_id", "policy_metrics_alert_rules", ["tenant_id"])
+        sa.ForeignKeyConstraint(["rollout_id"], ["policy_canary_rollouts.id"]),
+        )
+        op.create_index("ix_policy_metrics_alert_rules_rollout_id", "policy_metrics_alert_rules", ["rollout_id"])
+        op.create_index("ix_policy_metrics_alert_rules_tenant_id", "policy_metrics_alert_rules", ["tenant_id"])
     
     # Create policy_metrics_anomaly_detection table
-    op.create_table(
+    if not inspector.has_table("policy_metrics_anomaly_detection"):
+        op.create_table(
         "policy_metrics_anomaly_detection",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("rollout_id", sa.String(), nullable=False),
@@ -65,14 +68,15 @@ def upgrade():
         sa.Column("detected_at", sa.DateTime(), server_default=sa.func.now()),
         sa.Column("resolved_at", sa.DateTime(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
-        sa.ForeignKeyConstraint(["rollout_id"], ["policy_canary_rollout.id"]),
-    )
-    op.create_index("ix_policy_metrics_anomaly_detection_rollout_id", "policy_metrics_anomaly_detection", ["rollout_id"])
-    op.create_index("ix_policy_metrics_anomaly_detection_tenant_id", "policy_metrics_anomaly_detection", ["tenant_id"])
-    op.create_index("ix_policy_metrics_anomaly_detection_detected_at", "policy_metrics_anomaly_detection", ["detected_at"])
+        sa.ForeignKeyConstraint(["rollout_id"], ["policy_canary_rollouts.id"]),
+        )
+        op.create_index("ix_policy_metrics_anomaly_detection_rollout_id", "policy_metrics_anomaly_detection", ["rollout_id"])
+        op.create_index("ix_policy_metrics_anomaly_detection_tenant_id", "policy_metrics_anomaly_detection", ["tenant_id"])
+        op.create_index("ix_policy_metrics_anomaly_detection_detected_at", "policy_metrics_anomaly_detection", ["detected_at"])
     
     # Create policy_metrics_health_assessment table
-    op.create_table(
+    if not inspector.has_table("policy_metrics_health_assessment"):
+        op.create_table(
         "policy_metrics_health_assessment",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("rollout_id", sa.String(), nullable=False),
@@ -93,11 +97,11 @@ def upgrade():
         sa.Column("data_points_analyzed", sa.Integer(), server_default="0"),
         sa.Column("assessed_at", sa.DateTime(), server_default=sa.func.now()),
         sa.PrimaryKeyConstraint("id"),
-        sa.ForeignKeyConstraint(["rollout_id"], ["policy_canary_rollout.id"]),
-    )
-    op.create_index("ix_policy_metrics_health_assessment_rollout_id", "policy_metrics_health_assessment", ["rollout_id"])
-    op.create_index("ix_policy_metrics_health_assessment_tenant_id", "policy_metrics_health_assessment", ["tenant_id"])
-    op.create_index("ix_policy_metrics_health_assessment_assessed_at", "policy_metrics_health_assessment", ["assessed_at"])
+        sa.ForeignKeyConstraint(["rollout_id"], ["policy_canary_rollouts.id"]),
+        )
+        op.create_index("ix_policy_metrics_health_assessment_rollout_id", "policy_metrics_health_assessment", ["rollout_id"])
+        op.create_index("ix_policy_metrics_health_assessment_tenant_id", "policy_metrics_health_assessment", ["tenant_id"])
+        op.create_index("ix_policy_metrics_health_assessment_assessed_at", "policy_metrics_health_assessment", ["assessed_at"])
 
 
 def downgrade():

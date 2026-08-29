@@ -51,7 +51,8 @@ def test_health_check_system(app) -> None:
         system_id = _get_system_id(client, token, "ldap_main")
         response = client.post(f"/api/v1/integrations/systems/{system_id}/health-check", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 200
-        assert response.json()["status"] == "ok"
+        assert response.json()["status"] == "simulated"
+        assert response.json()["health_status"] == "simulated"
 
 
 def test_test_connection_system(app) -> None:
@@ -62,7 +63,7 @@ def test_test_connection_system(app) -> None:
         system_id = _get_system_id(client, token, "smtp_main")
         response = client.post(f"/api/v1/integrations/systems/{system_id}/test-connection", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 200
-        assert response.json()["status"] == "ok"
+        assert response.json()["status"] == "simulated"
 
 
 def test_providers_list(app) -> None:
@@ -123,7 +124,9 @@ def test_create_import_job(app) -> None:
         assert response.status_code == 201
         payload = response.json()
         assert payload["job_type"] == "ldap_users_preview"
-        assert payload["records_total"] >= 5
+        assert payload["status"] == "pending"
+        assert payload["records_total"] == 0
+        assert payload["records_success"] == 0
 
 
 def test_webhooks_list(app) -> None:
@@ -136,13 +139,42 @@ def test_webhooks_list(app) -> None:
         assert len(response.json()) >= 5
 
 
+def test_legacy_inbound_webhook_requires_permission_and_tenant_scope(app) -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        unauthenticated = client.post(
+            "/api/v1/integrations/inbound/hooks/custom-incident",
+            json={"payload": {"event": "unauthenticated"}},
+        )
+        assert unauthenticated.status_code == 401
+
+        requester_token = _login(client, "requester@sbs.local", "Sbs!2026")
+        denied = client.post(
+            "/api/v1/integrations/inbound/hooks/custom-incident",
+            headers={"Authorization": f"Bearer {requester_token}"},
+            json={"payload": {"event": "denied"}},
+        )
+        assert denied.status_code == 403
+
+        admin_token = _login(client, "admin@sbs.local", "Sbs!2026")
+        accepted = client.post(
+            "/api/v1/integrations/inbound/hooks/custom-incident",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"payload": {"event": "authorized-demo"}},
+        )
+        assert accepted.status_code == 202
+        assert accepted.json()["status"] == "simulated"
+
+
 def test_simulate_webhook(app) -> None:
     from fastapi.testclient import TestClient
 
     with TestClient(app) as client:
         token = _login(client, "admin@sbs.local", "Sbs!2026")
         webhooks = client.get("/api/v1/integrations/webhooks", headers={"Authorization": f"Bearer {token}"}).json()
-        webhook_id = webhooks[0]["id"]
+        webhook = webhooks[0]
+        webhook_id = webhook["id"]
         response = client.post(
             f"/api/v1/integrations/webhooks/{webhook_id}/simulate",
             headers={"Authorization": f"Bearer {token}"},
@@ -150,8 +182,26 @@ def test_simulate_webhook(app) -> None:
         )
         assert response.status_code == 200
         payload = response.json()
-        assert payload["status"] == "accepted"
+        assert payload["status"] == "simulated"
         assert payload.get("demo_ticket_id")
+        event = client.get(
+            f"/api/v1/integrations/events/{payload['event_id']}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert event.status_code == 200
+        assert event.json()["status"] == "simulated"
+        refreshed = client.get(
+            "/api/v1/integrations/webhooks",
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()
+        refreshed_webhook = next(
+            item for item in refreshed if item["id"] == webhook_id
+        )
+        assert refreshed_webhook["success_count"] == webhook["success_count"]
+        assert (
+            refreshed_webhook["last_received_at"]
+            == webhook["last_received_at"]
+        )
 
 
 def test_mappings_list(app) -> None:

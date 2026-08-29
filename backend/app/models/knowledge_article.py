@@ -13,6 +13,10 @@ class KnowledgeArticle(Base):
     __tablename__ = "knowledge_articles"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     article_number: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str | None] = mapped_column(String(255), nullable=True)

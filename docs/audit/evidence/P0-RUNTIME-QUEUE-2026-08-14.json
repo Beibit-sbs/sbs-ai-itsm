@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-14T13:15:00+05:00",
+  "status": "PASS",
+  "scope": "isolated_production_like_postgresql_redis_worker",
+  "source_revision": "0b04ada23744349f565b44d60d52182da7f6da38",
+  "source_worktree_dirty": true,
+  "primary_local_database_changed": false,
+  "alembic_revision": "20260814_0073",
+  "run_id": "0c740a3750b3",
+  "invariants": {
+    "job_rows": 3,
+    "outbox_rows": 4,
+    "outbox_all_published": true,
+    "replay_distinct_dedup_keys": true,
+    "dead_letter_occurrences": 2,
+    "main_queue_depth": 0,
+    "scheduled_queue_depth": 0
+  },
+  "jobs": {
+    "echo": {
+      "id": "dc0d0651-86e0-4cff-9571-50626357809a",
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 1,
+      "event_sequences": [1, 2, 3],
+      "event_types": ["queued", "running", "success"],
+      "outbox_total": 1,
+      "outbox_published": 1,
+      "outbox_unique_keys": 1
+    },
+    "flaky": {
+      "id": "9796df55-4f85-4230-b745-e5950aabf141",
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 3,
+      "event_sequences": [1, 2, 3, 4, 5, 6],
+      "event_types": ["queued", "running", "failed", "retry_scheduled", "running", "success"],
+      "outbox_total": 1,
+      "outbox_published": 1,
+      "outbox_unique_keys": 1
+    },
+    "intentional_failure_after_replay": {
+      "id": "78480989-adcb-4594-8916-2ab1cdc96dca",
+      "status": "dead_letter",
+      "attempts": 2,
+      "max_attempts": 2,
+      "event_sequences": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+      "event_types": [
+        "queued",
+        "running",
+        "failed",
+        "retry_scheduled",
+        "running",
+        "failed",
+        "dead_letter",
+        "replayed",
+        "running",
+        "failed",
+        "retry_scheduled",
+        "running",
+        "failed",
+        "dead_letter"
+      ],
+      "outbox_total": 2,
+      "outbox_published": 2,
+      "outbox_unique_keys": 2
+    }
+  },
+  "defects_closed": [
+    "dead-letter replay now creates a distinct event-scoped outbox dedup key",
+    "job lifecycle events now have a deterministic monotonic per-job sequence"
+  ]
+}

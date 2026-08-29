@@ -1,24 +1,10 @@
 """Metrics monitoring service for policy canary rollouts."""
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.models.policy_canary_rollout import PolicyCanaryRollout
-from app.models.policy_approval_request import PolicyApprovalRequest
-
-
-def _simulate_metrics() -> dict[str, float]:
-    """Simulate metrics collection from infrastructure.
-    
-    In production, this would query Prometheus, CloudWatch, DataDog, etc.
-    """
-    return {
-        "error_rate": 0.48,  # Baseline is 0.5%, current is 0.48%
-        "latency_p99_ms": 155,
-        "throughput_eps": 105,
-    }
 
 
 def update_rollout_metrics(
@@ -41,10 +27,13 @@ def update_rollout_metrics(
         raise ValueError(f"Rollout {rollout_id} not found")
     
     if metrics is None:
-        metrics = _simulate_metrics()
+        raise ValueError("Metrics evidence is required")
     
     rollout.metrics_current_json = json.dumps(metrics)
-    rollout.error_rate_current = metrics.get("error_rate", 0.0)
+    error_rate = metrics.get("error_rate")
+    rollout.error_rate_current = (
+        float(error_rate) if error_rate is not None else None
+    )
     
     return rollout
 
@@ -127,7 +116,7 @@ def estimate_auto_rollback_confidence(
         Confidence score (0.0=definitely safe, 1.0=definitely rollback)
     """
     if baseline_error_rate is None or current_error_rate is None:
-        return 0.0  # No data = safe
+        return 1.0  # Missing evidence must never be represented as safe.
     
     if baseline_error_rate == 0:
         if current_error_rate > 2.0:

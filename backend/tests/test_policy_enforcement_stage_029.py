@@ -1,10 +1,8 @@
 """Unit tests for Stage 029: Policy Enforcement Integration."""
 import json
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 
-import pytest
 
-from app.services.jobs.policy_canary_enforcement import should_consumer_get_policy
 from app.services.jobs.policy_enforcement_integration import (
     get_global_policy,
     get_active_rollout,

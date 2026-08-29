@@ -38,6 +38,14 @@ def test_correlation_id_middleware_echoes_incoming_header(app) -> None:
     assert response.headers.get("X-Request-ID") == "smoke-1234"
 
 
+def test_unsafe_correlation_id_is_replaced(app) -> None:
+    with TestClient(app) as client:
+        response = client.get("/api/v1/health", headers={"X-Request-ID": "x" * 500})
+    request_id = response.headers["X-Request-ID"]
+    assert request_id != "x" * 500
+    assert len(request_id) == 36
+
+
 def test_jobs_list_requires_authentication(app) -> None:
     with TestClient(app) as client:
         response = client.get("/api/v1/jobs")
@@ -218,6 +226,71 @@ def test_job_summary_shape(app) -> None:
         assert key in data
     assert data["total"] >= 1
     assert data["success"] >= 1
+
+
+def test_dead_letter_acknowledgement_preserves_history_and_clears_all_occurrences(
+    app,
+    monkeypatch,
+) -> None:
+    from app.services import jobs as jobs_service
+    from app.db.session import SessionLocal
+    from app.models.audit_log import AuditLog
+
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str]] = []
+            self.closed = False
+
+        def lrem(self, queue_name: str, count: int, job_id: str) -> int:
+            self.calls.append((queue_name, count, job_id))
+            return 2
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(
+        jobs_service.Redis,
+        "from_url",
+        lambda *_args, **_kwargs: fake_redis,
+    )
+
+    with TestClient(app) as client:
+        token = _login(client, "root@sbs.local", "Root!2026")
+        with SessionLocal() as db:
+            job = create_job_run(
+                db,
+                task_name="system.fail",
+                payload={"reason": "acceptance"},
+            )
+            job.status = "dead_letter"
+            db.commit()
+            job_id = job.id
+        response = client.post(
+            f"/api/v1/jobs/{job_id}/dead-letter/acknowledge",
+            headers=_auth_headers(token),
+            json={
+                "resolution_code": "acceptance_test",
+                "reason": "Expected failure-path acceptance evidence",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "job_id": job_id,
+        "status": "dead_letter",
+        "removed_occurrences": 2,
+    }
+    assert fake_redis.calls == [("jobs:dead-letter", 0, job_id)]
+    assert fake_redis.closed is True
+    with SessionLocal() as db:
+        preserved = db.get(JobRun, job_id)
+        audit = db.query(AuditLog).filter(
+            AuditLog.action == "job.dead_letter_acknowledged",
+            AuditLog.entity_id == job_id,
+        ).one()
+    assert preserved is not None and preserved.status == "dead_letter"
+    assert audit.actor_email == "root@sbs.local"
 
 
 def test_jobs_outbox_summary_shape(app) -> None:
@@ -1463,9 +1536,68 @@ def test_create_outbox_entry_is_idempotent_by_job_and_queue(app) -> None:
         with SessionLocal() as db:
             first = create_outbox_entry(db, job_id="job-x", queue_name="jobs:queue")
             second = create_outbox_entry(db, job_id="job-x", queue_name="jobs:queue")
+            replay_first = create_outbox_entry(
+                db,
+                job_id="job-x",
+                queue_name="jobs:queue",
+                operation_id="replay-event-1",
+            )
+            replay_second = create_outbox_entry(
+                db,
+                job_id="job-x",
+                queue_name="jobs:queue",
+                operation_id="replay-event-1",
+            )
             db.commit()
 
     assert first.id == second.id
+    assert replay_first.id == replay_second.id
+    assert replay_first.id != first.id
+    assert replay_first.dedup_key != first.dedup_key
+
+
+def test_development_schema_backfills_job_lifecycle_sequence(tmp_path) -> None:
+    from sqlalchemy import create_engine, text
+
+    from app.services.jobs.schema import ensure_jobs_schema
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-jobs.db'}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE job_lifecycle_events (
+                    id VARCHAR(36) PRIMARY KEY,
+                    job_id VARCHAR(36) NOT NULL,
+                    created_at TIMESTAMP NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO job_lifecycle_events (id, job_id, created_at)
+                VALUES
+                    ('event-b', 'job-1', '2026-08-14 12:00:00'),
+                    ('event-a', 'job-1', '2026-08-14 12:00:00'),
+                    ('event-c', 'job-2', '2026-08-14 12:00:00')
+                """
+            )
+        )
+
+    ensure_jobs_schema(engine)
+    ensure_jobs_schema(engine)
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text("SELECT id, job_id, sequence FROM job_lifecycle_events ORDER BY job_id, sequence")
+        ).all()
+    assert rows == [
+        ("event-a", "job-1", 1),
+        ("event-b", "job-1", 2),
+        ("event-c", "job-2", 1),
+    ]
 
 
 def test_get_job_by_id_returns_detail(app) -> None:
@@ -1496,6 +1628,7 @@ def test_get_job_events_returns_lifecycle_sequence(app) -> None:
     assert response.status_code == 200
     events = response.json()
     assert [event["event_type"] for event in events] == ["queued", "running", "success"]
+    assert [event["sequence"] for event in events] == [1, 2, 3]
     assert all(event["job_id"] == created["id"] for event in events)
     assert all(event["correlation_id"] == "evt-seq-1" for event in events)
 
@@ -1541,7 +1674,10 @@ def test_replay_dead_letter_job_requeues_in_redis_mode(app, monkeypatch) -> None
     with SessionLocal() as db:
         outbox_rows = db.query(JobQueueOutbox).filter(JobQueueOutbox.job_id == created["id"]).all()
         replay_events = db.query(JobLifecycleEvent).filter(JobLifecycleEvent.job_id == created["id"]).all()
-    assert len(outbox_rows) == 1
+    assert len(outbox_rows) == 2
+    assert len({row.dedup_key for row in outbox_rows}) == 2
+    assert outbox_rows[0].published_at is None
+    assert outbox_rows[1].published_at is None
     assert replay_events[-1].event_type == "replayed"
 
 

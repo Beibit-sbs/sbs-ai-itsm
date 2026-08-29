@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-14T10:21:36.884575+00:00",
+  "status": "PASS",
+  "scope": "isolated_temporary_postgresql_migration_roundtrip",
+  "transitions": [
+    "20260814_0073",
+    "20260814_0074",
+    "20260814_0073",
+    "20260814_0077",
+    "20260814_0074",
+    "20260814_0077"
+  ],
+  "ticket_survived_downgrade": true,
+  "ticket_survived_roundtrip": true,
+  "counter_removed_by_downgrade": true,
+  "next_value_after_upgrade": 4322,
+  "next_value_after_roundtrip": 4322,
+  "first_sequence_allocation": 4322,
+  "sequence_removed_by_downgrade": true,
+  "ticket_survived_sequence_downgrade": true,
+  "sequence_allocation_after_roundtrip": 4322,
+  "primary_rehearsal_database_changed": false,
+  "temporary_database_prefix": "itsm_migration_gate_",
+  "temporary_databases_remaining": 0,
+  "primary_rehearsal_revision_after_gate": "20260814_0077"
+}

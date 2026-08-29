@@ -10,9 +10,7 @@ Test Categories:
 6. Health assessment
 """
 
-import pytest
-from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from app.services.jobs.metrics_analysis import (
     detect_anomalies,

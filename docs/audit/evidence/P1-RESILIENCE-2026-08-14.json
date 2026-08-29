@@ -1,0 +1,65 @@
+{
+  "schema_version": "2026.07.1",
+  "status": "PASS",
+  "environment": "local",
+  "project_name": "sbs-itsm-rehearsal",
+  "readiness_url": "http://127.0.0.1:18080/api/v1/health/readiness",
+  "initial_readiness_seconds": 0.031,
+  "initial_checks": {
+    "postgres": "ok",
+    "redis": "ok",
+    "migrations": "ok",
+    "runtime": "ready",
+    "websocket_transport": "ready"
+  },
+  "scenarios": [
+    {
+      "service": "redis",
+      "started_at": "2026-08-14T09:34:11.061519+00:00",
+      "failure_status": 503,
+      "failure_checks": {
+        "postgres": "ok",
+        "redis": "error",
+        "migrations": "ok",
+        "runtime": "ready",
+        "websocket_transport": "not_ready"
+      },
+      "detection_seconds": 9.906,
+      "recovery_status": 200,
+      "recovery_checks": {
+        "postgres": "ok",
+        "redis": "ok",
+        "migrations": "ok",
+        "runtime": "ready",
+        "websocket_transport": "ready"
+      },
+      "recovery_seconds": 3.11,
+      "passed": true
+    },
+    {
+      "service": "postgres",
+      "started_at": "2026-08-14T09:34:24.649637+00:00",
+      "failure_status": 503,
+      "failure_checks": {
+        "postgres": "error",
+        "redis": "ok",
+        "migrations": "out_of_date",
+        "runtime": "ready",
+        "websocket_transport": "ready"
+      },
+      "detection_seconds": 9.859,
+      "recovery_status": 200,
+      "recovery_checks": {
+        "postgres": "ok",
+        "redis": "ok",
+        "migrations": "ok",
+        "runtime": "ready",
+        "websocket_transport": "ready"
+      },
+      "recovery_seconds": 1.031,
+      "passed": true
+    }
+  ],
+  "finished_at": "2026-08-14T09:34:36.133846+00:00",
+  "evidence_sha256": "5f6fcdcea1b9b3695d177488efc1928922029efb210ad4dd0ff9224620d407c2"
+}

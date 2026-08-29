@@ -1,0 +1,10 @@
+services:
+  backend:
+    environment:
+      BOOTSTRAP_ROOT_EMAIL: ${BOOTSTRAP_ROOT_EMAIL:?Set BOOTSTRAP_ROOT_EMAIL for first deploy}
+    secrets:
+      - bootstrap_root_password
+
+secrets:
+  bootstrap_root_password:
+    file: ${SECRETS_DIR:-./secrets.example}/bootstrap_root_password

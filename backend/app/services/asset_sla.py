@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import inspect, select
@@ -15,7 +13,6 @@ from app.models.asset_type import AssetType
 from app.models.sla import SlaPolicy
 from app.models.sla_event import SlaEvent
 from app.models.ticket import Ticket
-from app.models.ticket_history import TicketHistory
 from app.models.tenant import Tenant
 
 
@@ -51,10 +48,50 @@ ASSET_TYPE_DEFS = [
 ]
 
 SLA_POLICY_DEFS = [
-    {"priority": "LOW", "name": "Low SLA", "response_minutes": 480, "resolution_minutes": 4320, "is_active": True},
-    {"priority": "MEDIUM", "name": "Medium SLA", "response_minutes": 240, "resolution_minutes": 1440, "is_active": True},
-    {"priority": "HIGH", "name": "High SLA", "response_minutes": 60, "resolution_minutes": 480, "is_active": True},
-    {"priority": "CRITICAL", "name": "Critical SLA", "response_minutes": 15, "resolution_minutes": 120, "is_active": True},
+    {
+        "priority": "LOW",
+        "name": "Low SLA",
+        "target_response_minutes": 480,
+        "target_resolution_minutes": 4320,
+        "response_minutes": 480,
+        "resolution_minutes": 4320,
+        "is_active": True,
+        "status": "active",
+        "breach_count": 0,
+    },
+    {
+        "priority": "MEDIUM",
+        "name": "Medium SLA",
+        "target_response_minutes": 240,
+        "target_resolution_minutes": 1440,
+        "response_minutes": 240,
+        "resolution_minutes": 1440,
+        "is_active": True,
+        "status": "active",
+        "breach_count": 0,
+    },
+    {
+        "priority": "HIGH",
+        "name": "High SLA",
+        "target_response_minutes": 60,
+        "target_resolution_minutes": 480,
+        "response_minutes": 60,
+        "resolution_minutes": 480,
+        "is_active": True,
+        "status": "active",
+        "breach_count": 0,
+    },
+    {
+        "priority": "CRITICAL",
+        "name": "Critical SLA",
+        "target_response_minutes": 15,
+        "target_resolution_minutes": 120,
+        "response_minutes": 15,
+        "resolution_minutes": 120,
+        "is_active": True,
+        "status": "active",
+        "breach_count": 0,
+    },
 ]
 
 
@@ -146,13 +183,22 @@ def seed_asset_sla_demo_data(db: Session) -> None:
     if db.scalar(select(AssetType.id)) is None:
         db.add_all([AssetType(id=_uuid(), **definition) for definition in ASSET_TYPE_DEFS])
 
-    if db.scalar(select(SlaPolicy.id)) is None:
-        db.add_all([SlaPolicy(id=_uuid(), tenant_id=tenant.id, **definition) for definition in SLA_POLICY_DEFS])
+    existing_priorities = {
+        policy.priority.upper()
+        for policy in db.scalars(
+            select(SlaPolicy).where(SlaPolicy.tenant_id == tenant.id)
+        ).all()
+    }
+    db.add_all(
+        [
+            SlaPolicy(id=_uuid(), tenant_id=tenant.id, **definition)
+            for definition in SLA_POLICY_DEFS
+            if definition["priority"] not in existing_priorities
+        ]
+    )
 
     policy_map = _priority_policy_map(db)
     asset_map = {asset.asset_tag: asset for asset in db.scalars(select(Asset)).all()}
-    existing_asset_tags = set(asset_map)
-
     if not asset_map:
         for seed in ASSET_SEEDS:
             asset = Asset(
@@ -227,9 +273,17 @@ def calculate_ticket_sla_status(ticket: Ticket) -> str:
     return "OK"
 
 
-def summarize_sla_overview(db: Session) -> dict[str, object]:
-    tickets = db.scalars(select(Ticket)).all()
-    assets = db.scalars(select(Asset)).all()
+def summarize_sla_overview(
+    db: Session,
+    tenant_id: str | None = None,
+) -> dict[str, object]:
+    ticket_statement = select(Ticket)
+    asset_statement = select(Asset)
+    if tenant_id is not None:
+        ticket_statement = ticket_statement.where(Ticket.tenant_id == tenant_id)
+        asset_statement = asset_statement.where(Asset.tenant_id == tenant_id)
+    tickets = db.scalars(ticket_statement).all()
+    assets = db.scalars(asset_statement).all()
     breached = [ticket for ticket in tickets if calculate_ticket_sla_status(ticket) == "BREACHED"]
     warning = [ticket for ticket in tickets if calculate_ticket_sla_status(ticket) == "WARNING"]
     problematic_assets = [asset for asset in assets if calculate_asset_health(asset) == "problem"]

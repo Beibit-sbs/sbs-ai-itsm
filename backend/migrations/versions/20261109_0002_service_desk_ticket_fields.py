@@ -25,6 +25,13 @@ def _fk_names(inspector: sa.Inspector, table_name: str) -> set[str]:
     return {fk["name"] for fk in inspector.get_foreign_keys(table_name) if fk.get("name")}
 
 
+def _fk_columns(inspector: sa.Inspector, table_name: str) -> set[tuple[str, ...]]:
+    return {
+        tuple(fk.get("constrained_columns") or ())
+        for fk in inspector.get_foreign_keys(table_name)
+    }
+
+
 def _index_names(inspector: sa.Inspector, table_name: str) -> set[str]:
     return {index["name"] for index in inspector.get_indexes(table_name) if index.get("name")}
 
@@ -56,8 +63,10 @@ def upgrade() -> None:
     inspector = sa.inspect(bind)
     ticket_fks = _fk_names(inspector, "tickets")
     comment_fks = _fk_names(inspector, "ticket_comments")
+    ticket_fk_columns = _fk_columns(inspector, "tickets")
+    comment_fk_columns = _fk_columns(inspector, "ticket_comments")
 
-    if "fk_tickets_requester_id_users" not in ticket_fks:
+    if "fk_tickets_requester_id_users" not in ticket_fks and ("requester_id",) not in ticket_fk_columns:
         op.create_foreign_key(
             "fk_tickets_requester_id_users",
             "tickets",
@@ -66,7 +75,7 @@ def upgrade() -> None:
             ["id"],
             ondelete="SET NULL",
         )
-    if "fk_tickets_assignee_id_users" not in ticket_fks:
+    if "fk_tickets_assignee_id_users" not in ticket_fks and ("assignee_id",) not in ticket_fk_columns:
         op.create_foreign_key(
             "fk_tickets_assignee_id_users",
             "tickets",
@@ -75,7 +84,7 @@ def upgrade() -> None:
             ["id"],
             ondelete="SET NULL",
         )
-    if "fk_ticket_comments_author_id_users" not in comment_fks:
+    if "fk_ticket_comments_author_id_users" not in comment_fks and ("author_id",) not in comment_fk_columns:
         op.create_foreign_key(
             "fk_ticket_comments_author_id_users",
             "ticket_comments",

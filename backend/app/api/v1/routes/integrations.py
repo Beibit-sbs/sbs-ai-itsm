@@ -11,6 +11,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.external_system import ExternalSystem
 from app.models.import_job import ImportJob
@@ -21,7 +22,6 @@ from app.models.user import User
 from app.models.webhook_endpoint import WebhookEndpoint
 from app.services.audit import log_audit
 from app.services.integrations import (
-    apply_mapping,
     check_system_health,
     create_event_log,
     export_entity_mock,
@@ -39,11 +39,39 @@ router = APIRouter(prefix="/integrations")
 
 SYSTEM_TYPES = {"one_c", "telegram", "email", "ldap", "zimbra", "platonus", "moodle", "custom_api", "webhook", "file_import"}
 SYSTEM_STATUS = {"active", "disabled", "error", "mock", "demo", "planned"}
-HEALTH_STATUS = {"unknown", "healthy", "degraded", "down"}
+HEALTH_STATUS = {"unknown", "healthy", "degraded", "down", "simulated"}
 DIRECTIONS = {"inbound", "outbound"}
-EVENT_STATUS = {"queued", "success", "failed", "skipped", "retrying"}
-JOB_STATUS = {"pending", "running", "completed", "failed", "completed_with_errors", "dry_run"}
+EVENT_STATUS = {
+    "queued",
+    "success",
+    "failed",
+    "skipped",
+    "retrying",
+    "simulated",
+    "simulated_failed",
+}
+JOB_STATUS = {
+    "pending",
+    "running",
+    "completed",
+    "failed",
+    "completed_with_errors",
+    "dry_run",
+    "simulated",
+    "simulated_with_errors",
+}
 JOB_TYPES = {"assets", "tickets", "users", "knowledge", "generic", "ldap_users_preview", "zimbra_mailboxes_preview", "platonus_users_preview", "moodle_users_preview", "smtp_notifications_preview"}
+
+
+def _require_legacy_demo(feature: str) -> None:
+    if not get_settings().demo_mode:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=(
+                f"Legacy mock {feature} is disabled outside demo mode. "
+                "Use the production integration-platform control plane."
+            ),
+        )
 MAPPING_TYPES = {"asset_import", "ticket_import", "user_import", "webhook_event", "export"}
 CREDENTIAL_TYPES = {"api_token", "basic_auth", "webhook_secret", "oauth_mock", "ldap_bind_mock"}
 
@@ -77,15 +105,20 @@ class ExternalSystemResponse(BaseModel):
 
 
 class ExternalSystemCreateRequest(BaseModel):
-    name: str
-    system_type: str
-    code: str | None = None
-    base_url: str | None = None
+    name: str = Field(min_length=1, max_length=200)
+    system_type: str = Field(min_length=1, max_length=50)
+    code: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+    )
+    base_url: str | None = Field(default=None, max_length=2_048)
     status: str = "mock"
     health_status: str = "unknown"
     is_mock: bool = True
     is_enabled: bool | None = None
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=2_000)
     config: dict[str, Any] | None = None
 
 
@@ -189,8 +222,8 @@ class ImportJobResponse(BaseModel):
 
 class ImportJobCreateRequest(BaseModel):
     external_system_id: str | None = None
-    job_type: str
-    source_filename: str | None = None
+    job_type: str = Field(min_length=1, max_length=100)
+    source_filename: str | None = Field(default=None, max_length=255)
     dry_run: bool = True
 
 
@@ -227,9 +260,9 @@ class MappingPatchRequest(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    external_system_id: str
-    entity_type: str
-    entity_id: str
+    external_system_id: str = Field(min_length=1, max_length=100)
+    entity_type: str = Field(min_length=1, max_length=100)
+    entity_id: str = Field(min_length=1, max_length=100)
     dry_run: bool = True
 
 
@@ -396,6 +429,24 @@ def list_providers(current_user: AuthUserResponse = Depends(get_current_user)) -
     return list_provider_metadata()
 
 
+@router.get("/runtime-capabilities")
+def integration_runtime_capabilities(
+    current_user: AuthUserResponse = Depends(get_current_user),
+) -> dict[str, bool]:
+    if not is_saas_root(current_user) and not any(
+        permission.startswith("integrations.")
+        for permission in current_user.permissions
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing integrations permission",
+        )
+    return {
+        "production_control_plane_enabled": True,
+        "legacy_demo_enabled": get_settings().demo_mode,
+    }
+
+
 @router.get("/providers/{provider_code}/capabilities")
 def get_provider_capabilities(provider_code: str, current_user: AuthUserResponse = Depends(get_current_user)) -> dict[str, Any]:
     require_permissions(current_user, "integrations.read")
@@ -440,6 +491,7 @@ def create_system(
     db: Session = Depends(get_db),
 ) -> ExternalSystemResponse:
     require_permissions(current_user, "integrations.create")
+    _require_legacy_demo("system configuration")
     _validate(request.system_type, SYSTEM_TYPES, "system_type")
     _validate(request.status, SYSTEM_STATUS, "status")
     _validate(request.health_status, HEALTH_STATUS, "health_status")
@@ -501,6 +553,7 @@ def patch_system(
     db: Session = Depends(get_db),
 ) -> ExternalSystemResponse:
     require_permissions(current_user, "integrations.update")
+    _require_legacy_demo("system configuration")
     item = db.scalar(_filter_by_tenant(select(ExternalSystem).where(ExternalSystem.id == system_id), ExternalSystem, current_user))
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="External system not found")
@@ -540,6 +593,7 @@ def enable_system(
     db: Session = Depends(get_db),
 ) -> ExternalSystemResponse:
     require_permissions(current_user, "integrations.update")
+    _require_legacy_demo("system activation")
     item = db.scalar(_filter_by_tenant(select(ExternalSystem).where(ExternalSystem.id == system_id), ExternalSystem, current_user))
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="External system not found")
@@ -579,6 +633,7 @@ def health_check_system(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     require_permissions(current_user, "integrations.health_check")
+    _require_legacy_demo("health check")
     user = _actor(db, current_user)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
@@ -617,6 +672,7 @@ def create_credential(
     db: Session = Depends(get_db),
 ) -> CredentialResponse:
     require_permissions(current_user, "integrations.credentials.manage")
+    _require_legacy_demo("credential storage")
     _validate(request.credential_type, CREDENTIAL_TYPES, "credential_type")
     system = db.scalar(_filter_by_tenant(select(ExternalSystem).where(ExternalSystem.id == system_id), ExternalSystem, current_user))
     if system is None:
@@ -653,6 +709,7 @@ def rotate_credential(
     db: Session = Depends(get_db),
 ) -> CredentialResponse:
     require_permissions(current_user, "integrations.credentials.manage")
+    _require_legacy_demo("credential storage")
     item = db.get(IntegrationCredential, credential_id)
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found")
@@ -715,6 +772,7 @@ def create_webhook(
     db: Session = Depends(get_db),
 ) -> WebhookResponse:
     require_permissions(current_user, "integrations.webhooks.manage")
+    _require_legacy_demo("webhook endpoint")
     now = datetime.now(UTC)
     item = WebhookEndpoint(
         id=str(uuid.uuid4()),
@@ -746,6 +804,7 @@ def patch_webhook(
     db: Session = Depends(get_db),
 ) -> WebhookResponse:
     require_permissions(current_user, "integrations.webhooks.manage")
+    _require_legacy_demo("webhook endpoint")
     item = db.scalar(_filter_by_tenant(select(WebhookEndpoint).where(WebhookEndpoint.id == webhook_id), WebhookEndpoint, current_user))
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook endpoint not found")
@@ -766,30 +825,60 @@ def test_webhook(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     require_permissions(current_user, "integrations.webhooks.manage")
+    _require_legacy_demo("webhook endpoint")
     endpoint = db.scalar(_filter_by_tenant(select(WebhookEndpoint).where(WebhookEndpoint.id == webhook_id), WebhookEndpoint, current_user))
     if endpoint is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook endpoint not found")
     user = _actor(db, current_user)
-    event = process_inbound_webhook(db, endpoint, request.payload, user)
+    event = process_inbound_webhook(
+        db,
+        endpoint,
+        request.payload,
+        user,
+        simulated=True,
+    )
     db.commit()
-    response_payload: dict[str, Any] = {"status": "accepted", "event_id": event.id}
+    response_payload: dict[str, Any] = {"status": "simulated", "event_id": event.id}
     if request.create_demo_ticket:
         response_payload["demo_ticket_id"] = str(uuid.uuid4())
     return response_payload
 
 
-@router.post("/inbound/{path}", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/inbound/{path:path}",
+    status_code=status.HTTP_202_ACCEPTED,
+    include_in_schema=False,
+)
 def inbound_webhook(
     path: str,
     request: WebhookTestRequest,
+    current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    endpoint = db.scalar(select(WebhookEndpoint).where(WebhookEndpoint.path == f"/{path}", WebhookEndpoint.is_active == True))  # noqa: E712
+    require_permissions(current_user, "integrations.webhooks.manage")
+    _require_legacy_demo("inbound webhook")
+    normalized_path = f"/{path.lstrip('/')}"
+    endpoint = db.scalar(
+        _filter_by_tenant(
+            select(WebhookEndpoint).where(
+                WebhookEndpoint.path == normalized_path,
+                WebhookEndpoint.is_active.is_(True),
+            ),
+            WebhookEndpoint,
+            current_user,
+        )
+    )
     if endpoint is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook endpoint not found")
-    event = process_inbound_webhook(db, endpoint, request.payload, None)
+    event = process_inbound_webhook(
+        db,
+        endpoint,
+        request.payload,
+        _actor(db, current_user),
+        simulated=True,
+    )
     db.commit()
-    return {"status": "accepted", "event_id": event.id}
+    return {"status": "simulated", "event_id": event.id}
 
 
 @router.get("/events")
@@ -839,6 +928,7 @@ def retry_event_endpoint(
     db: Session = Depends(get_db),
 ) -> EventResponse:
     require_permissions(current_user, "integrations.events.retry")
+    _require_legacy_demo("event retry")
     user = _actor(db, current_user)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
@@ -883,7 +973,8 @@ def create_import_job(
     db: Session = Depends(get_db),
 ) -> ImportJobResponse:
     require_permissions(current_user, "integrations.import_jobs.run")
-    if request.job_type not in JOB_TYPES and request.job_type.strip() == "":
+    _require_legacy_demo("import preview")
+    if request.job_type not in JOB_TYPES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid job_type")
     now = datetime.now(UTC)
     item = ImportJob(
@@ -891,13 +982,13 @@ def create_import_job(
         tenant_id=_tenant_scope(current_user),
         external_system_id=request.external_system_id,
         job_type=request.job_type,
-        status="running",
+        status="pending",
         source_filename=request.source_filename,
-        total_rows=5 if request.job_type == "ldap_users_preview" else 0,
-        success_rows=5 if request.job_type == "ldap_users_preview" else 0,
+        total_rows=0,
+        success_rows=0,
         failed_rows=0,
-        records_total=5 if request.job_type == "ldap_users_preview" else 0,
-        records_success=5 if request.job_type == "ldap_users_preview" else 0,
+        records_total=0,
+        records_success=0,
         records_failed=0,
         error_report_json=json.dumps({}, ensure_ascii=False),
         dry_run=request.dry_run,
@@ -930,6 +1021,7 @@ def dry_run_import_job_endpoint(
     db: Session = Depends(get_db),
 ) -> ImportJobResponse:
     require_permissions(current_user, "integrations.import_jobs.run")
+    _require_legacy_demo("import preview")
     user = _actor(db, current_user)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
@@ -949,6 +1041,7 @@ def run_import_job_endpoint(
     db: Session = Depends(get_db),
 ) -> ImportJobResponse:
     require_permissions(current_user, "integrations.import_jobs.run")
+    _require_legacy_demo("import preview")
     user = _actor(db, current_user)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
@@ -986,6 +1079,7 @@ def create_mapping(
     db: Session = Depends(get_db),
 ) -> MappingResponse:
     require_permissions(current_user, "integrations.mappings.manage")
+    _require_legacy_demo("mapping configuration")
     _validate(request.mapping_type, MAPPING_TYPES, "mapping_type")
     now = datetime.now(UTC)
     item = IntegrationMapping(
@@ -1023,6 +1117,7 @@ def patch_mapping(
     db: Session = Depends(get_db),
 ) -> MappingResponse:
     require_permissions(current_user, "integrations.mappings.manage")
+    _require_legacy_demo("mapping configuration")
     item = db.scalar(_filter_by_tenant(select(IntegrationMapping).where(IntegrationMapping.id == mapping_id), IntegrationMapping, current_user))
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integration mapping not found")
@@ -1058,18 +1153,36 @@ def export_entity(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     require_permissions(current_user, "integrations.export")
+    _require_legacy_demo("export preview")
     user = _actor(db, current_user)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
-    result = export_entity_mock(db, request.external_system_id, request.entity_type, request.entity_id, user)
+    try:
+        result = export_entity_mock(
+            db,
+            request.external_system_id,
+            request.entity_type,
+            request.entity_id,
+            user,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     db.commit()
-    return {"dry_run": request.dry_run, **result}
+    return {
+        "dry_run": True,
+        "requested_dry_run": request.dry_run,
+        **result,
+    }
 
 
 # Backward compatibility wrappers for previous integration foundation frontend.
 @router.post("/systems/{system_id}/test-connection")
 def test_connection_legacy(system_id: str, current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     require_permissions(current_user, "integrations.health_check")
+    _require_legacy_demo("connection test")
     system = db.scalar(_filter_by_tenant(select(ExternalSystem).where(ExternalSystem.id == system_id), ExternalSystem, current_user))
     if system is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="External system not found")
@@ -1080,7 +1193,7 @@ def test_connection_legacy(system_id: str, current_user: AuthUserResponse = Depe
         event_type="integration_test_connection",
         payload={"system_id": system.id, "system_type": system.system_type},
         external_system_id=system.id,
-        status="success" if result.get("status") == "ok" else "failed",
+        status="simulated" if result.get("status") == "simulated" else "failed",
         response_payload=result,
         processed_at=datetime.now(UTC),
     )
@@ -1101,8 +1214,9 @@ def simulate_webhook_legacy(
 @router.post("/mock/ldap/pull-users")
 def mock_ldap_legacy(current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     require_permissions(current_user, "integrations.import_jobs.run")
+    _require_legacy_demo("LDAP preview")
     payload = {"records_total": 5, "users": [{"email": "rector@university.local"}]}
-    create_event_log(db, direction="inbound", event_type="mock_ldap_pull_users", payload=payload, status="success")
+    create_event_log(db, direction="inbound", event_type="mock_ldap_pull_users", payload=payload, status="simulated")
     db.commit()
     return payload
 
@@ -1110,8 +1224,9 @@ def mock_ldap_legacy(current_user: AuthUserResponse = Depends(get_current_user),
 @router.post("/mock/zimbra/pull-mailboxes")
 def mock_zimbra_legacy(current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     require_permissions(current_user, "integrations.import_jobs.run")
+    _require_legacy_demo("Zimbra preview")
     payload = {"records_total": 4, "mailboxes": [{"email": "support@university.kz"}]}
-    create_event_log(db, direction="inbound", event_type="mock_zimbra_pull_mailboxes", payload=payload, status="success")
+    create_event_log(db, direction="inbound", event_type="mock_zimbra_pull_mailboxes", payload=payload, status="simulated")
     db.commit()
     return payload
 
@@ -1119,8 +1234,9 @@ def mock_zimbra_legacy(current_user: AuthUserResponse = Depends(get_current_user
 @router.post("/mock/platonus/pull-users")
 def mock_platonus_legacy(current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     require_permissions(current_user, "integrations.import_jobs.run")
+    _require_legacy_demo("Platonus preview")
     payload = {"records_total": 4, "users": [{"email": "dean@university.local"}]}
-    create_event_log(db, direction="inbound", event_type="mock_platonus_pull_users", payload=payload, status="success")
+    create_event_log(db, direction="inbound", event_type="mock_platonus_pull_users", payload=payload, status="simulated")
     db.commit()
     return payload
 
@@ -1128,8 +1244,9 @@ def mock_platonus_legacy(current_user: AuthUserResponse = Depends(get_current_us
 @router.post("/mock/moodle/pull-users")
 def mock_moodle_legacy(current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     require_permissions(current_user, "integrations.import_jobs.run")
+    _require_legacy_demo("Moodle preview")
     payload = {"records_total": 3, "users": [{"email": "student.one@university.local"}]}
-    create_event_log(db, direction="inbound", event_type="mock_moodle_pull_users", payload=payload, status="success")
+    create_event_log(db, direction="inbound", event_type="mock_moodle_pull_users", payload=payload, status="simulated")
     db.commit()
     return payload
 
@@ -1137,6 +1254,7 @@ def mock_moodle_legacy(current_user: AuthUserResponse = Depends(get_current_user
 @router.post("/mock/webhook/receive")
 def mock_webhook_legacy(request: WebhookTestRequest, current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     require_permissions(current_user, "integrations.webhooks.manage")
-    create_event_log(db, direction="inbound", event_type="mock_webhook_receive", payload=request.payload, status="success")
+    _require_legacy_demo("webhook simulation")
+    create_event_log(db, direction="inbound", event_type="mock_webhook_receive", payload=request.payload, status="simulated")
     db.commit()
-    return {"status": "accepted", "payload": request.payload}
+    return {"status": "simulated", "payload": request.payload}

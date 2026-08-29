@@ -1,7 +1,5 @@
 """Tests for Stage 025: Recovery Policy Safety (autoremediation validate-only, rollback, trace)."""
-import pytest
 from fastapi.testclient import TestClient
-from app.db.session import SessionLocal
 
 
 def _login(client: TestClient, email: str, password: str) -> str:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -10,9 +10,14 @@ from app.db.base import Base
 
 class JobLifecycleEvent(Base):
     __tablename__ = "job_lifecycle_events"
+    __table_args__ = (
+        UniqueConstraint("job_id", "sequence", name="uq_job_lifecycle_events_job_sequence"),
+        Index("ix_job_lifecycle_events_job_sequence", "job_id", "sequence"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     job_id: Mapped[str] = mapped_column(ForeignKey("job_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     task_name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True)

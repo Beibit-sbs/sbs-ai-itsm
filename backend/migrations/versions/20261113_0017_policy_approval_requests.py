@@ -11,12 +11,14 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "0017"
-down_revision = "0016"
+down_revision = "20261121_0016"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
+    if sa.inspect(op.get_bind()).has_table("policy_approval_requests"):
+        return
     op.create_table(
         "policy_approval_requests",
         sa.Column("id", sa.String(64), nullable=False),
@@ -30,7 +32,7 @@ def upgrade() -> None:
         sa.Column("approved_by_email", sa.String(255), nullable=True),
         sa.Column("approved_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("rejection_reason", sa.Text(), nullable=True),
-        sa.Column("canary_percentage", sa.Integer(), server_default=0, nullable=False),
+        sa.Column("canary_percentage", sa.Integer(), server_default="0", nullable=False),
         sa.Column("metrics_baseline_json", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),

@@ -1,0 +1,13 @@
+.pytest_cache
+.pytest-tmp-*
+.ruff_cache
+__pycache__
+*.py[cod]
+*.log
+.coverage
+htmlcov
+.venv
+venv
+tests
+.git
+.gitignore

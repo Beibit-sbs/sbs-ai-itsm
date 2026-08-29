@@ -11,14 +11,16 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '20261215_0020_policy_rollout_metrics'
-down_revision = '20261113_0019_policy_canary_rollouts'
+down_revision = '0019'
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
     # Create policy_rollout_metrics_history table
-    op.create_table(
+    if not inspector.has_table('policy_rollout_metrics_history'):
+        op.create_table(
         'policy_rollout_metrics_history',
         sa.Column('id', sa.String(36), nullable=False),
         sa.Column('rollout_id', sa.String(36), nullable=False),
@@ -33,16 +35,17 @@ def upgrade() -> None:
         sa.Column('collection_duration_ms', sa.Integer(), nullable=True),
         sa.Column('raw_data', sa.JSON(), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(['rollout_id'], ['policy_canary_rollout.id'], ),
+        sa.ForeignKeyConstraint(['rollout_id'], ['policy_canary_rollouts.id'], ),
         sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index('ix_metrics_history_rollout_collected', 'policy_rollout_metrics_history', ['rollout_id', 'collected_at'])
-    op.create_index('ix_metrics_history_collected_desc', 'policy_rollout_metrics_history', ['collected_at'])
-    op.create_index('ix_policy_rollout_metrics_history_rollout_id', 'policy_rollout_metrics_history', ['rollout_id'])
-    op.create_index('ix_policy_rollout_metrics_history_collected_at', 'policy_rollout_metrics_history', ['collected_at'])
+        )
+        op.create_index('ix_metrics_history_rollout_collected', 'policy_rollout_metrics_history', ['rollout_id', 'collected_at'])
+        op.create_index('ix_metrics_history_collected_desc', 'policy_rollout_metrics_history', ['collected_at'])
+        op.create_index('ix_policy_rollout_metrics_history_rollout_id', 'policy_rollout_metrics_history', ['rollout_id'])
+        op.create_index('ix_policy_rollout_metrics_history_collected_at', 'policy_rollout_metrics_history', ['collected_at'])
     
     # Create policy_rollout_metrics_snapshot table
-    op.create_table(
+    if not inspector.has_table('policy_rollout_metrics_snapshot'):
+        op.create_table(
         'policy_rollout_metrics_snapshot',
         sa.Column('rollout_id', sa.String(36), nullable=False),
         sa.Column('error_rate', sa.Float(), nullable=True),
@@ -57,9 +60,9 @@ def upgrade() -> None:
         sa.Column('error_rate_increasing', sa.Boolean(), nullable=True),
         sa.Column('error_rate_change_percent', sa.Float(), nullable=True),
         sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(['rollout_id'], ['policy_canary_rollout.id'], ),
+        sa.ForeignKeyConstraint(['rollout_id'], ['policy_canary_rollouts.id'], ),
         sa.PrimaryKeyConstraint('rollout_id')
-    )
+        )
 
 
 def downgrade() -> None:

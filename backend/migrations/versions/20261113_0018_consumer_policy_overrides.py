@@ -17,6 +17,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if sa.inspect(op.get_bind()).has_table("consumer_policy_overrides"):
+        return
     op.create_table(
         "consumer_policy_overrides",
         sa.Column("id", sa.String(64), nullable=False),

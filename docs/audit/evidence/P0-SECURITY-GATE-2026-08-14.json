@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-14T12:48:07+05:00",
+  "status": "PASS_LOCAL_CURRENT_REVISION",
+  "scope": "source_worktree_and_isolated_production_like_rehearsal",
+  "source_revision": "0b04ada23744349f565b44d60d52182da7f6da38",
+  "source_worktree_dirty": true,
+  "secrets_exposed": false,
+  "policy": {
+    "critical_open": 0,
+    "high_open": 0,
+    "unaccepted_high_open": 0,
+    "production_release_permission": false
+  },
+  "tools": {
+    "pip_audit": "2.10.1",
+    "bandit": "1.9.4",
+    "gitleaks": "8.30.1",
+    "docker_scout": "1.23.1",
+    "owasp_zap_image": "ghcr.io/zaproxy/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef",
+    "npm_runtime": "node:22.21.1-alpine / npm 10.9.4"
+  },
+  "final_results": {
+    "python_sca": {
+      "dependencies": 57,
+      "known_vulnerabilities": 0,
+      "exit_code": 0
+    },
+    "frontend_sca": {
+      "dependencies": 155,
+      "known_vulnerabilities": 0,
+      "critical": 0,
+      "high": 0,
+      "exit_code": 0
+    },
+    "bandit_sast": {
+      "findings": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "exit_code": 0
+    },
+    "gitleaks_history": {
+      "commits": 102,
+      "scanned_bytes": 3435933,
+      "findings": 0,
+      "exit_code": 0
+    },
+    "gitleaks_worktree": {
+      "scanned_bytes": 27062287,
+      "findings": 0,
+      "exit_code": 0
+    },
+    "backend_image": {
+      "image_id": "sha256:da1e3fcbe87b812c9dd5970e8d4e5717ff2f2589b51d8ceea25c75f8806aed63",
+      "critical_or_high_findings": 0,
+      "indexed_packages": 117,
+      "exit_code": 0
+    },
+    "frontend_image": {
+      "image_id": "sha256:68e154e508fcac0cc13325ed7b1bbccced56c8c34e95ca960a12848b0cc5e561",
+      "critical_or_high_findings": 0,
+      "indexed_packages": 78,
+      "exit_code": 0
+    },
+    "passive_dast": {
+      "target": "isolated Docker frontend, 6 URLs",
+      "fail": 0,
+      "warn_rule_ids": 4,
+      "pass_rule_ids": 63,
+      "exit_code": 0,
+      "alerts": [
+        {
+          "name": "CSP: style-src unsafe-inline",
+          "risk": "Medium",
+          "confidence": "High",
+          "instances": 3,
+          "disposition": "accepted_local_medium_until_nonce_or_hash_migration"
+        },
+        {
+          "name": "Information Disclosure - Suspicious Comments",
+          "risk": "Informational",
+          "confidence": "Medium",
+          "instances": 1,
+          "disposition": "minified_bundle_false_positive_reviewed"
+        },
+        {
+          "name": "Modern Web Application",
+          "risk": "Informational",
+          "confidence": "Medium",
+          "instances": 3,
+          "disposition": "informational_spa_detection"
+        },
+        {
+          "name": "Storable and Cacheable Content",
+          "risk": "Informational",
+          "confidence": "Medium",
+          "instances": 2,
+          "disposition": "expected_static_asset_and_public_shell_caching"
+        },
+        {
+          "name": "Storable but Non-Cacheable Content",
+          "risk": "Informational",
+          "confidence": "Medium",
+          "instances": 3,
+          "disposition": "expected_public_shell_metadata_behavior"
+        }
+      ]
+    },
+    "sbom": {
+      "backend_source_packages": 57,
+      "frontend_source_packages": 10,
+      "backend_image_packages": 117,
+      "frontend_image_packages": 78
+    },
+    "focused_regression": {
+      "backend_passed": 130,
+      "backend_failed": 0,
+      "frontend_accessibility": "PASS",
+      "frontend_interactive_controls": "PASS",
+      "production_build": "PASS",
+      "authenticated_runtime_smoke": "PASS",
+      "fresh_runtime_error_signature_lines": 0
+    }
+  },
+  "remediations": [
+    "aiohttp 3.9.1 -> 3.14.3",
+    "python-multipart 0.0.20 -> 0.0.31",
+    "react-router-dom/react-router 7.18.1 -> 7.18.2",
+    "brace-expansion 5.0.7 -> 5.0.9",
+    "nanoid 3.3.15 -> 3.3.18",
+    "postcss 8.5.16 -> 8.5.26",
+    "AI provider outbound URL restricted to HTTPS port 443 without userinfo or fragments",
+    "backend runtime moved from vulnerable Debian base to pinned Python Alpine base",
+    "frontend runtime upgraded Alpine OpenSSL packages and removed curl/libcurl",
+    "nginx CSP fallback directives and cross-origin isolation headers added",
+    "current dirty worktree added to gitleaks coverage with exact local-secret exclusions"
+  ],
+  "evidence_sha256": {
+    "P0-PIP-AUDIT-2026-08-14.json": "b64bac885027ca38225def8c07494b8b39ff972a5f002b410f25d233979074bf",
+    "P0-NPM-AUDIT-2026-08-14.json": "b6d31dd6c854dd231b1a2fe0430ebad3c9747adde7395489973b47057a034e20",
+    "P0-BANDIT-2026-08-14.json": "00c2d4c54a082a669eb2af489ff67aecc16ffa312227f698208abf3a9a9ada7f",
+    "P0-GITLEAKS-2026-08-14.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "P0-GITLEAKS-WORKTREE-2026-08-14.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "P0-BACKEND-IMAGE-CVES-2026-08-14.sarif.json": "69933e606e8fc010c7d1df52993f413523163ac7ca1c3247fc26bdbc6c946878",
+    "P0-FRONTEND-IMAGE-CVES-2026-08-14.sarif.json": "69933e606e8fc010c7d1df52993f413523163ac7ca1c3247fc26bdbc6c946878",
+    "P0-ZAP-BASELINE-2026-08-14.json": "e17505f2b297083ea2edfcff2352086c4db4d7b9fadced884ddc590b1b1e1e93",
+    "P0-BACKEND-IMAGE-SBOM-2026-08-14.cdx.json": "48e39edc16f1f8755624f4f528cb093efe007a012eea3f83f633796146d3277f",
+    "P0-FRONTEND-IMAGE-SBOM-2026-08-14.cdx.json": "e7814e205a9cacf7ad9c72447ae6fdc2f890ab53acb4b66c477538051eaa4792",
+    "P0-BACKEND-SOURCE-SBOM-2026-08-14.cdx.json": "8f05ac855bfd5b2a6d2b2160a6fad3af96919273aa49efaf22a1894220e26c50",
+    "P0-FRONTEND-SOURCE-SBOM-2026-08-14.syft.json": "d3ef87e9156ddba080eb8331e37c0d5bbb547ca2419037b6210b96fe3aeb259e"
+  },
+  "residual_gates": [
+    "real public domain and TLS active scan",
+    "privileged MFA enrollment and enforcement",
+    "ClamAV quarantine and fail-closed malware workflow acceptance",
+    "tenant and API-token rate-limit stress acceptance",
+    "external penetration test before internet exposure"
+  ]
+}

@@ -1,0 +1,635 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "value": "SBS",
+      "category": "proper-noun",
+      "reason": "Company and product-family name; it must remain unchanged in every locale."
+    },
+    {
+      "value": "AI",
+      "category": "technical-id",
+      "reason": "International abbreviation used as a standalone technology label."
+    },
+    {
+      "value": "SLA",
+      "category": "technical-id",
+      "reason": "International service-level agreement abbreviation."
+    },
+    {
+      "value": "OLA",
+      "category": "technical-id",
+      "reason": "International operational-level agreement abbreviation."
+    },
+    {
+      "value": "KEDB",
+      "category": "technical-id",
+      "reason": "International known-error database abbreviation."
+    },
+    {
+      "value": "MFA",
+      "category": "technical-id",
+      "reason": "International multi-factor authentication abbreviation."
+    },
+    {
+      "value": "API",
+      "category": "technical-id",
+      "reason": "International application-programming interface abbreviation."
+    },
+    {
+      "value": "Microsoft Teams",
+      "category": "proper-noun",
+      "reason": "Microsoft product name is not translated."
+    },
+    {
+      "value": "Microsoft Entra ID",
+      "category": "proper-noun",
+      "reason": "Microsoft product name is not translated."
+    },
+    {
+      "value": "Service Desk",
+      "category": "proper-noun",
+      "reason": "Configured team name used as a product-domain proper noun."
+    },
+    {
+      "value": "SMART BUSINESS SYSTEMS",
+      "category": "proper-noun",
+      "reason": "Full company name used as a brand signature on the login screen."
+    },
+    {
+      "value": "AI ITSM",
+      "category": "proper-noun",
+      "reason": "Product-family brand label used on the login screen."
+    },
+    {
+      "value": "AI Copilot",
+      "category": "proper-noun",
+      "reason": "Product feature name retained consistently across all locales."
+    },
+    {
+      "value": "OpenAI",
+      "category": "proper-noun",
+      "reason": "AI provider company name is not translated."
+    },
+    {
+      "value": "Gemini",
+      "category": "proper-noun",
+      "reason": "Google AI model-family product name is not translated."
+    },
+    {
+      "value": "Microsoft Intune",
+      "category": "proper-noun",
+      "reason": "Microsoft product name is not translated."
+    },
+    {
+      "value": "Azure Resource Graph",
+      "category": "proper-noun",
+      "reason": "Microsoft Azure service name is not translated."
+    },
+    {
+      "value": "Microsoft Configuration Manager",
+      "category": "proper-noun",
+      "reason": "Microsoft product name is not translated."
+    },
+    {
+      "value": "Lansweeper Data API",
+      "category": "proper-noun",
+      "reason": "Third-party product and API name is not translated."
+    },
+    {
+      "value": "Ctrl K",
+      "category": "technical-id",
+      "reason": "Keyboard shortcut is intentionally identical in every locale."
+    },
+    {
+      "value": "Esc",
+      "category": "technical-id",
+      "reason": "Keyboard key label is intentionally identical in every locale."
+    },
+    {
+      "value": "ID",
+      "category": "technical-id",
+      "reason": "International identifier abbreviation used as a table label."
+    },
+    {
+      "value": "v",
+      "category": "technical-id",
+      "reason": "Compact version-number prefix retained identically across locales."
+    },
+    {
+      "value": "name@company.kz",
+      "category": "technical-id",
+      "reason": "Synthetic email-address example in an input placeholder."
+    },
+    {
+      "value": "useAuth must be used inside AuthProvider",
+      "category": "non-ui",
+      "reason": "Developer invariant thrown only when the React provider contract is violated."
+    },
+    {
+      "value": "useTenantExperience must be used inside TenantExperienceProvider",
+      "category": "non-ui",
+      "reason": "Developer invariant thrown only when the React provider contract is violated."
+    },
+    {
+      "value": "SEV1",
+      "category": "technical-id",
+      "reason": "Standard major-incident severity code retained identically across locales."
+    },
+    {
+      "value": "SEV2",
+      "category": "technical-id",
+      "reason": "Standard major-incident severity code retained identically across locales."
+    },
+    {
+      "value": "PIR",
+      "category": "technical-id",
+      "reason": "Standard post-incident review abbreviation retained across locales."
+    },
+    {
+      "value": "SR",
+      "category": "technical-id",
+      "reason": "Service-request record prefix retained identically across locales."
+    },
+    {
+      "value": "ACCESS",
+      "category": "technical-id",
+      "reason": "Example immutable catalog category code shown in a code input."
+    },
+    {
+      "value": "IDENTITY_ACCESS",
+      "category": "technical-id",
+      "reason": "Example immutable catalog service code shown in a code input."
+    },
+    {
+      "value": "STANDARD_ACCESS",
+      "category": "technical-id",
+      "reason": "Example immutable catalog offering code shown in a code input."
+    },
+    {
+      "value": "REQ_VPN_ACCESS",
+      "category": "technical-id",
+      "reason": "Example immutable catalog item code shown in a code input."
+    },
+    {
+      "value": "requester, it_agent",
+      "category": "technical-id",
+      "reason": "Example comma-separated platform role identifiers."
+    },
+    {
+      "value": "CC-100, CC-200",
+      "category": "technical-id",
+      "reason": "Example immutable cost-center identifiers in an input placeholder."
+    },
+    {
+      "value": "organization_admin, it_manager",
+      "category": "technical-id",
+      "reason": "Example comma-separated platform role identifiers."
+    },
+    {
+      "value": "· v",
+      "category": "technical-id",
+      "reason": "Compact version-number prefix retained identically across locales."
+    },
+    {
+      "value": "user@example.com",
+      "category": "technical-id",
+      "reason": "Synthetic email-address example in an input placeholder."
+    },
+    {
+      "value": "ai.rag.use",
+      "category": "technical-id",
+      "reason": "Immutable RBAC permission identifier displayed for administrators."
+    },
+    {
+      "value": "{{ticket_number}}",
+      "category": "technical-id",
+      "reason": "Immutable notification-template interpolation token."
+    },
+    {
+      "value": "KB ·",
+      "category": "technical-id",
+      "reason": "Compact international knowledge-base abbreviation with a separator."
+    },
+    {
+      "value": "CI",
+      "category": "technical-id",
+      "reason": "Standard configuration-item abbreviation retained across locales."
+    },
+    {
+      "value": "· CI v",
+      "category": "technical-id",
+      "reason": "Compact configuration-item version prefix retained across locales."
+    },
+    {
+      "value": "VMWARE_DISCOVERY",
+      "category": "technical-id",
+      "reason": "Example immutable discovery source identifier in an input placeholder."
+    },
+    {
+      "value": "· P",
+      "category": "technical-id",
+      "reason": "Compact numeric priority prefix retained across locales."
+    },
+    {
+      "value": "https://sccm-admin.example.internal",
+      "category": "technical-id",
+      "reason": "Synthetic HTTPS endpoint example in a connector URL placeholder."
+    },
+    {
+      "value": "CIDR",
+      "category": "technical-id",
+      "reason": "Standard network-range notation abbreviation retained across locales."
+    },
+    {
+      "value": "IP",
+      "category": "technical-id",
+      "reason": "Standard Internet Protocol address abbreviation retained across locales."
+    },
+    {
+      "value": "https://automation.example.com/itsm/events",
+      "category": "technical-id",
+      "reason": "Synthetic HTTPS webhook endpoint in an input placeholder."
+    },
+    {
+      "value": "curl -X POST \"$BASE_URL/api/v1/integration-platform/sdk/v1/events\" \\ -H \"Authorization: Bearer $SBS_SERVICE_TOKEN\" \\ -H \"Content-Type: application/json\" \\ -d '{ \"event_type\": \"monitoring.alert\", \"entity_type\": \"asset\", \"entity_id\": \"asset-id\", \"idempotency_key\": \"source-alert-unique-id\", \"data\": {\"severity\": \"critical\"} }'",
+      "category": "technical-id",
+      "reason": "Executable SDK curl example must remain byte-for-byte usable in every locale."
+    },
+    {
+      "value": "expected = HMAC_SHA256( signing_secret, X_SBS_TIMESTAMP + \".\" + raw_request_body ) constant_time_compare( \"v1=\" + hex(expected), X_SBS_SIGNATURE )",
+      "category": "technical-id",
+      "reason": "Signature-verification pseudocode must preserve protocol identifiers exactly."
+    },
+    {
+      "value": "workflows.read",
+      "category": "technical-id",
+      "reason": "Immutable RBAC permission identifier displayed for administrators."
+    },
+    {
+      "value": "critical_incident_flow",
+      "category": "technical-id",
+      "reason": "Example immutable workflow code in an input placeholder."
+    },
+    {
+      "value": "→ v",
+      "category": "technical-id",
+      "reason": "Compact version comparison prefix retained across locales."
+    },
+    {
+      "value": "discovery",
+      "category": "technical-id",
+      "reason": "Provider-generated default source-name suffix; it forms an immutable connector identifier rather than prose."
+    },
+    {
+      "value": "connector",
+      "category": "technical-id",
+      "reason": "Provider-generated default connector-name suffix; it forms an immutable connector identifier rather than prose."
+    },
+    {
+      "value": "ms",
+      "category": "technical-id",
+      "reason": "International latency unit symbol retained identically across all locales."
+    },
+    {
+      "value": "user_updated",
+      "category": "technical-id",
+      "reason": "Immutable audit-event action code used as a filter example."
+    },
+    {
+      "value": "OpenAI / Gemini",
+      "category": "proper-noun",
+      "reason": "Combined provider product names retained without translation."
+    },
+    {
+      "value": "OpenAI API",
+      "category": "proper-noun",
+      "reason": "Official provider and product name retained without translation."
+    },
+    {
+      "value": "sk-…",
+      "category": "technical-id",
+      "reason": "Redacted OpenAI secret-key format example in an input placeholder."
+    },
+    {
+      "value": "Google Gemini API",
+      "category": "proper-noun",
+      "reason": "Official provider and product name retained without translation."
+    },
+    {
+      "value": "AIza…",
+      "category": "technical-id",
+      "reason": "Redacted Google API-key format example in an input placeholder."
+    },
+    {
+      "value": "· HTTP",
+      "category": "technical-id",
+      "reason": "Protocol abbreviation with a compact metadata separator."
+    },
+    {
+      "value": "OIDC",
+      "category": "technical-id",
+      "reason": "Standard OpenID Connect protocol abbreviation retained across locales."
+    },
+    {
+      "value": "SBS Production",
+      "category": "proper-noun",
+      "reason": "Synthetic tenant display-name example in an administrator input."
+    },
+    {
+      "value": "sbs-production",
+      "category": "technical-id",
+      "reason": "Synthetic immutable tenant slug example in an input placeholder."
+    },
+    {
+      "value": "service_desk_lead",
+      "category": "technical-id",
+      "reason": "Example immutable role code in an administrator input."
+    },
+    {
+      "value": "CC-100",
+      "category": "technical-id",
+      "reason": "Synthetic cost-center identifier example in an input placeholder."
+    },
+    {
+      "value": "Postgres:",
+      "category": "proper-noun",
+      "reason": "Database product name used as a runtime-health label."
+    },
+    {
+      "value": "Redis:",
+      "category": "proper-noun",
+      "reason": "Cache product name used as a runtime-health label."
+    },
+    {
+      "value": "DEMO_MODE:",
+      "category": "technical-id",
+      "reason": "Immutable environment-variable name used as a diagnostics label."
+    },
+    {
+      "value": "RUN_STARTUP_DDL:",
+      "category": "technical-id",
+      "reason": "Immutable environment-variable name used as a diagnostics label."
+    },
+    {
+      "value": "Alembic:",
+      "category": "proper-noun",
+      "reason": "Database-migration product name used as a runtime-health label."
+    },
+    {
+      "value": "sk-...",
+      "category": "technical-id",
+      "reason": "ASCII redacted OpenAI secret-key format example in an input placeholder."
+    },
+    {
+      "value": "AIza...",
+      "category": "technical-id",
+      "reason": "ASCII redacted Google API-key format example in an input placeholder."
+    },
+    {
+      "value": "monitoring_tier",
+      "category": "technical-id",
+      "reason": "Immutable asset custom-attribute key example."
+    },
+    {
+      "value": "gold=Gold, silver=Silver",
+      "category": "technical-id",
+      "reason": "Machine-readable option mapping example; keys and values must remain stable."
+    },
+    {
+      "value": "VIRTUAL_MACHINE",
+      "category": "technical-id",
+      "reason": "Immutable configuration-item type code example."
+    },
+    {
+      "value": "hostname",
+      "category": "technical-id",
+      "reason": "Immutable asset attribute key example."
+    },
+    {
+      "value": "linux=Linux, windows=Windows",
+      "category": "technical-id",
+      "reason": "Machine-readable operating-system option mapping example."
+    },
+    {
+      "value": "CI-APP-001",
+      "category": "technical-id",
+      "reason": "Synthetic configuration-item identifier example."
+    },
+    {
+      "value": "itsm-app-01",
+      "category": "technical-id",
+      "reason": "Synthetic host-name identifier example."
+    },
+    {
+      "value": "DATABASE_DEPENDS_ON",
+      "category": "technical-id",
+      "reason": "Immutable CMDB relationship-type code example."
+    },
+    {
+      "value": "CAB",
+      "category": "technical-id",
+      "reason": "Standard Change Advisory Board abbreviation retained across locales."
+    },
+    {
+      "value": "ECAB",
+      "category": "technical-id",
+      "reason": "Standard Emergency Change Advisory Board abbreviation retained across locales."
+    },
+    {
+      "value": "RFC",
+      "category": "technical-id",
+      "reason": "Standard Request for Change abbreviation retained across locales."
+    },
+    {
+      "value": "service-desk-core",
+      "category": "technical-id",
+      "reason": "Synthetic immutable configuration-package slug example."
+    },
+    {
+      "value": "{\"artifact_format\":\"sbs-itsm-configuration-package\", ...}",
+      "category": "technical-id",
+      "reason": "Machine-readable JSON artifact-format example."
+    },
+    {
+      "value": "ticket.security",
+      "category": "technical-id",
+      "reason": "Immutable custom-field code example."
+    },
+    {
+      "value": "high, critical",
+      "category": "technical-id",
+      "reason": "Machine-readable enum-value list example for a custom-field rule."
+    },
+    {
+      "value": "open",
+      "category": "technical-id",
+      "reason": "Machine-readable status enum example for a custom-field rule."
+    },
+    {
+      "value": "SHA-256",
+      "category": "technical-id",
+      "reason": "Standard cryptographic hash algorithm identifier."
+    },
+    {
+      "value": "JSON",
+      "category": "technical-id",
+      "reason": "Standard data-format abbreviation retained across locales."
+    },
+    {
+      "value": "MICROSOFT ENTRA ID",
+      "category": "proper-noun",
+      "reason": "Official identity-provider product name retained without translation."
+    },
+    {
+      "value": "Mail.Read",
+      "category": "technical-id",
+      "reason": "Immutable Microsoft Graph OAuth permission scope."
+    },
+    {
+      "value": "Mail.Send",
+      "category": "technical-id",
+      "reason": "Immutable Microsoft Graph OAuth permission scope."
+    },
+    {
+      "value": "EMAIL_PUBLIC_BASE_URL=https://itsm.example.com",
+      "category": "technical-id",
+      "reason": "Environment-variable assignment example intended for direct configuration use."
+    },
+    {
+      "value": "support@example.com",
+      "category": "technical-id",
+      "reason": "Synthetic sender email-address example in an input placeholder."
+    },
+    {
+      "value": "example.com, partner.kz",
+      "category": "technical-id",
+      "reason": "Synthetic domain allowlist example in an input placeholder."
+    },
+    {
+      "value": "label.alertname",
+      "category": "technical-id",
+      "reason": "Immutable event-field path example."
+    },
+    {
+      "value": "HighErrorRate",
+      "category": "technical-id",
+      "reason": "Synthetic monitoring alert identifier example."
+    },
+    {
+      "value": "service,resource",
+      "category": "technical-id",
+      "reason": "Machine-readable comma-separated correlation-key example."
+    },
+    {
+      "value": "alertmanager-prod",
+      "category": "technical-id",
+      "reason": "Synthetic immutable monitoring-source slug example."
+    },
+    {
+      "value": "ALERTMANAGER",
+      "category": "proper-noun",
+      "reason": "Monitoring product name used as an integration-provider option."
+    },
+    {
+      "value": "PROMETHEUS",
+      "category": "proper-noun",
+      "reason": "Monitoring product name used as an integration-provider option."
+    },
+    {
+      "value": "ZABBIX",
+      "category": "proper-noun",
+      "reason": "Monitoring product name used as an integration-provider option."
+    },
+    {
+      "value": "SENTRY",
+      "category": "proper-noun",
+      "reason": "Monitoring product name used as an integration-provider option."
+    },
+    {
+      "value": "GRAFANA",
+      "category": "proper-noun",
+      "reason": "Monitoring product name used as an integration-provider option."
+    },
+    {
+      "value": "unix_timestamp.raw_body",
+      "category": "technical-id",
+      "reason": "Immutable webhook signature-payload format."
+    },
+    {
+      "value": "X-SBS-Timestamp",
+      "category": "technical-id",
+      "reason": "Immutable HTTP webhook-signature header name."
+    },
+    {
+      "value": "X-SBS-Signature",
+      "category": "technical-id",
+      "reason": "Immutable HTTP webhook-signature header name."
+    },
+    {
+      "value": "X-Grafana-Alerting-Signature",
+      "category": "technical-id",
+      "reason": "Immutable provider HTTP signature-header name."
+    },
+    {
+      "value": "timestamp:body",
+      "category": "technical-id",
+      "reason": "Immutable webhook signature-payload format."
+    },
+    {
+      "value": "Sentry-Hook-Signature",
+      "category": "technical-id",
+      "reason": "Immutable provider HTTP signature-header name."
+    },
+    {
+      "value": "X-Idempotency-Key",
+      "category": "technical-id",
+      "reason": "Immutable HTTP idempotency-header name."
+    },
+    {
+      "value": "externalId ← objectId",
+      "category": "technical-id",
+      "reason": "Machine-readable SCIM-to-directory attribute mapping."
+    },
+    {
+      "value": "userName ← mail",
+      "category": "technical-id",
+      "reason": "Machine-readable SCIM-to-directory attribute mapping."
+    },
+    {
+      "value": "active ← Switch([IsSoftDeleted])",
+      "category": "technical-id",
+      "reason": "Machine-readable SCIM active-state mapping expression."
+    },
+    {
+      "value": "RCA",
+      "category": "technical-id",
+      "reason": "Standard Root Cause Analysis abbreviation retained across locales."
+    },
+    {
+      "value": "CI ·",
+      "category": "technical-id",
+      "reason": "Configuration-item abbreviation with a compact metadata separator."
+    },
+    {
+      "value": "URI",
+      "category": "technical-id",
+      "reason": "Standard Uniform Resource Identifier abbreviation retained across locales."
+    },
+    {
+      "value": "https://teams.microsoft.com/...",
+      "category": "technical-id",
+      "reason": "Synthetic Microsoft Teams URL pattern example in an input placeholder."
+    },
+    {
+      "value": "https://teams.microsoft.com/l/meetup-join/...",
+      "category": "technical-id",
+      "reason": "Synthetic Microsoft Teams meeting-link pattern example in an input placeholder."
+    },
+    {
+      "value": "HTTP",
+      "category": "technical-id",
+      "reason": "Standard web protocol abbreviation retained across locales."
+    }
+  ]
+}

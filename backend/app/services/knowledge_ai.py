@@ -157,8 +157,27 @@ def _mock_rule(text: str) -> dict[str, object]:
     }
 
 
-def _related_articles(db: Session, ticket_category: str | None, recommended_category: str) -> list[KnowledgeArticle]:
-    statement = select(KnowledgeArticle).order_by(KnowledgeArticle.helpful_count.desc(), KnowledgeArticle.created_at.desc())
+def _related_articles(
+    db: Session,
+    ticket_category: str | None,
+    recommended_category: str,
+    tenant_id: str | None = None,
+) -> list[KnowledgeArticle]:
+    statement = (
+        select(KnowledgeArticle)
+        .where(
+            or_(
+                KnowledgeArticle.tenant_id == tenant_id,
+                KnowledgeArticle.tenant_id.is_(None),
+            )
+            if tenant_id
+            else KnowledgeArticle.tenant_id.is_(None)
+        )
+        .order_by(
+            KnowledgeArticle.helpful_count.desc(),
+            KnowledgeArticle.created_at.desc(),
+        )
+    )
     if ticket_category:
         statement = statement.where(
             or_(
@@ -171,24 +190,40 @@ def _related_articles(db: Session, ticket_category: str | None, recommended_cate
     return db.scalars(statement.limit(5)).all()
 
 
-def _similar_tickets(db: Session, ticket_category: str | None) -> list[Ticket]:
-    if not ticket_category:
+def _similar_tickets(
+    db: Session,
+    ticket_category: str | None,
+    tenant_id: str | None = None,
+) -> list[Ticket]:
+    if not ticket_category or not tenant_id:
         return []
     return db.scalars(
         select(Ticket)
-        .where(Ticket.category == ticket_category)
+        .where(Ticket.category == ticket_category, Ticket.tenant_id == tenant_id)
         .order_by(Ticket.updated_at.desc(), Ticket.created_at.desc())
         .limit(5)
     ).all()
 
 
-def analyze_text_with_mock_ai(db: Session, input_text: str, ticket_id: str | None = None) -> dict[str, object]:
+def analyze_text_with_mock_ai(
+    db: Session,
+    input_text: str,
+    ticket_id: str | None = None,
+    *,
+    tenant_id: str | None = None,
+) -> dict[str, object]:
     matched = _mock_rule(input_text)
-    related_articles = _related_articles(db, matched["ticket_category"], str(matched["recommended_category"]))
-    similar_tickets = _similar_tickets(db, matched["ticket_category"])
+    related_articles = _related_articles(
+        db,
+        matched["ticket_category"],
+        str(matched["recommended_category"]),
+        tenant_id,
+    )
+    similar_tickets = _similar_tickets(db, matched["ticket_category"], tenant_id)
 
     suggestion = AiSuggestion(
         id=_uuid(),
+        tenant_id=tenant_id,
         ticket_id=ticket_id,
         input_text=input_text,
         recommended_category=str(matched["recommended_category"]),
@@ -253,17 +288,43 @@ def analyze_text_with_mock_ai(db: Session, input_text: str, ticket_id: str | Non
             "Уточнить влияние на пользователей и масштаб инцидента.",
             "Применить инструкцию из базы знаний и зафиксировать результат.",
         ],
+        "requested_provider": "mock",
+        "provider": "mock",
+        "model": "keyword-rules-v1",
+        "provider_mock": True,
+        "fallback_used": False,
+        "execution_mode": "LOCAL_SIMULATION",
         "created_at": suggestion.created_at,
     }
 
 
-def get_suggestions_for_ticket(db: Session, ticket_id: str) -> list[dict[str, object]]:
+def get_suggestions_for_ticket(
+    db: Session,
+    ticket_id: str,
+    *,
+    tenant_id: str | None = None,
+) -> list[dict[str, object]]:
+    statement = select(AiSuggestion).where(AiSuggestion.ticket_id == ticket_id)
+    if tenant_id is not None:
+        statement = statement.where(AiSuggestion.tenant_id == tenant_id)
     suggestions = db.scalars(
-        select(AiSuggestion).where(AiSuggestion.ticket_id == ticket_id).order_by(AiSuggestion.created_at.desc())
+        statement.order_by(AiSuggestion.created_at.desc())
     ).all()
     result: list[dict[str, object]] = []
     for suggestion in suggestions:
-        article = db.scalar(select(KnowledgeArticle).where(KnowledgeArticle.id == suggestion.recommended_article_id)) if suggestion.recommended_article_id else None
+        article = (
+            db.scalar(
+                select(KnowledgeArticle).where(
+                    KnowledgeArticle.id == suggestion.recommended_article_id,
+                    or_(
+                        KnowledgeArticle.tenant_id == tenant_id,
+                        KnowledgeArticle.tenant_id.is_(None),
+                    ),
+                )
+            )
+            if suggestion.recommended_article_id
+            else None
+        )
         result.append(
             {
                 "id": suggestion.id,
@@ -322,6 +383,7 @@ def create_article_from_ticket(db: Session, ticket: Ticket, author_name: str) ->
     asset_type = db.scalar(select(Asset.asset_type).where(Asset.id == ticket.asset_id)) if ticket.asset_id else None
     article = KnowledgeArticle(
         id=_uuid(),
+        tenant_id=ticket.tenant_id,
         article_number=next_article_number(db),
         title=f"Решение: {ticket.title}",
         summary=f"Инструкция, сформированная из заявки {ticket.ticket_number or ticket.id}.",
@@ -350,10 +412,26 @@ def create_article_from_ticket(db: Session, ticket: Ticket, author_name: str) ->
     return article
 
 
-def search_articles(db: Session, query: str) -> list[KnowledgeArticle]:
+def search_articles(
+    db: Session,
+    query: str,
+    *,
+    tenant_id: str | None = None,
+    include_all_tenants: bool = False,
+) -> list[KnowledgeArticle]:
     pattern = f"%{query.lower()}%"
+    statement = select(KnowledgeArticle)
+    if not include_all_tenants:
+        statement = statement.where(
+            or_(
+                KnowledgeArticle.tenant_id == tenant_id,
+                KnowledgeArticle.tenant_id.is_(None),
+            )
+            if tenant_id
+            else KnowledgeArticle.tenant_id.is_(None)
+        )
     return db.scalars(
-        select(KnowledgeArticle)
+        statement
         .where(
             or_(
                 func.lower(KnowledgeArticle.title).like(pattern),

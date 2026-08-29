@@ -1,0 +1,31 @@
+name: Staging DAST acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-dast
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    environment: staging-security
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require governed staging target
+        env:
+          STAGING_DAST_URL: ${{ vars.STAGING_DAST_URL }}
+        run: |
+          python3 -c "import os, urllib.parse; value=os.environ.get('STAGING_DAST_URL',''); parsed=urllib.parse.urlsplit(value); assert parsed.scheme == 'https' and parsed.hostname and not parsed.username and not parsed.password, 'STAGING_DAST_URL must be a credential-free HTTPS URL'"
+      - name: OWASP ZAP baseline scan
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: ${{ vars.STAGING_DAST_URL }}
+          fail_action: true
+          allow_issue_writing: false
+          artifact_name: staging-zap-baseline
+          cmd_options: -a

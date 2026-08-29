@@ -1,17 +1,23 @@
 from datetime import UTC, datetime
 from pathlib import Path
+import secrets
 
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import text
+from sqlalchemy.engine import Connection
+from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
 from app.core.config import get_settings
-from app.db.session import engine
+from app.core.observability import is_runtime_ready, metrics_registry
+from app.db.session import engine, get_db
 from app.schemas.health import HealthResponse
+from app.services.jobs.dashboard_websocket_service import ws_manager
+from app.services.operational_metrics import render_operational_metrics
 from app.services.rbac import has_permission, is_saas_root
 
 _DEEP_HEALTH_ALLOWED_PERMISSIONS = (
@@ -40,15 +46,6 @@ def health() -> HealthResponse:
     )
 
 
-def _probe_postgres() -> dict[str, object]:
-    try:
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        return {"status": "ok"}
-    except Exception as exc:  # pragma: no cover - depends on runtime infra
-        return {"status": "error", "error": exc.__class__.__name__}
-
-
 def _probe_redis() -> dict[str, object]:
     if Redis is None:
         return {"status": "unknown", "error": "redis_client_unavailable"}
@@ -69,7 +66,7 @@ def _find_alembic_ini() -> Path | None:
     return None
 
 
-def _probe_alembic() -> dict[str, object]:
+def _probe_alembic(connection: Connection) -> dict[str, object]:
     ini_path = _find_alembic_ini()
     if ini_path is None:
         return {"status": "unknown", "current": None, "head": [], "up_to_date": None}
@@ -78,14 +75,13 @@ def _probe_alembic() -> dict[str, object]:
         config = Config(str(ini_path))
         script = ScriptDirectory.from_config(config)
         heads = sorted(list(script.get_heads()))
-        with engine.connect() as connection:
-            context = MigrationContext.configure(connection)
-            current = context.get_current_revision()
+        context = MigrationContext.configure(connection)
+        current_heads = sorted(context.get_current_heads())
         return {
             "status": "ok",
-            "current": current,
+            "current": current_heads,
             "head": heads,
-            "up_to_date": bool(current and current in heads),
+            "up_to_date": bool(current_heads) and set(current_heads) == set(heads),
         }
     except Exception as exc:  # pragma: no cover - depends on runtime infra
         return {
@@ -97,12 +93,58 @@ def _probe_alembic() -> dict[str, object]:
         }
 
 
-def _collect_system_checks() -> dict[str, dict[str, object]]:
+def _probe_database_checks() -> tuple[dict[str, object], dict[str, object]]:
+    """Probe SQL reachability and migration state with one pool checkout.
+
+    A dependency outage must not consume the database pool timeout twice just
+    because readiness reports PostgreSQL and Alembic as separate checks.
+    """
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+            return {"status": "ok"}, _probe_alembic(connection)
+    except Exception as exc:  # pragma: no cover - depends on runtime infra
+        error = {"status": "error", "error": exc.__class__.__name__}
+        return error, {
+            **error,
+            "current": None,
+            "head": [],
+            "up_to_date": None,
+        }
+def _redis_is_required() -> bool:
+    settings = get_settings()
+    return (
+        settings.app_env.strip().lower() == "production"
+        or settings.jobs_executor_mode == "redis"
+        or settings.dashboard_realtime_transport == "redis"
+    )
+
+
+def _collect_system_checks(
+    *,
+    probe_optional_redis: bool = True,
+) -> dict[str, dict[str, object]]:
+    postgres_check, alembic_check = _probe_database_checks()
+    redis_check = (
+        _probe_redis()
+        if probe_optional_redis or _redis_is_required()
+        else {"status": "optional"}
+    )
     return {
-        "postgres": _probe_postgres(),
-        "redis": _probe_redis(),
-        "alembic": _probe_alembic(),
+        "postgres": postgres_check,
+        "redis": redis_check,
+        "alembic": alembic_check,
     }
+
+
+def _development_startup_schema_is_ready() -> bool:
+    """Allow the explicit local SQLite/create_all mode without weakening production."""
+    settings = get_settings()
+    return (
+        settings.app_env.strip().lower() != "production"
+        and settings.run_startup_ddl
+        and engine.dialect.name == "sqlite"
+    )
 
 
 @router.get("/health/liveness")
@@ -115,21 +157,56 @@ def liveness() -> dict[str, object]:
 
 @router.get("/health/readiness")
 def readiness() -> JSONResponse:
-    checks = _collect_system_checks()
-    postgres_ok = checks["postgres"].get("status") == "ok"
-    redis_ok = checks["redis"].get("status") == "ok"
-    ready = postgres_ok and redis_ok
+    checks = _collect_system_checks(probe_optional_redis=False)
+    database_ok = checks["postgres"].get("status") == "ok"
+    redis_ok = checks["redis"].get("status") in {"ok", "optional"}
+    migrations_current = checks["alembic"].get("up_to_date") is True
+    development_startup_schema = (
+        not migrations_current and _development_startup_schema_is_ready()
+    )
+    migrations_ok = migrations_current or development_startup_schema
+    runtime_ok = is_runtime_ready()
+    websocket_ok = ws_manager.transport_ready()
+    ready = database_ok and redis_ok and migrations_ok and runtime_ok and websocket_ok
+    migration_status = (
+        "ok"
+        if migrations_current
+        else "development_startup_ddl"
+        if development_startup_schema
+        else "out_of_date"
+    )
     payload = {
         "status": "ready" if ready else "not_ready",
         "ready": ready,
         "checks": {
             "postgres": checks["postgres"].get("status"),
             "redis": checks["redis"].get("status"),
+            "migrations": migration_status,
+            "runtime": "ready" if runtime_ok else "starting_or_draining",
+            "websocket_transport": "ready" if websocket_ok else "not_ready",
         },
         "timestamp": datetime.now(UTC).isoformat(),
     }
     code = status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE
     return JSONResponse(status_code=code, content=payload)
+
+
+@router.get("/metrics", include_in_schema=False)
+def metrics(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> PlainTextResponse:
+    settings = get_settings()
+    if settings.metrics_auth_token:
+        provided = ""
+        if authorization and authorization.startswith("Bearer "):
+            provided = authorization.removeprefix("Bearer ").strip()
+        if not secrets.compare_digest(provided, settings.metrics_auth_token):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid metrics token")
+    return PlainTextResponse(
+        metrics_registry.render_prometheus() + render_operational_metrics(db),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @router.get("/health/deep")

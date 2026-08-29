@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.services.audit import log_audit
@@ -142,7 +141,7 @@ def stop_scheduler() -> dict[str, Any]:
     return {
         "status": "stopped",
         "stopped_at": datetime.now(UTC),
-        "uptime_seconds": int(uptime.total_seconds()) if uptime else None,
+        "uptime_seconds": int(uptime.total_seconds()) if uptime is not None else None,
         "total_polls": _scheduler_state["poll_count"],
         "total_errors": _scheduler_state["poll_errors"],
     }
@@ -172,7 +171,7 @@ def get_scheduler_status() -> dict[str, Any]:
     return {
         "running": True,
         "started_at": started,
-        "uptime_seconds": int(uptime.total_seconds()) if uptime else None,
+        "uptime_seconds": int(uptime.total_seconds()) if uptime is not None else None,
         "poll_count": _scheduler_state["poll_count"],
         "poll_errors": _scheduler_state["poll_errors"],
         "active_jobs": len(_scheduler.get_jobs()),

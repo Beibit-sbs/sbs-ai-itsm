@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import AppShell from '../components/AppShell'
 import {
@@ -20,8 +20,13 @@ import {
   startRunbookExecution,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { canAccessPath } from '../auth/accessControl'
+import WorkflowEnginePanel from '../components/WorkflowEnginePanel'
+import LocalizedContent from '../experience/LocalizedContent'
+import { useTenantExperience } from '../experience/TenantExperienceContext'
 
 const tabs = [
+  { key: 'production', label: 'Production Workflows' },
   { key: 'overview', label: 'Overview' },
   { key: 'rules', label: 'Rules' },
   { key: 'executions', label: 'Executions' },
@@ -32,15 +37,18 @@ const tabs = [
 
 type TabKey = (typeof tabs)[number]['key']
 
-function formatDateTime(value: string | null) {
-  if (!value) return '—'
-  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+function statusBadge(status: string) {
+  const normalized = status.toLowerCase()
+  if (['success', 'completed', 'approved'].includes(normalized)) return 'badge-positive'
+  if (['failed', 'rejected', 'cancelled'].includes(normalized)) return 'badge-danger'
+  return 'badge-warning'
 }
 
 export default function AutomationPage() {
   const { session } = useAuth()
+  const { formatDateTime, translate } = useTenantExperience()
   const queryClient = useQueryClient()
-  const [activeTab, setActiveTab] = useState<TabKey>('overview')
+  const [activeTab, setActiveTab] = useState<TabKey>('production')
   const [selectedRuleId, setSelectedRuleId] = useState<string>('')
   const [selectedRunId, setSelectedRunId] = useState<string>('')
   const [selectedExecutionId, setSelectedExecutionId] = useState<string>('')
@@ -51,51 +59,94 @@ export default function AutomationPage() {
   const [actionError, setActionError] = useState<string>('')
 
   const token = session?.access_token ?? ''
+  const root = session?.user.role === 'saas_root'
+  const permissions = new Set(session?.user.permissions ?? [])
+  const can = (...required: string[]) => root || required.some((permission) => permissions.has(permission))
+  const canReadProductionWorkflows = can('workflows.read')
+  const canReadRules = can('automation.read', 'automation.rules.read')
+  const canManageRules = can('automation.update', 'automation.rules.manage')
+  const canDryRunRules = can('automation.dry_run', 'automation.rules.execute')
+  const canExecuteRules = can('automation.run', 'automation.rules.execute')
+  const canReadRuns = can('automation.executions.read', 'automation.runs.read')
+  const canReadLogs = can('automation.logs.read')
+  const canRetryRuns = can('automation.executions.retry', 'automation.executions.manage')
+  const canReadRunbooks = can('automation.runbooks.read')
+  const canReadExecutions = can('automation.executions.read')
+  const canManageExecutions = can('automation.executions.manage')
+  const canReadApprovals = can('automation.approvals.read')
+  const canDecideApprovals = can('automation.approvals.decide', 'automation.approvals.manage')
+  const canReadSuggestions = can('automation.suggestions.read')
+  const canReadTickets = Boolean(session?.user && canAccessPath(session.user, '/tickets'))
+  const availableTabs = useMemo(
+    () => tabs.filter((tab) => {
+      if (tab.key === 'production') return canReadProductionWorkflows
+      if (tab.key === 'overview' || tab.key === 'rules') return canReadRules
+      if (tab.key === 'executions') return canReadRuns || canReadExecutions || canReadLogs
+      if (tab.key === 'runbooks') return canReadRunbooks
+      if (tab.key === 'approvals') return canReadApprovals
+      return canReadRules || canReadRunbooks || canReadSuggestions
+    }),
+    [
+      canReadApprovals,
+      canReadExecutions,
+      canReadLogs,
+      canReadProductionWorkflows,
+      canReadRules,
+      canReadRunbooks,
+      canReadRuns,
+      canReadSuggestions,
+    ],
+  )
+
+  useEffect(() => {
+    if (availableTabs.some((tab) => tab.key === activeTab)) return
+    if (availableTabs[0]) setActiveTab(availableTabs[0].key)
+  }, [activeTab, availableTabs])
 
   const overviewQuery = useQuery({
     queryKey: ['automation-overview', token],
     queryFn: () => fetchAutomationOverview(token),
-    enabled: Boolean(token),
+    enabled: Boolean(token && canReadRules),
   })
   const rulesQuery = useQuery({
     queryKey: ['automation-rules', token],
     queryFn: () => fetchAutomationRules(token),
-    enabled: Boolean(token),
+    enabled: Boolean(token && canReadRules),
   })
   const runsQuery = useQuery({
     queryKey: ['automation-runs', token],
     queryFn: () => fetchAutomationRuns(token),
-    enabled: Boolean(token),
+    enabled: Boolean(token && canReadRuns),
   })
   const runbooksQuery = useQuery({
     queryKey: ['automation-runbooks', token],
     queryFn: () => fetchRunbooks(token),
-    enabled: Boolean(token),
+    enabled: Boolean(token && canReadRunbooks),
   })
   const executionsQuery = useQuery({
     queryKey: ['automation-executions', token],
     queryFn: () => fetchRunbookExecutions(token),
-    enabled: Boolean(token),
+    enabled: Boolean(token && canReadExecutions),
   })
   const approvalsQuery = useQuery({
     queryKey: ['automation-approvals', token],
     queryFn: () => fetchApprovalRequests(token),
-    enabled: Boolean(token),
+    enabled: Boolean(token && canReadApprovals),
   })
   const ticketsQuery = useQuery({
     queryKey: ['automation-tickets', token],
     queryFn: () => fetchTickets(token),
-    enabled: Boolean(token),
+    enabled: Boolean(token && canReadTickets),
   })
   const logsQuery = useQuery({
     queryKey: ['automation-run-logs', token, selectedRunId],
     queryFn: () => fetchAutomationRunLogs(token, selectedRunId),
-    enabled: Boolean(token && selectedRunId),
+    enabled: Boolean(token && selectedRunId && canReadLogs),
   })
   const suggestionQuery = useQuery({
     queryKey: ['automation-suggestion', token, selectedTicketId],
     queryFn: () => fetchTicketAutomationSuggestions(token, selectedTicketId),
-    enabled: Boolean(token && selectedTicketId),
+    enabled: Boolean(token && selectedTicketId && canReadSuggestions),
   })
 
   const patchRuleMutation = useMutation({
@@ -167,20 +218,39 @@ export default function AutomationPage() {
   })
 
   const runOptions = useMemo(() => runsQuery.data ?? [], [runsQuery.data])
+  const queryErrors = [
+    overviewQuery.error,
+    rulesQuery.error,
+    runsQuery.error,
+    runbooksQuery.error,
+    executionsQuery.error,
+    approvalsQuery.error,
+    ticketsQuery.error,
+    logsQuery.error,
+    suggestionQuery.error,
+  ].filter(Boolean)
 
   return (
-    <AppShell title="Автоматизация" subtitle="Правила, runbooks, approvals и журнал исполнения автоматических процессов ITSM.">
+    <LocalizedContent><AppShell title="Автоматизация" subtitle="Правила, runbooks, approvals и журнал исполнения автоматических процессов ITSM.">
       <nav className="module-subnav" aria-label="Automation navigation">
-        {tabs.map((tab) => (
+        {availableTabs.map((tab) => (
           <button key={tab.key} type="button" className={`module-subnav-tab ${activeTab === tab.key ? 'active' : ''}`} onClick={() => setActiveTab(tab.key)}>
-            {tab.label}
+            {translate(tab.label)}
           </button>
         ))}
       </nav>
 
       {actionError ? <p className="error-state">{actionError}</p> : null}
+      {queryErrors.length ? (
+        <div className="state-panel state-panel-error" role="alert">
+          <strong>Часть данных автоматизации недоступна.</strong>
+          <p>{queryErrors[0] instanceof Error ? queryErrors[0].message : 'Повторите загрузку текущего раздела.'}</p>
+        </div>
+      ) : null}
 
       <section className="module-content">
+      {activeTab === 'production' ? <WorkflowEnginePanel /> : null}
+
       {activeTab === 'overview' ? (
         <>
           <section className="module-overview-grid">
@@ -209,7 +279,7 @@ export default function AutomationPage() {
                     <small>{formatDateTime(run.started_at)}</small>
                   </article>
                 ))}
-                {!runsQuery.isPending && (runsQuery.data ?? []).length === 0 ? <p className="empty-state">Данных пока нет. Запустите тестовый прогон правила.</p> : null}
+                {!runsQuery.isPending && !runsQuery.isError && (runsQuery.data ?? []).length === 0 ? <p className="empty-state">Данных пока нет. Запустите тестовый прогон правила.</p> : null}
               </div>
             </div>
           </section>
@@ -224,15 +294,15 @@ export default function AutomationPage() {
               <option value="">Выберите правило</option>
               {(rulesQuery.data ?? []).map((rule) => <option key={rule.id} value={rule.id}>{rule.name}</option>)}
             </select>
-            <button type="button" onClick={() => selectedRuleId && dryRunMutation.mutate(selectedRuleId)} disabled={!selectedRuleId || dryRunMutation.isPending}>Dry-run</button>
-            <button type="button" onClick={() => selectedRuleId && manualRunMutation.mutate(selectedRuleId)} disabled={!selectedRuleId || manualRunMutation.isPending}>Manual run</button>
+            {canDryRunRules ? <button type="button" onClick={() => selectedRuleId && dryRunMutation.mutate(selectedRuleId)} disabled={!selectedRuleId || dryRunMutation.isPending}>Dry-run</button> : null}
+            {canExecuteRules ? <button type="button" onClick={() => selectedRuleId && manualRunMutation.mutate(selectedRuleId)} disabled={!selectedRuleId || manualRunMutation.isPending}>Manual run</button> : null}
           </div>
           <div className="ticket-table-wrap">
           <table className="ticket-table">
             <thead><tr><th>Правило</th><th>Триггер</th><th>Приоритет</th><th>Статус</th><th>Действие</th></tr></thead>
             <tbody>
               {rulesQuery.isPending ? <tr><td colSpan={5}><p className="state-panel state-panel-loading">Загрузка правил…</p></td></tr> : null}
-              {!rulesQuery.isPending && (rulesQuery.data ?? []).length === 0 ? <tr><td colSpan={5}><p className="state-panel state-panel-empty">Правила автоматизации отсутствуют.</p></td></tr> : null}
+              {!rulesQuery.isPending && !rulesQuery.isError && (rulesQuery.data ?? []).length === 0 ? <tr><td colSpan={5}><p className="state-panel state-panel-empty">Правила автоматизации отсутствуют.</p></td></tr> : null}
               {(rulesQuery.data ?? []).map((rule) => (
                 <tr key={rule.id}>
                   <td><strong>{rule.name}</strong><p className="table-subtext">{rule.code}</p></td>
@@ -240,19 +310,19 @@ export default function AutomationPage() {
                   <td>{rule.priority}</td>
                   <td>{rule.is_active ? 'Активный' : 'Неактивный'}</td>
                   <td>
-                    <button
+                    {canManageRules ? <button
                       type="button"
                       className="ghost-button"
                       onClick={() => {
                         const nextActive = !rule.is_active
-                        const confirmed = window.confirm(nextActive ? 'Включить правило автоматизации?' : 'Отключить правило автоматизации?')
+                        const confirmed = window.confirm(translate(nextActive ? 'Включить правило автоматизации?' : 'Отключить правило автоматизации?'))
                         if (!confirmed) return
                         patchRuleMutation.mutate({ ruleId: rule.id, isActive: nextActive })
                       }}
                       disabled={patchRuleMutation.isPending}
                     >
                       {rule.is_active ? 'Отключить' : 'Включить'}
-                    </button>
+                    </button> : null}
                   </td>
                 </tr>
               ))}
@@ -302,7 +372,7 @@ export default function AutomationPage() {
                 {(ticketsQuery.data ?? []).map((ticket) => <option key={ticket.id} value={ticket.id}>{ticket.ticket_number} · {ticket.title}</option>)}
               </select>
             </label>
-            <button type="button" onClick={() => startExecutionMutation.mutate()} disabled={!selectedRunbookId || startExecutionMutation.isPending}>Запустить исполнение</button>
+            {canManageExecutions ? <button type="button" onClick={() => startExecutionMutation.mutate()} disabled={!selectedRunbookId || startExecutionMutation.isPending}>Запустить исполнение</button> : null}
             <label>
               <span>Execution detail</span>
               <select value={selectedRunId} onChange={(event) => setSelectedRunId(event.target.value)}>
@@ -317,41 +387,41 @@ export default function AutomationPage() {
               <thead><tr><th>ID</th><th>Status</th><th>Step</th><th>Action</th></tr></thead>
               <tbody>
                 {executionsQuery.isPending ? <tr><td colSpan={4}><p className="state-panel state-panel-loading">Загрузка исполнений…</p></td></tr> : null}
-                {!executionsQuery.isPending && (executionsQuery.data ?? []).length === 0 ? <tr><td colSpan={4}><p className="state-panel state-panel-empty">Исполнения runbooks пока отсутствуют.</p></td></tr> : null}
+                {!executionsQuery.isPending && !executionsQuery.isError && (executionsQuery.data ?? []).length === 0 ? <tr><td colSpan={4}><p className="state-panel state-panel-empty">Исполнения runbooks пока отсутствуют.</p></td></tr> : null}
                 {(executionsQuery.data ?? []).map((execution) => (
                   <tr key={execution.id}>
                     <td>{execution.id}</td>
-                    <td>{execution.status}</td>
+                    <td><span className={`badge ${statusBadge(execution.status)}`}>{execution.status}</span></td>
                     <td>{execution.current_step}</td>
                     <td>
                       <div className="analytics-actions">
-                        <button
+                        {canManageExecutions ? <button
                           className="ghost-button"
                           type="button"
                           onClick={() => updateExecutionMutation.mutate({ executionId: execution.id, current_step: execution.current_step + 1 })}
                           disabled={updateExecutionMutation.isPending}
                         >
                           Следующий шаг
-                        </button>
-                        <button
+                        </button> : null}
+                        {canManageExecutions ? <button
                           className="ghost-button"
                           type="button"
                           onClick={() => {
-                            const confirmed = window.confirm('Отметить исполнение как completed?')
+                            const confirmed = window.confirm(translate('Отметить исполнение как completed?'))
                             if (!confirmed) return
                             updateExecutionMutation.mutate({ executionId: execution.id, status: 'completed' })
                           }}
                           disabled={updateExecutionMutation.isPending}
                         >
                           Завершить
-                        </button>
-                        <button
+                        </button> : null}
+                        {canRetryRuns ? <button
                           className="ghost-button"
                           type="button"
                           onClick={() => setSelectedRunId(execution.id)}
                         >
                           Детали
-                        </button>
+                        </button> : null}
                         <button
                           className="ghost-button"
                           type="button"
@@ -378,37 +448,37 @@ export default function AutomationPage() {
             <thead><tr><th>Название</th><th>Статус</th><th>Инициатор</th><th>Решение</th></tr></thead>
             <tbody>
               {approvalsQuery.isPending ? <tr><td colSpan={4}><p className="state-panel state-panel-loading">Загрузка согласований…</p></td></tr> : null}
-              {!approvalsQuery.isPending && (approvalsQuery.data ?? []).length === 0 ? <tr><td colSpan={4}><p className="state-panel state-panel-empty">Запросы согласования отсутствуют.</p></td></tr> : null}
+              {!approvalsQuery.isPending && !approvalsQuery.isError && (approvalsQuery.data ?? []).length === 0 ? <tr><td colSpan={4}><p className="state-panel state-panel-empty">Запросы согласования отсутствуют.</p></td></tr> : null}
               {(approvalsQuery.data ?? []).map((approval) => (
                 <tr key={approval.id}>
                   <td>{approval.title}</td>
-                  <td>{approval.status}</td>
+                  <td><span className={`badge ${statusBadge(approval.status)}`}>{approval.status}</span></td>
                   <td>{approval.requested_by}</td>
                   <td>
                     <div className="analytics-actions">
-                      <button
+                      {canDecideApprovals ? <button
                         type="button"
                         onClick={() => {
-                          const confirmed = window.confirm('Подтвердить APPROVED для этой заявки?')
+                          const confirmed = window.confirm(translate('Подтвердить APPROVED для этой заявки?'))
                           if (!confirmed) return
                           decideApprovalMutation.mutate({ approvalId: approval.id, decision: 'APPROVED' })
                         }}
                         disabled={decideApprovalMutation.isPending}
                       >
                         Подтвердить
-                      </button>
-                      <button
+                      </button> : null}
+                      {canDecideApprovals ? <button
                         type="button"
                         className="ghost-button"
                         onClick={() => {
-                          const confirmed = window.confirm('Подтвердить REJECTED для этой заявки?')
+                          const confirmed = window.confirm(translate('Подтвердить REJECTED для этой заявки?'))
                           if (!confirmed) return
                           decideApprovalMutation.mutate({ approvalId: approval.id, decision: 'REJECTED' })
                         }}
                         disabled={decideApprovalMutation.isPending}
                       >
                         Отклонить
-                      </button>
+                      </button> : null}
                     </div>
                   </td>
                 </tr>
@@ -443,6 +513,6 @@ export default function AutomationPage() {
         </section>
       ) : null}
       </section>
-    </AppShell>
+    </AppShell></LocalizedContent>
   )
 }

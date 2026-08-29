@@ -1,19 +1,14 @@
 """Scheduled metrics polling for canary rollout monitoring."""
-import asyncio
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.db.session import SessionLocal
 from app.models.policy_canary_rollout import PolicyCanaryRollout
 from app.models.audit_log import AuditLog
 from app.services.jobs.policy_metrics_monitoring import (
-    update_rollout_metrics,
     check_auto_rollback_threshold,
-    _simulate_metrics,
 )
 from app.services.audit import log_audit
 
@@ -39,18 +34,20 @@ def poll_active_rollouts(db: Session) -> dict[str, Any]:
     # Find all active, non-rolled-back rollouts
     active_rollouts = db.query(PolicyCanaryRollout).filter(
         PolicyCanaryRollout.status == "in_progress",
-        PolicyCanaryRollout.auto_rollback_triggered == False,
+        PolicyCanaryRollout.auto_rollback_triggered.is_(False),
     ).all()
     
     logger.info(f"Polling metrics for {len(active_rollouts)} active rollouts")
     
     for rollout in active_rollouts:
         try:
-            # Collect metrics (simulated or from infrastructure)
-            metrics = _simulate_metrics()
-            
-            # Update rollout with current metrics
-            update_rollout_metrics(db, rollout.id, metrics)
+            if rollout.error_rate_current is None:
+                stats["errors"].append(
+                    f"Metrics evidence unavailable for {rollout.id}"
+                )
+                continue
+
+            metrics = {"error_rate": rollout.error_rate_current}
             stats["polled_count"] += 1
             
             # Check auto-rollback threshold
@@ -115,7 +112,7 @@ def get_rollout_polling_status(db: Session) -> dict[str, Any]:
     """
     active_rollouts = db.query(PolicyCanaryRollout).filter(
         PolicyCanaryRollout.status == "in_progress",
-        PolicyCanaryRollout.auto_rollback_triggered == False,
+        PolicyCanaryRollout.auto_rollback_triggered.is_(False),
     ).all()
     
     rollout_statuses = []

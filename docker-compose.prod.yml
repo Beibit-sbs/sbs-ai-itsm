@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -5,7 +11,9 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -13,28 +21,90 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "${POSTGRES_CPU_LIMIT:-2.0}"
+          memory: "${POSTGRES_MEMORY_LIMIT:-2G}"
+    networks:
+      - data
 
   redis:
     image: redis:8-alpine
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$(cat /run/secrets/redis_password)\" --maxmemory \"${REDIS_MAXMEMORY:-512mb}\" --maxmemory-policy noeviction"]
+    secrets:
+      - redis_password
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" --no-auth-warning ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 10
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "${REDIS_CPU_LIMIT:-1.0}"
+          memory: "${REDIS_MEMORY_LIMIT:-768M}"
+    networks:
+      - data
+
+  migrate:
+    build:
+      context: ./backend
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - ${APP_ENV_FILE:-.env.production}
+    environment:
+      SECRETS_DIR: /run/secrets
+      APP_ENV: ${APP_ENV:-production}
+      DEMO_MODE: "false"
+      RUN_STARTUP_DDL: "false"
+      BOOTSTRAP_ROOT_EMAIL: ""
+    secrets:
+      - jwt_secret_key
+      - mfa_encryption_key
+      - credential_encryption_key
+      - configuration_package_signing_key
+      - metrics_auth_token
+      - alertmanager_webhook_token
+      - database_url
+      - redis_url
+      - oidc_client_secret
+      - jobs_alert_smtp_password
+      - jobs_alert_slack_webhook_url
+      - jobs_alert_pagerduty_routing_key
+      - jobs_alert_webhook_url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    logging: *default-logging
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
 
   backend:
     build:
       context: ./backend
+    scale: ${BACKEND_REPLICAS:-3}
     restart: unless-stopped
+    init: true
     env_file:
-      - .env.production
+      - ${APP_ENV_FILE:-.env.production}
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
+      SECRETS_DIR: /run/secrets
+      BOOTSTRAP_ROOT_EMAIL: ""
       JOBS_EXECUTOR_MODE: ${JOBS_EXECUTOR_MODE:-redis}
       JOBS_QUEUE_NAME: ${JOBS_QUEUE_NAME:-jobs:queue}
       JOBS_DEAD_LETTER_QUEUE_NAME: ${JOBS_DEAD_LETTER_QUEUE_NAME:-jobs:dead-letter}
@@ -43,67 +113,200 @@ services:
       APP_ENV: ${APP_ENV:-production}
       DEMO_MODE: ${DEMO_MODE:-false}
       RUN_STARTUP_DDL: ${RUN_STARTUP_DDL:-false}
+      DATABASE_POOL_SIZE: ${BACKEND_DATABASE_POOL_SIZE:-30}
+      DATABASE_MAX_OVERFLOW: ${BACKEND_DATABASE_MAX_OVERFLOW:-10}
+      DATABASE_POOL_TIMEOUT_SECONDS: ${BACKEND_DATABASE_POOL_TIMEOUT_SECONDS:-3}
+      DASHBOARD_REALTIME_TRANSPORT: ${DASHBOARD_REALTIME_TRANSPORT:-redis}
+      DASHBOARD_PUBSUB_CHANNEL: ${DASHBOARD_PUBSUB_CHANNEL:-sbs:dashboard:events}
+      EMAIL_ATTACHMENT_STORAGE_PATH: /var/lib/sbs-ai-itsm/email-attachments
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS}
+    secrets:
+      - jwt_secret_key
+      - mfa_encryption_key
+      - credential_encryption_key
+      - configuration_package_signing_key
+      - metrics_auth_token
+      - alertmanager_webhook_token
+      - database_url
+      - redis_url
+      - oidc_client_secret
+      - jobs_alert_smtp_password
+      - jobs_alert_slack_webhook_url
+      - jobs_alert_pagerduty_routing_key
+      - jobs_alert_webhook_url
+    volumes:
+      - email_attachment_data:/var/lib/sbs-ai-itsm/email-attachments
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
     read_only: true
     tmpfs:
       - /tmp
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; request = urllib.request.Request('http://localhost:8000/api/v1/health/readiness', headers={'Host': 'backend'}); urllib.request.urlopen(request)"]
+      start_period: 20s
       interval: 15s
       timeout: 5s
       retries: 10
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "5"
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "${BACKEND_CPU_LIMIT:-2.0}"
+          memory: "${BACKEND_MEMORY_LIMIT:-2G}"
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - edge
+      - data
 
   worker:
     build:
       context: ./backend
     command: ["python", "-m", "app.workers.jobs_worker"]
     restart: unless-stopped
+    init: true
     env_file:
-      - .env.production
+      - ${APP_ENV_FILE:-.env.production}
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
+      SECRETS_DIR: /run/secrets
+      BOOTSTRAP_ROOT_EMAIL: ""
       JOBS_EXECUTOR_MODE: ${JOBS_EXECUTOR_MODE:-redis}
       JOBS_QUEUE_NAME: ${JOBS_QUEUE_NAME:-jobs:queue}
       JOBS_DEAD_LETTER_QUEUE_NAME: ${JOBS_DEAD_LETTER_QUEUE_NAME:-jobs:dead-letter}
       JOBS_RETRY_BASE_SECONDS: ${JOBS_RETRY_BASE_SECONDS:-0.5}
       JOBS_RETRY_MAX_SECONDS: ${JOBS_RETRY_MAX_SECONDS:-15}
+      JOBS_PERIODIC_CYCLES_ENABLED: "false"
       APP_ENV: ${APP_ENV:-production}
       DEMO_MODE: ${DEMO_MODE:-false}
       RUN_STARTUP_DDL: ${RUN_STARTUP_DDL:-false}
+      DATABASE_POOL_SIZE: ${WORKER_DATABASE_POOL_SIZE:-5}
+      DATABASE_MAX_OVERFLOW: ${WORKER_DATABASE_MAX_OVERFLOW:-2}
+      DATABASE_POOL_TIMEOUT_SECONDS: ${WORKER_DATABASE_POOL_TIMEOUT_SECONDS:-5}
+      DASHBOARD_REALTIME_TRANSPORT: ${DASHBOARD_REALTIME_TRANSPORT:-redis}
+      EMAIL_ATTACHMENT_STORAGE_PATH: /var/lib/sbs-ai-itsm/email-attachments
+    secrets:
+      - jwt_secret_key
+      - mfa_encryption_key
+      - credential_encryption_key
+      - configuration_package_signing_key
+      - metrics_auth_token
+      - alertmanager_webhook_token
+      - database_url
+      - redis_url
+      - oidc_client_secret
+      - jobs_alert_smtp_password
+      - jobs_alert_slack_webhook_url
+      - jobs_alert_pagerduty_routing_key
+      - jobs_alert_webhook_url
+    volumes:
+      - email_attachment_data:/var/lib/sbs-ai-itsm/email-attachments
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "5"
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "${WORKER_CPU_LIMIT:-2.0}"
+          memory: "${WORKER_MEMORY_LIMIT:-2G}"
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
+
+  scheduler:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.workers.scheduler_worker"]
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${APP_ENV_FILE:-.env.production}
+    environment:
+      SECRETS_DIR: /run/secrets
+      BOOTSTRAP_ROOT_EMAIL: ""
+      JOBS_EXECUTOR_MODE: ${JOBS_EXECUTOR_MODE:-redis}
+      JOBS_PERIODIC_CYCLES_ENABLED: "true"
+      SCHEDULER_POLL_INTERVAL_SECONDS: ${SCHEDULER_POLL_INTERVAL_SECONDS:-5}
+      SCHEDULER_LEASE_SECONDS: ${SCHEDULER_LEASE_SECONDS:-120}
+      SCHEDULER_HEARTBEAT_MAX_AGE_SECONDS: ${SCHEDULER_HEARTBEAT_MAX_AGE_SECONDS:-30}
+      APP_ENV: ${APP_ENV:-production}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      RUN_STARTUP_DDL: ${RUN_STARTUP_DDL:-false}
+      DATABASE_POOL_SIZE: ${SCHEDULER_DATABASE_POOL_SIZE:-3}
+      DATABASE_MAX_OVERFLOW: ${SCHEDULER_DATABASE_MAX_OVERFLOW:-1}
+      DATABASE_POOL_TIMEOUT_SECONDS: ${SCHEDULER_DATABASE_POOL_TIMEOUT_SECONDS:-5}
+      DASHBOARD_REALTIME_TRANSPORT: ${DASHBOARD_REALTIME_TRANSPORT:-redis}
+      EMAIL_ATTACHMENT_STORAGE_PATH: /var/lib/sbs-ai-itsm/email-attachments
+    secrets:
+      - jwt_secret_key
+      - mfa_encryption_key
+      - credential_encryption_key
+      - configuration_package_signing_key
+      - metrics_auth_token
+      - alertmanager_webhook_token
+      - database_url
+      - redis_url
+      - oidc_client_secret
+      - jobs_alert_smtp_password
+      - jobs_alert_slack_webhook_url
+      - jobs_alert_pagerduty_routing_key
+      - jobs_alert_webhook_url
+    volumes:
+      - email_attachment_data:/var/lib/sbs-ai-itsm/email-attachments
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "${SCHEDULER_CPU_LIMIT:-1.0}"
+          memory: "${SCHEDULER_MEMORY_LIMIT:-1G}"
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
 
   frontend:
     build:
       context: ./frontend
       args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
     restart: unless-stopped
     env_file:
-      - .env.production
+      - ${APP_ENV_FILE:-.env.production}
+    environment:
+      TLS_PROXY_CIDR: ${TLS_PROXY_CIDR}
+      API_RATE_LIMIT: ${API_RATE_LIMIT:-300r/s}
+      API_BURST: ${API_BURST:-600}
+      API_CONNECTION_LIMIT: ${API_CONNECTION_LIMIT:-200}
+      LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-5r/s}
+      LOGIN_RATE_BURST: ${LOGIN_RATE_BURST:-10}
     ports:
-      - "${FRONTEND_PORT:-80}:8080"
+      - "${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-80}:8080"
     depends_on:
       backend:
         condition: service_healthy
@@ -112,16 +315,182 @@ services:
       - /var/cache/nginx
       - /var/run
       - /tmp
+      # The unprivileged image renders the TLS trust template here at startup.
+      # Keep the root filesystem read-only while allowing only generated config.
+      - /etc/nginx/conf.d:uid=101,gid=101,mode=0770
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      start_period: 10s
       interval: 15s
       timeout: 5s
       retries: 10
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "5"
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "${FRONTEND_CPU_LIMIT:-0.5}"
+          memory: "${FRONTEND_MEMORY_LIMIT:-256M}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      edge:
+        ipv4_address: ${FRONTEND_EDGE_IP}
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    secrets:
+      - metrics_auth_token
+    depends_on:
+      backend:
+        condition: service_healthy
+      alertmanager:
+        condition: service_started
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "${PROMETHEUS_CPU_LIMIT:-1.0}"
+          memory: "${PROMETHEUS_MEMORY_LIMIT:-2G}"
+    networks:
+      - data
+
+  alertmanager:
+    image: prom/alertmanager:v0.33.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "${ALERTMANAGER_BIND_ADDRESS:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./monitoring/alertmanager:/etc/alertmanager:ro
+      - alertmanager_data:/alertmanager
+    secrets:
+      - alertmanager_webhook_token
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "${ALERTMANAGER_CPU_LIMIT:-0.5}"
+          memory: "${ALERTMANAGER_MEMORY_LIMIT:-512M}"
+    networks:
+      - edge
+      - data
+
+  grafana:
+    image: grafana/grafana:13.1.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+    ports:
+      - "${GRAFANA_BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    secrets:
+      - grafana_admin_password
+    depends_on:
+      - prometheus
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "${GRAFANA_CPU_LIMIT:-1.0}"
+          memory: "${GRAFANA_MEMORY_LIMIT:-1G}"
+    networks:
+      - edge
+      - data
 
 volumes:
   postgres_data:
   redis_data:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
+  email_attachment_data:
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: ${EDGE_SUBNET}
+          gateway: ${EDGE_GATEWAY}
+  data:
+    internal: true
+
+secrets:
+  jwt_secret_key:
+    file: ${SECRETS_DIR:-./secrets.example}/jwt_secret_key
+  mfa_encryption_key:
+    file: ${SECRETS_DIR:-./secrets.example}/mfa_encryption_key
+  credential_encryption_key:
+    file: ${SECRETS_DIR:-./secrets.example}/credential_encryption_key
+  configuration_package_signing_key:
+    file: ${SECRETS_DIR:-./secrets.example}/configuration_package_signing_key
+  metrics_auth_token:
+    file: ${SECRETS_DIR:-./secrets.example}/metrics_auth_token
+  alertmanager_webhook_token:
+    file: ${SECRETS_DIR:-./secrets.example}/alertmanager_webhook_token
+  postgres_password:
+    file: ${SECRETS_DIR:-./secrets.example}/postgres_password
+  redis_password:
+    file: ${SECRETS_DIR:-./secrets.example}/redis_password
+  database_url:
+    file: ${SECRETS_DIR:-./secrets.example}/database_url
+  redis_url:
+    file: ${SECRETS_DIR:-./secrets.example}/redis_url
+  grafana_admin_password:
+    file: ${SECRETS_DIR:-./secrets.example}/grafana_admin_password
+  oidc_client_secret:
+    file: ${SECRETS_DIR:-./secrets.example}/oidc_client_secret
+  jobs_alert_smtp_password:
+    file: ${SECRETS_DIR:-./secrets.example}/jobs_alert_smtp_password
+  jobs_alert_slack_webhook_url:
+    file: ${SECRETS_DIR:-./secrets.example}/jobs_alert_slack_webhook_url
+  jobs_alert_pagerduty_routing_key:
+    file: ${SECRETS_DIR:-./secrets.example}/jobs_alert_pagerduty_routing_key
+  jobs_alert_webhook_url:
+    file: ${SECRETS_DIR:-./secrets.example}/jobs_alert_webhook_url

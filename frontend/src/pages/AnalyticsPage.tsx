@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import AppShell from '../components/AppShell'
+import QueryFailureNotice from '../components/QueryFailureNotice'
+import LocalizedContent from '../experience/LocalizedContent'
+import { useTenantExperience } from '../experience/TenantExperienceContext'
 import {
   createReportSnapshot,
   createSavedReport,
@@ -33,11 +36,6 @@ const tabs = [
 
 type TabKey = (typeof tabs)[number]['key']
 
-function formatDateTime(value: string | null) {
-  if (!value) return '—'
-  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
-}
-
 function scoreTone(value: number) {
   if (value >= 80) return 'badge-positive'
   if (value >= 60) return 'badge-warning'
@@ -46,64 +44,110 @@ function scoreTone(value: number) {
 
 export default function AnalyticsPage() {
   const { session } = useAuth()
+  const { formatDateTime, formatNumber, translate } = useTenantExperience()
+  const formatPercent = (value: number) => `${formatNumber(value, { maximumFractionDigits: 2 })}%`
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<TabKey>('executive')
   const [exportPayload, setExportPayload] = useState<string>('')
+  const root = session?.user.role === 'saas_root'
+  const permissions = new Set(session?.user.permissions ?? [])
+  const has = (permission: string) => root || permissions.has(permission)
+  const canReadOverview = has('analytics.read')
+  const canReadExecutive = canReadOverview && has('analytics.executive.read')
+  const canReadTickets = canReadOverview && has('analytics.tickets.read')
+  const canReadSla = canReadOverview && has('analytics.sla.read')
+  const canReadAssets = canReadOverview && has('analytics.assets.read')
+  const canReadKnowledge = canReadOverview && has('analytics.knowledge.read')
+  const canReadAi = canReadOverview && has('analytics.ai.read')
+  const canReadSecurity = canReadOverview && has('analytics.security.read')
+  const canReadAutomation = canReadOverview && has('analytics.automation.read')
+  const canReadReports = has('reports.read')
+  const canCreateReports = has('reports.create')
+  const canExportReports = has('reports.export')
+  const availableTabs = useMemo(
+    () => tabs.filter((tab) => {
+      if (tab.key === 'executive') return canReadExecutive
+      if (tab.key === 'tickets') return canReadTickets
+      if (tab.key === 'sla') return canReadSla
+      if (tab.key === 'assets') return canReadAssets
+      if (tab.key === 'knowledge') return canReadKnowledge
+      if (tab.key === 'ai') return canReadAi
+      if (tab.key === 'security') return canReadSecurity
+      if (tab.key === 'automation') return canReadAutomation
+      return canReadReports
+    }),
+    [
+      canReadAi,
+      canReadAssets,
+      canReadAutomation,
+      canReadExecutive,
+      canReadKnowledge,
+      canReadReports,
+      canReadSecurity,
+      canReadSla,
+      canReadTickets,
+    ],
+  )
+
+  useEffect(() => {
+    if (availableTabs.some((tab) => tab.key === activeTab)) return
+    if (availableTabs[0]) setActiveTab(availableTabs[0].key)
+  }, [activeTab, availableTabs])
 
   const overviewQuery = useQuery({
     queryKey: ['analytics-overview', session?.access_token],
     queryFn: () => fetchAnalyticsOverview(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadOverview && activeTab === 'executive'),
   })
   const executiveQuery = useQuery({
     queryKey: ['analytics-executive', session?.access_token],
     queryFn: () => fetchExecutiveSummary(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadExecutive && activeTab === 'executive'),
   })
   const ticketQuery = useQuery({
     queryKey: ['analytics-tickets', session?.access_token],
     queryFn: () => fetchTicketAnalytics(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadTickets && (activeTab === 'tickets' || activeTab === 'executive')),
   })
   const slaQuery = useQuery({
     queryKey: ['analytics-sla', session?.access_token],
     queryFn: () => fetchSlaAnalytics(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadSla && activeTab === 'sla'),
   })
   const assetQuery = useQuery({
     queryKey: ['analytics-assets', session?.access_token],
     queryFn: () => fetchAssetAnalytics(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadAssets && activeTab === 'assets'),
   })
   const knowledgeQuery = useQuery({
     queryKey: ['analytics-knowledge', session?.access_token],
     queryFn: () => fetchKnowledgeAnalytics(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadKnowledge && activeTab === 'knowledge'),
   })
   const aiQuery = useQuery({
     queryKey: ['analytics-ai', session?.access_token],
     queryFn: () => fetchAiAnalytics(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadAi && activeTab === 'ai'),
   })
   const automationQuery = useQuery({
     queryKey: ['analytics-automation', session?.access_token],
     queryFn: () => fetchAutomationAnalytics(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadAutomation && activeTab === 'automation'),
   })
   const securityQuery = useQuery({
     queryKey: ['analytics-security', session?.access_token],
     queryFn: () => fetchSecurityAnalytics(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadSecurity && activeTab === 'security'),
   })
   const savedReportsQuery = useQuery({
     queryKey: ['reports-saved', session?.access_token],
     queryFn: () => fetchSavedReports(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadReports && activeTab === 'reports'),
   })
   const snapshotsQuery = useQuery({
     queryKey: ['reports-snapshots', session?.access_token],
     queryFn: () => fetchReportSnapshots(session?.access_token ?? ''),
-    enabled: Boolean(session?.access_token),
+    enabled: Boolean(session?.access_token && canReadReports && activeTab === 'reports'),
   })
 
   const createSnapshotMutation = useMutation({
@@ -161,11 +205,28 @@ export default function AnalyticsPage() {
     securityQuery.isError
 
   return (
+    <LocalizedContent>
     <AppShell title="Аналитика" subtitle="Управленческие метрики по заявкам, SLA, активам, AI, безопасности и автоматизации.">
+      <QueryFailureNotice
+        title="Часть данных Analytics недоступна."
+        sources={[
+          { label: 'overview', query: overviewQuery },
+          { label: 'executive analytics', query: executiveQuery },
+          { label: 'ticket analytics', query: ticketQuery },
+          { label: 'SLA analytics', query: slaQuery },
+          { label: 'asset analytics', query: assetQuery },
+          { label: 'knowledge analytics', query: knowledgeQuery },
+          { label: 'AI analytics', query: aiQuery },
+          { label: 'automation analytics', query: automationQuery },
+          { label: 'security analytics', query: securityQuery },
+          { label: translate('сохранённые отчёты'), query: savedReportsQuery },
+          { label: 'snapshots', query: snapshotsQuery },
+        ]}
+      />
       <nav className="module-subnav" aria-label="Analytics navigation">
-        {tabs.map((tab) => (
+        {availableTabs.map((tab) => (
           <button type="button" className={`module-subnav-tab ${activeTab === tab.key ? 'active' : ''}`} key={tab.key} onClick={() => setActiveTab(tab.key)}>
-            {tab.label}
+            {translate(tab.label)}
           </button>
         ))}
       </nav>
@@ -177,10 +238,10 @@ export default function AnalyticsPage() {
       {activeTab === 'executive' ? (
         <>
         <section className="module-overview-grid">
-          <article className="metric-card"><span>Health score</span><strong>{executiveQuery.isPending ? '…' : executive?.health_score ?? 0}</strong><p>Сводный health score.</p></article>
-          <article className="metric-card"><span>SLA compliance</span><strong>{overviewQuery.isPending ? '…' : `${overview?.sla.sla_compliance_percent ?? 0}%`}</strong><p>Соблюдение SLA.</p></article>
-          <article className="metric-card"><span>Open critical</span><strong>{ticketQuery.isPending ? '…' : tickets?.open_critical_tickets ?? 0}</strong><p>Критические заявки.</p></article>
-          <article className="metric-card"><span>Security risk</span><strong>{executiveQuery.isPending ? '…' : executive?.security_risk_score ?? 0}</strong><p>Риск безопасности.</p></article>
+          <article className="metric-card"><span>Health score</span><strong>{executiveQuery.isPending ? '…' : formatNumber(executive?.health_score ?? 0)}</strong><p>Сводный health score.</p></article>
+          <article className="metric-card"><span>SLA compliance</span><strong>{overviewQuery.isPending ? '…' : formatPercent(overview?.sla.sla_compliance_percent ?? 0)}</strong><p>Соблюдение SLA.</p></article>
+          {canReadTickets ? <article className="metric-card"><span>Open critical</span><strong>{ticketQuery.isPending ? '…' : formatNumber(tickets?.open_critical_tickets ?? 0)}</strong><p>Критические заявки.</p></article> : null}
+          <article className="metric-card"><span>Security risk</span><strong>{executiveQuery.isPending ? '…' : formatNumber(executive?.security_risk_score ?? 0)}</strong><p>Риск безопасности.</p></article>
         </section>
         <section className="foundation-card dashboard-split">
           <div>
@@ -199,7 +260,7 @@ export default function AnalyticsPage() {
                 <article className="score-card" key={String(label)}>
                   <header>
                     <span>{label}</span>
-                    <strong className={scoreTone(Number(value))}>{value}</strong>
+                    <strong className={scoreTone(Number(value))}>{formatNumber(Number(value))}</strong>
                   </header>
                   <div className="progress-strip">
                     <div className="progress-strip-fill" style={{ width: `${Math.max(6, Number(value))}%` }} />
@@ -222,10 +283,10 @@ export default function AnalyticsPage() {
             </div>
             <p className="eyebrow analytics-subsection">INTEGRATIONS SNAPSHOT</p>
             <div className="status-list analytics-inline-list">
-              <span>Health score: {overview?.integrations.integrations_health_score ?? 0}</span>
-              <span>Events: {overview?.integrations.integration_events_count ?? 0}</span>
-              <span>Failed events: {overview?.integrations.failed_integration_events ?? 0}</span>
-              <span>Import success rate: {overview?.integrations.import_success_rate ?? 0}%</span>
+              <span>Health score: {formatNumber(overview?.integrations.integrations_health_score ?? 0)}</span>
+              <span>Events: {formatNumber(overview?.integrations.integration_events_count ?? 0)}</span>
+              <span>Failed events: {formatNumber(overview?.integrations.failed_integration_events ?? 0)}</span>
+              <span>Import success rate: {formatPercent(overview?.integrations.import_success_rate ?? 0)}</span>
             </div>
             <p className="eyebrow analytics-subsection">TOP-5 PROBLEMS</p>
             <div className="activity-list">
@@ -247,10 +308,10 @@ export default function AnalyticsPage() {
       {activeTab === 'tickets' ? (
         <>
           <section className="metric-grid dashboard-metrics">
-            <article className="metric-card"><span>Всего</span><strong>{tickets?.total_tickets ?? 0}</strong><p>Общий объём заявок.</p></article>
-            <article className="metric-card"><span>Открытые</span><strong>{tickets?.open_tickets ?? 0}</strong><p>Текущая операционная нагрузка.</p></article>
-            <article className="metric-card"><span>Закрытые</span><strong>{tickets?.closed_tickets ?? 0}</strong><p>Решённые обращения.</p></article>
-            <article className="metric-card"><span>За сегодня</span><strong>{tickets?.tickets_today ?? 0}</strong><p>Новые заявки за текущий день.</p></article>
+            <article className="metric-card"><span>Всего</span><strong>{formatNumber(tickets?.total_tickets ?? 0)}</strong><p>Общий объём заявок.</p></article>
+            <article className="metric-card"><span>Открытые</span><strong>{formatNumber(tickets?.open_tickets ?? 0)}</strong><p>Текущая операционная нагрузка.</p></article>
+            <article className="metric-card"><span>Закрытые</span><strong>{formatNumber(tickets?.closed_tickets ?? 0)}</strong><p>Решённые обращения.</p></article>
+            <article className="metric-card"><span>За сегодня</span><strong>{formatNumber(tickets?.tickets_today ?? 0)}</strong><p>Новые заявки за текущий день.</p></article>
           </section>
           <section className="foundation-card dashboard-split">
             <div>
@@ -261,7 +322,7 @@ export default function AnalyticsPage() {
                   <div className="mini-bar-row" key={item.status}>
                     <span>{item.status}</span>
                     <div className="mini-bar-track"><div className="mini-bar-fill" style={{ width: `${Math.max(10, item.count * 8)}%` }} /></div>
-                    <strong>{item.count}</strong>
+                    <strong>{formatNumber(item.count)}</strong>
                   </div>
                 ))}
               </div>
@@ -270,7 +331,7 @@ export default function AnalyticsPage() {
                   <thead><tr><th>Категория</th><th>Count</th></tr></thead>
                   <tbody>
                     {(tickets?.by_category ?? []).map((item) => (
-                      <tr key={item.category}><td>{item.category}</td><td>{item.count}</td></tr>
+                      <tr key={item.category}><td>{item.category}</td><td>{formatNumber(item.count)}</td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -282,13 +343,13 @@ export default function AnalyticsPage() {
               <div className="ticket-table-wrap">
                 <table className="ticket-table">
                   <thead><tr><th>Топ исполнители</th><th>Count</th></tr></thead>
-                  <tbody>{(tickets?.top_assignees ?? []).map((item) => <tr key={item.name}><td>{item.name}</td><td>{item.count}</td></tr>)}</tbody>
+                  <tbody>{(tickets?.top_assignees ?? []).map((item) => <tr key={item.name}><td>{item.name}</td><td>{formatNumber(item.count)}</td></tr>)}</tbody>
                 </table>
               </div>
               <div className="ticket-table-wrap analytics-table-space">
                 <table className="ticket-table">
                   <thead><tr><th>Топ заявители</th><th>Count</th></tr></thead>
-                  <tbody>{(tickets?.top_requesters ?? []).map((item) => <tr key={item.name}><td>{item.name}</td><td>{item.count}</td></tr>)}</tbody>
+                  <tbody>{(tickets?.top_requesters ?? []).map((item) => <tr key={item.name}><td>{item.name}</td><td>{formatNumber(item.count)}</td></tr>)}</tbody>
                 </table>
               </div>
             </div>
@@ -310,7 +371,7 @@ export default function AnalyticsPage() {
                 ['Critical breaches', sla?.critical_sla_breaches ?? 0],
               ].map(([label, value]) => (
                 <article className="score-card" key={String(label)}>
-                  <header><span>{label}</span><strong>{value}</strong></header>
+                  <header><span>{label}</span><strong>{label === 'Compliance %' ? formatPercent(Number(value)) : formatNumber(Number(value))}</strong></header>
                 </article>
               ))}
             </div>
@@ -321,7 +382,7 @@ export default function AnalyticsPage() {
             <div className="ticket-table-wrap">
               <table className="ticket-table">
                 <thead><tr><th>Приоритет</th><th>Count</th></tr></thead>
-                <tbody>{(sla?.violations_by_priority ?? []).map((item) => <tr key={item.priority}><td>{item.priority}</td><td>{item.count}</td></tr>)}</tbody>
+                <tbody>{(sla?.violations_by_priority ?? []).map((item) => <tr key={item.priority}><td>{item.priority}</td><td>{formatNumber(item.count)}</td></tr>)}</tbody>
               </table>
             </div>
           </div>
@@ -334,27 +395,27 @@ export default function AnalyticsPage() {
             <p className="eyebrow">ASSET ANALYTICS</p>
             <h2>Активы по типам и статусам</h2>
             <div className="metric-grid analytics-mini-grid">
-              <article className="metric-card"><span>Imported</span><strong>{assets?.imported_assets_count ?? 0}</strong></article>
-              <article className="metric-card"><span>Missing location</span><strong>{assets?.assets_missing_location_count ?? 0}</strong></article>
-              <article className="metric-card"><span>Disposed</span><strong>{assets?.disposed_assets_count ?? 0}</strong></article>
-              <article className="metric-card"><span>Duplicate inventory</span><strong>{assets?.duplicate_inventory_numbers?.length ?? 0}</strong></article>
+              <article className="metric-card"><span>Imported</span><strong>{formatNumber(assets?.imported_assets_count ?? 0)}</strong></article>
+              <article className="metric-card"><span>Missing location</span><strong>{formatNumber(assets?.assets_missing_location_count ?? 0)}</strong></article>
+              <article className="metric-card"><span>Disposed</span><strong>{formatNumber(assets?.disposed_assets_count ?? 0)}</strong></article>
+              <article className="metric-card"><span>Duplicate inventory</span><strong>{formatNumber(assets?.duplicate_inventory_numbers?.length ?? 0)}</strong></article>
             </div>
             <div className="ticket-table-wrap">
               <table className="ticket-table">
                 <thead><tr><th>Тип</th><th>Count</th></tr></thead>
-                <tbody>{(assets?.assets_by_type ?? []).map((item) => <tr key={item.type}><td>{item.type}</td><td>{item.count}</td></tr>)}</tbody>
+                <tbody>{(assets?.assets_by_type ?? []).map((item) => <tr key={item.type}><td>{item.type}</td><td>{formatNumber(item.count)}</td></tr>)}</tbody>
               </table>
             </div>
             <div className="ticket-table-wrap analytics-table-space">
               <table className="ticket-table">
                 <thead><tr><th>Статус</th><th>Count</th></tr></thead>
-                <tbody>{(assets?.assets_by_status ?? []).map((item) => <tr key={item.status}><td>{item.status}</td><td>{item.count}</td></tr>)}</tbody>
+                <tbody>{(assets?.assets_by_status ?? []).map((item) => <tr key={item.status}><td>{item.status}</td><td>{formatNumber(item.count)}</td></tr>)}</tbody>
               </table>
             </div>
             <div className="ticket-table-wrap analytics-table-space">
               <table className="ticket-table">
                 <thead><tr><th>Источник</th><th>Count</th></tr></thead>
-                <tbody>{(assets?.assets_by_source ?? []).map((item) => <tr key={item.source}><td>{item.source}</td><td>{item.count}</td></tr>)}</tbody>
+                <tbody>{(assets?.assets_by_source ?? []).map((item) => <tr key={item.source}><td>{item.source}</td><td>{formatNumber(item.count)}</td></tr>)}</tbody>
               </table>
             </div>
           </div>
@@ -384,7 +445,7 @@ export default function AnalyticsPage() {
             <div className="ticket-table-wrap">
               <table className="ticket-table">
                 <thead><tr><th>МОЛ</th><th>Count</th></tr></thead>
-                <tbody>{(assets?.top_responsible_persons ?? []).map((item) => <tr key={item.name}><td>{item.name}</td><td>{item.count}</td></tr>)}</tbody>
+                <tbody>{(assets?.top_responsible_persons ?? []).map((item) => <tr key={item.name}><td>{item.name}</td><td>{formatNumber(item.count)}</td></tr>)}</tbody>
               </table>
             </div>
           </div>
@@ -400,7 +461,7 @@ export default function AnalyticsPage() {
               {!knowledgeQuery.isPending && (knowledge?.top_helpful_articles ?? []).length === 0 ? <p className="state-panel state-panel-empty">Полезные статьи пока отсутствуют.</p> : null}
               {(knowledge?.top_helpful_articles ?? []).map((item) => (
                 <article className="activity-item" key={item.article_number}>
-                  <header><strong>{item.article_number}</strong><span>{item.helpful_count}</span></header>
+                  <header><strong>{item.article_number}</strong><span>{formatNumber(item.helpful_count)}</span></header>
                   <p>{item.title}</p>
                 </article>
               ))}
@@ -410,10 +471,10 @@ export default function AnalyticsPage() {
             <p className="eyebrow">COVERAGE</p>
             <h2>Knowledge KPI</h2>
             <div className="metric-grid analytics-mini-grid">
-              <article className="metric-card"><span>Всего статей</span><strong>{knowledge?.total_articles ?? 0}</strong></article>
-              <article className="metric-card"><span>Опубликовано</span><strong>{knowledge?.published_articles ?? 0}</strong></article>
-              <article className="metric-card"><span>Negative feedback</span><strong>{knowledge?.articles_with_negative_feedback?.length ?? 0}</strong></article>
-              <article className="metric-card"><span>KB resolved</span><strong>{knowledge?.tickets_resolved_via_knowledge_demo ?? 0}</strong></article>
+              <article className="metric-card"><span>Всего статей</span><strong>{formatNumber(knowledge?.total_articles ?? 0)}</strong></article>
+              <article className="metric-card"><span>Опубликовано</span><strong>{formatNumber(knowledge?.published_articles ?? 0)}</strong></article>
+              <article className="metric-card"><span>Negative feedback</span><strong>{formatNumber(knowledge?.articles_with_negative_feedback?.length ?? 0)}</strong></article>
+              <article className="metric-card"><span>KB resolved</span><strong>{formatNumber(knowledge?.tickets_resolved_via_knowledge_demo ?? 0)}</strong></article>
             </div>
           </div>
         </section>
@@ -425,15 +486,15 @@ export default function AnalyticsPage() {
             <p className="eyebrow">AI USAGE</p>
             <h2>AI adoption и confidence</h2>
             <div className="metric-grid analytics-mini-grid">
-              <article className="metric-card"><span>AI analyses</span><strong>{ai?.total_ai_analyses ?? 0}</strong><p>Всего AI-анализов.</p></article>
-              <article className="metric-card"><span>Confidence</span><strong>{`${ai?.average_confidence_percent ?? 0}%`}</strong><p>Средняя AI confidence.</p></article>
-              <article className="metric-card"><span>Applied demo</span><strong>{ai?.ai_suggestions_applied_demo ?? 0}</strong><p>Applied/demo suggestions.</p></article>
-              <article className="metric-card"><span>KB resolved</span><strong>{knowledge?.tickets_resolved_via_knowledge_demo ?? 0}</strong><p>Заявки, решённые через KB/demo.</p></article>
+              <article className="metric-card"><span>AI analyses</span><strong>{formatNumber(ai?.total_ai_analyses ?? 0)}</strong><p>Всего AI-анализов.</p></article>
+              <article className="metric-card"><span>Confidence</span><strong>{formatPercent(ai?.average_confidence_percent ?? 0)}</strong><p>Средняя AI confidence.</p></article>
+              <article className="metric-card"><span>Applied demo</span><strong>{formatNumber(ai?.ai_suggestions_applied_demo ?? 0)}</strong><p>Applied/demo suggestions.</p></article>
+              <article className="metric-card"><span>KB resolved</span><strong>{formatNumber(knowledge?.tickets_resolved_via_knowledge_demo ?? 0)}</strong><p>Заявки, решённые через KB/demo.</p></article>
             </div>
             <div className="ticket-table-wrap analytics-table-space">
               <table className="ticket-table">
                 <thead><tr><th>AI category</th><th>Count</th></tr></thead>
-                <tbody>{(ai?.recommendations_by_category ?? []).map((item) => <tr key={item.category}><td>{item.category}</td><td>{item.count}</td></tr>)}</tbody>
+                <tbody>{(ai?.recommendations_by_category ?? []).map((item) => <tr key={item.category}><td>{item.category}</td><td>{formatNumber(item.count)}</td></tr>)}</tbody>
               </table>
             </div>
           </div>
@@ -443,7 +504,7 @@ export default function AnalyticsPage() {
             <div className="ticket-table-wrap">
               <table className="ticket-table">
                 <thead><tr><th>Priority</th><th>Count</th></tr></thead>
-                <tbody>{(ai?.recommendations_by_priority ?? []).map((item) => <tr key={item.priority}><td>{item.priority}</td><td>{item.count}</td></tr>)}</tbody>
+                <tbody>{(ai?.recommendations_by_priority ?? []).map((item) => <tr key={item.priority}><td>{item.priority}</td><td>{formatNumber(item.count)}</td></tr>)}</tbody>
               </table>
             </div>
           </div>
@@ -456,20 +517,20 @@ export default function AnalyticsPage() {
             <p className="eyebrow">AUTOMATION KPIs</p>
             <h2>Rules, runs and approvals</h2>
             <div className="metric-grid analytics-mini-grid">
-              <article className="metric-card"><span>Active rules</span><strong>{automation?.active_rules ?? 0}</strong></article>
-              <article className="metric-card"><span>Runs today</span><strong>{automation?.runs_today ?? 0}</strong></article>
-              <article className="metric-card"><span>Failed runs</span><strong>{automation?.failed_runs ?? 0}</strong></article>
-              <article className="metric-card"><span>Pending approvals</span><strong>{automation?.pending_approvals ?? 0}</strong></article>
+              <article className="metric-card"><span>Active rules</span><strong>{formatNumber(automation?.active_rules ?? 0)}</strong></article>
+              <article className="metric-card"><span>Runs today</span><strong>{formatNumber(automation?.runs_today ?? 0)}</strong></article>
+              <article className="metric-card"><span>Failed runs</span><strong>{formatNumber(automation?.failed_runs ?? 0)}</strong></article>
+              <article className="metric-card"><span>Pending approvals</span><strong>{formatNumber(automation?.pending_approvals ?? 0)}</strong></article>
             </div>
           </div>
           <div>
             <p className="eyebrow">EFFICIENCY</p>
             <h2>Automation effectiveness</h2>
             <div className="metric-grid analytics-mini-grid">
-              <article className="metric-card"><span>Success rate</span><strong>{automation?.automation_success_rate ?? 0}%</strong></article>
-              <article className="metric-card"><span>Runs total</span><strong>{automation?.automation_runs_count ?? 0}</strong></article>
-              <article className="metric-card"><span>Runbooks</span><strong>{automation?.runbooks_available ?? 0}</strong></article>
-              <article className="metric-card"><span>Runbook exec</span><strong>{automation?.runbook_execution_count ?? 0}</strong></article>
+              <article className="metric-card"><span>Success rate</span><strong>{formatPercent(automation?.automation_success_rate ?? 0)}</strong></article>
+              <article className="metric-card"><span>Runs total</span><strong>{formatNumber(automation?.automation_runs_count ?? 0)}</strong></article>
+              <article className="metric-card"><span>Runbooks</span><strong>{formatNumber(automation?.runbooks_available ?? 0)}</strong></article>
+              <article className="metric-card"><span>Runbook exec</span><strong>{formatNumber(automation?.runbook_execution_count ?? 0)}</strong></article>
             </div>
           </div>
         </section>
@@ -481,16 +542,16 @@ export default function AnalyticsPage() {
             <p className="eyebrow">SECURITY</p>
             <h2>Security analytics</h2>
             <div className="metric-grid analytics-mini-grid">
-              <article className="metric-card"><span>Login success</span><strong>{security?.login_success ?? 0}</strong><p>Успешные входы.</p></article>
-              <article className="metric-card"><span>Login failed</span><strong>{security?.login_failed ?? 0}</strong><p>Неуспешные входы.</p></article>
-              <article className="metric-card"><span>Audit events</span><strong>{security?.audit_events_count ?? 0}</strong><p>Всего audit events.</p></article>
-              <article className="metric-card"><span>Admin changes</span><strong>{security?.admin_changes_today ?? 0}</strong><p>Изменения за сегодня.</p></article>
+              <article className="metric-card"><span>Login success</span><strong>{formatNumber(security?.login_success ?? 0)}</strong><p>Успешные входы.</p></article>
+              <article className="metric-card"><span>Login failed</span><strong>{formatNumber(security?.login_failed ?? 0)}</strong><p>Неуспешные входы.</p></article>
+              <article className="metric-card"><span>Audit events</span><strong>{formatNumber(security?.audit_events_count ?? 0)}</strong><p>Всего audit events.</p></article>
+              <article className="metric-card"><span>Admin changes</span><strong>{formatNumber(security?.admin_changes_today ?? 0)}</strong><p>Изменения за сегодня.</p></article>
             </div>
             <article className="foundation-card analytics-inline-card">
               <div>
                 <p className="eyebrow">RISK SUMMARY</p>
                 <h2>{(security?.risk_summary.risk_level ?? 'n/a').toUpperCase()}</h2>
-                <p>Sensitive settings count: {security?.sensitive_settings_count ?? 0}</p>
+                <p>Sensitive settings count: {formatNumber(security?.sensitive_settings_count ?? 0)}</p>
               </div>
             </article>
           </div>
@@ -516,23 +577,23 @@ export default function AnalyticsPage() {
             <p className="eyebrow">SAVED REPORTS</p>
             <h2>Шаблоны и snapshots</h2>
             <div className="analytics-actions">
-              <button type="button" onClick={() => createSavedMutation.mutate()} disabled={createSavedMutation.isPending}>
+              {canCreateReports ? <button type="button" onClick={() => createSavedMutation.mutate()} disabled={createSavedMutation.isPending}>
                 {createSavedMutation.isPending ? 'Создание…' : 'Создать saved report'}
-              </button>
-              <button type="button" onClick={() => createSnapshotMutation.mutate()} disabled={createSnapshotMutation.isPending}>
+              </button> : null}
+              {canCreateReports ? <button type="button" onClick={() => createSnapshotMutation.mutate()} disabled={createSnapshotMutation.isPending}>
                 {createSnapshotMutation.isPending ? 'Создание…' : 'Создать snapshot'}
-              </button>
-              <button
+              </button> : null}
+              {canExportReports ? <button
                 type="button"
                 onClick={() => {
-                  const confirmed = window.confirm('Сформировать demo export payload?')
+                  const confirmed = window.confirm(translate('Сформировать demo export payload?'))
                   if (!confirmed) return
                   exportMutation.mutate()
                 }}
                 disabled={exportMutation.isPending}
               >
                 {exportMutation.isPending ? 'Экспорт…' : 'Demo export'}
-              </button>
+              </button> : null}
             </div>
             {createSavedMutation.isError || createSnapshotMutation.isError || exportMutation.isError ? (
               <p className="error-message">Одна из операций отчётности завершилась ошибкой.</p>
@@ -567,5 +628,6 @@ export default function AnalyticsPage() {
       ) : null}
       </section>
     </AppShell>
+    </LocalizedContent>
   )
 }

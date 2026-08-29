@@ -9,6 +9,7 @@ modes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -29,6 +30,7 @@ from app.models.job_lifecycle_event import JobLifecycleEvent
 from app.models.job_event_consumer_delivery import JobEventConsumerDelivery
 from app.models.job_event_consumer_offset import JobEventConsumerOffset
 from app.models.job_run import JobRun
+from app.services.audit import log_audit
 
 logger = logging.getLogger("app.jobs")
 
@@ -110,9 +112,16 @@ def create_job_lifecycle_event(
     payload: dict[str, Any] | None = None,
 ) -> JobLifecycleEvent:
     settings = get_settings()
+    # PostgreSQL serializes lifecycle allocation per job. SQLite development
+    # ignores FOR UPDATE but still benefits from the unique invariant.
+    db.execute(select(JobRun.id).where(JobRun.id == job.id).with_for_update()).scalar_one()
+    current_sequence = db.scalar(
+        select(func.max(JobLifecycleEvent.sequence)).where(JobLifecycleEvent.job_id == job.id)
+    )
     event = JobLifecycleEvent(
         id=_uuid(),
         job_id=job.id,
+        sequence=int(current_sequence or 0) + 1,
         event_type=event_type,
         task_name=job.task_name,
         tenant_id=job.tenant_id,
@@ -135,7 +144,11 @@ def create_job_lifecycle_event(
 
 
 def list_job_events(db: Session, job_id: str) -> list[JobLifecycleEvent]:
-    stmt = select(JobLifecycleEvent).where(JobLifecycleEvent.job_id == job_id).order_by(JobLifecycleEvent.created_at.asc())
+    stmt = (
+        select(JobLifecycleEvent)
+        .where(JobLifecycleEvent.job_id == job_id)
+        .order_by(JobLifecycleEvent.sequence.asc())
+    )
     return list(db.scalars(stmt).all())
 
 
@@ -1029,8 +1042,25 @@ def _enqueue_job_id(*, redis_url: str, queue_name: str, job_id: str) -> None:
     enqueue_job_id(redis_url=redis_url, queue_name=queue_name, job_id=job_id)
 
 
-def create_outbox_entry(db: Session, *, job_id: str, queue_name: str) -> JobQueueOutbox:
+def create_outbox_entry(
+    db: Session,
+    *,
+    job_id: str,
+    queue_name: str,
+    operation_id: str | None = None,
+) -> JobQueueOutbox:
+    """Create an idempotent queue publication intent.
+
+    A job's initial enqueue uses one stable key. A dead-letter replay is a new
+    publication operation for the same job, so callers provide the lifecycle
+    event id. Hashing that id keeps the key below the model's 200-character
+    limit even when a deployment uses the maximum queue-name length.
+    """
+
     dedup_key = f"{queue_name}:{job_id}"
+    if operation_id is not None:
+        operation_hash = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:16]
+        dedup_key = f"{dedup_key}:{operation_hash}"
     existing = db.scalar(select(JobQueueOutbox).where(JobQueueOutbox.dedup_key == dedup_key))
     if existing is not None:
         return existing
@@ -1052,6 +1082,92 @@ def create_outbox_entry(db: Session, *, job_id: str, queue_name: str) -> JobQueu
     db.add(entry)
     db.flush()
     return entry
+
+
+def prepare_dead_letter_replay(
+    db: Session,
+    *,
+    job: JobRun,
+    queue_name: str | None,
+) -> JobRun:
+    """Reset a dead-letter job and persist a new replay publication intent.
+
+    ``queue_name=None`` prepares the job for immediate inline execution. Redis
+    mode supplies the queue name and receives a distinct, event-scoped outbox
+    key so a previously published initial enqueue cannot suppress the replay.
+    """
+
+    if job.status != "dead_letter":
+        raise ValueError("Only dead-letter jobs can be replayed")
+
+    previous_status = job.status
+    job.status = "queued"
+    job.attempts = 0
+    job.error_message = None
+    job.result_json = None
+    job.started_at = None
+    job.finished_at = None
+    job.duration_ms = None
+    db.flush()
+    replay_event = create_job_lifecycle_event(
+        db,
+        job=job,
+        event_type="replayed",
+        previous_status=previous_status,
+        current_status=job.status,
+        payload={"attempts_reset_to": 0},
+    )
+    if queue_name is not None:
+        create_outbox_entry(
+            db,
+            job_id=job.id,
+            queue_name=queue_name,
+            operation_id=replay_event.id,
+        )
+    return job
+
+
+def acknowledge_dead_letter(
+    db: Session,
+    *,
+    job: JobRun,
+    redis_url: str,
+    queue_name: str,
+    actor_email: str,
+    resolution_code: str,
+    reason: str,
+) -> int:
+    """Acknowledge a triaged DLQ item while preserving database evidence."""
+
+    if job.status != "dead_letter":
+        raise ValueError("Only dead-letter jobs can be acknowledged")
+    redis_client = Redis.from_url(
+        redis_url,
+        decode_responses=True,
+        socket_connect_timeout=3,
+        socket_timeout=3,
+    )
+    try:
+        removed = int(redis_client.lrem(queue_name, 0, job.id))
+    finally:
+        redis_client.close()
+
+    log_audit(
+        db,
+        action="job.dead_letter_acknowledged",
+        entity_type="job_run",
+        entity_id=job.id,
+        actor_email=actor_email,
+        tenant_id=job.tenant_id,
+        metadata={
+            "task_name": job.task_name,
+            "resolution_code": resolution_code,
+            "reason": reason,
+            "removed_occurrences": removed,
+            "database_status_preserved": job.status,
+        },
+    )
+    return removed
 
 
 def outbox_summary(db: Session, queue_name: str | None = None) -> dict[str, int]:
@@ -1247,12 +1363,14 @@ __all__ = [
     "create_job_run",
     "create_job_lifecycle_event",
     "create_outbox_entry",
+    "acknowledge_dead_letter",
     "enqueue_job_id",
     "enqueue_task",
     "execute_job",
     "get_job",
     "job_summary",
     "list_jobs",
+    "prepare_dead_letter_replay",
     "job_event_bus_summary",
     "job_event_consumer_summary",
     "job_event_consumers_diagnostics",

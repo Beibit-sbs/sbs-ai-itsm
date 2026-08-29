@@ -1,9 +1,7 @@
 """Unit tests for Stage 030: Scheduled Metrics Polling."""
-import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, patch
 
-import pytest
 
 from app.services.jobs.metrics_polling import (
     poll_active_rollouts,
@@ -34,6 +32,7 @@ class TestPollActiveRollouts:
         mock_rollout = Mock()
         mock_rollout.id = "crl-1"
         mock_rollout.error_rate_baseline = 0.5
+        mock_rollout.error_rate_current = 0.48
         mock_rollout.updated_at = datetime.now(UTC)
 
         mock_db = Mock()
@@ -41,25 +40,23 @@ class TestPollActiveRollouts:
         mock_db.query.return_value = mock_query
         mock_query.filter.return_value.all.return_value = [mock_rollout]
 
-        with patch("app.services.jobs.metrics_polling.update_rollout_metrics") as mock_update:
-            with patch("app.services.jobs.metrics_polling.check_auto_rollback_threshold") as mock_check:
-                with patch("app.services.jobs.metrics_polling.log_audit"):
-                    mock_update.return_value = mock_rollout
-                    mock_check.return_value = (False, None)  # Safe
+        with patch("app.services.jobs.metrics_polling.check_auto_rollback_threshold") as mock_check:
+            with patch("app.services.jobs.metrics_polling.log_audit"):
+                mock_check.return_value = (False, None)  # Safe
 
-                    stats = poll_active_rollouts(mock_db)
+                stats = poll_active_rollouts(mock_db)
 
-                    assert stats["polled_count"] == 1
-                    assert stats["auto_rollback_count"] == 0
-                    assert stats["errors"] == []
-                    mock_update.assert_called_once()
-                    mock_check.assert_called_once()
+                assert stats["polled_count"] == 1
+                assert stats["auto_rollback_count"] == 0
+                assert stats["errors"] == []
+                mock_check.assert_called_once()
 
     def test_poll_active_rollouts_triggers_auto_rollback(self):
         """Poll triggers auto-rollback when metrics unsafe."""
         mock_rollout = Mock()
         mock_rollout.id = "crl-1"
         mock_rollout.error_rate_baseline = 0.5
+        mock_rollout.error_rate_current = 0.9
         mock_rollout.updated_at = datetime.now(UTC)
 
         mock_db = Mock()
@@ -67,39 +64,34 @@ class TestPollActiveRollouts:
         mock_db.query.return_value = mock_query
         mock_query.filter.return_value.all.return_value = [mock_rollout]
 
-        with patch("app.services.jobs.metrics_polling.update_rollout_metrics") as mock_update:
-            with patch("app.services.jobs.metrics_polling.check_auto_rollback_threshold") as mock_check:
-                with patch("app.services.jobs.metrics_polling.log_audit"):
-                    mock_update.return_value = mock_rollout
-                    mock_check.return_value = (True, "error_rate_threshold_exceeded: 75% > 50%")
+        with patch("app.services.jobs.metrics_polling.check_auto_rollback_threshold") as mock_check:
+            with patch("app.services.jobs.metrics_polling.log_audit"):
+                mock_check.return_value = (True, "error_rate_threshold_exceeded: 75% > 50%")
 
-                    stats = poll_active_rollouts(mock_db)
+                stats = poll_active_rollouts(mock_db)
 
-                    assert stats["polled_count"] == 1
-                    assert stats["auto_rollback_count"] == 1
-                    assert stats["errors"] == []
-                    # Verify auto_rollback_triggered set on rollout
-                    assert mock_rollout.auto_rollback_triggered is True
+                assert stats["polled_count"] == 1
+                assert stats["auto_rollback_count"] == 1
+                assert stats["errors"] == []
+                # Verify auto_rollback_triggered set on rollout
+                assert mock_rollout.auto_rollback_triggered is True
 
     def test_poll_active_rollouts_error_handling(self):
         """Handle errors gracefully during polling."""
         mock_rollout = Mock()
         mock_rollout.id = "crl-1"
+        mock_rollout.error_rate_current = None
 
         mock_db = Mock()
         mock_query = Mock()
         mock_db.query.return_value = mock_query
         mock_query.filter.return_value.all.return_value = [mock_rollout]
 
-        with patch("app.services.jobs.metrics_polling.update_rollout_metrics") as mock_update:
-            mock_update.side_effect = ValueError("Simulated error")
+        stats = poll_active_rollouts(mock_db)
 
-            stats = poll_active_rollouts(mock_db)
-
-            assert stats["polled_count"] == 0
-            assert stats["auto_rollback_count"] == 0
-            assert len(stats["errors"]) == 1
-            assert "Error polling crl-1" in stats["errors"][0]
+        assert stats["polled_count"] == 0
+        assert stats["auto_rollback_count"] == 0
+        assert stats["errors"] == ["Metrics evidence unavailable for crl-1"]
 
 
 class TestGetRolloutPollingStatus:

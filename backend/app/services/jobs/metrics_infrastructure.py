@@ -5,14 +5,13 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, desc
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.models.policy_rollout_metrics import (
     PolicyRolloutMetricsHistory,
     PolicyRolloutMetricsSnapshot,
 )
-from app.services.audit import log_audit
 
 logger = logging.getLogger("app.metrics_infrastructure")
 
@@ -306,37 +305,33 @@ class MetricsCollectorInterface:
 
 
 class PrometheusMetricsCollector(MetricsCollectorInterface):
-    """Prometheus metrics collector backend."""
+    """Compatibility wrapper around the bounded Prometheus collector."""
     
     def __init__(self, prometheus_url: str):
-        self.prometheus_url = prometheus_url
+        from app.services.jobs.alert_notifications import (
+            PrometheusMetricsCollector as BoundedPrometheusMetricsCollector,
+        )
+
+        self._collector = BoundedPrometheusMetricsCollector(prometheus_url)
     
     async def collect_metrics(self, rollout_id: str, consumer_name: str) -> dict[str, float | None]:
-        """Collect metrics from Prometheus."""
-        # TODO: Implement real Prometheus queries
-        # For now, return simulated data (Stage 032+)
-        return {
-            "error_rate": 0.5,
-            "latency_p99_ms": 250.0,
-            "throughput_eps": 1000.0,
-        }
+        """Collect trusted metrics from Prometheus."""
+        return await self._collector.collect_metrics(rollout_id, consumer_name)
 
 
 class CloudWatchMetricsCollector(MetricsCollectorInterface):
-    """CloudWatch metrics collector backend."""
+    """Compatibility wrapper around the CloudWatch collector."""
     
     def __init__(self, region: str):
-        self.region = region
+        from app.services.jobs.alert_notifications import (
+            CloudWatchMetricsCollector as BoundedCloudWatchMetricsCollector,
+        )
+
+        self._collector = BoundedCloudWatchMetricsCollector(region=region)
     
     async def collect_metrics(self, rollout_id: str, consumer_name: str) -> dict[str, float | None]:
         """Collect metrics from CloudWatch."""
-        # TODO: Implement real CloudWatch queries
-        # For now, return simulated data (Stage 032+)
-        return {
-            "error_rate": 0.5,
-            "latency_p99_ms": 250.0,
-            "throughput_eps": 1000.0,
-        }
+        return await self._collector.collect_metrics(rollout_id, consumer_name)
 
 
 class SimulatedMetricsCollector(MetricsCollectorInterface):

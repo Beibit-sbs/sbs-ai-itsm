@@ -1,11 +1,9 @@
 """Policy rollout metrics history model for time-series tracking."""
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, DateTime, Float, Integer, String, JSON, ForeignKey, Index
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, DateTime, Float, Integer, String, JSON, ForeignKey, Index, Boolean
 
 from app.db.base import Base
 
@@ -22,7 +20,7 @@ class PolicyRolloutMetricsHistory(Base):
     id: str = Column(String(36), primary_key=True, default=lambda: str(__import__('uuid').uuid4()))
     
     # Reference to the rollout
-    rollout_id: str = Column(String(36), ForeignKey("policy_canary_rollout.id"), nullable=False, index=True)
+    rollout_id: str = Column(String(36), ForeignKey("policy_canary_rollouts.id"), nullable=False, index=True)
     
     # Metric collection timestamp
     collected_at: datetime = Column(DateTime(timezone=True), nullable=False, index=True)
@@ -79,7 +77,7 @@ class PolicyRolloutMetricsSnapshot(Base):
     
     __tablename__ = "policy_rollout_metrics_snapshot"
     
-    rollout_id: str = Column(String(36), ForeignKey("policy_canary_rollout.id"), primary_key=True)
+    rollout_id: str = Column(String(36), ForeignKey("policy_canary_rollouts.id"), primary_key=True)
     
     # Latest metric values
     error_rate: float | None = Column(Float, nullable=True)
@@ -97,7 +95,7 @@ class PolicyRolloutMetricsSnapshot(Base):
     error_rate_previous: float | None = Column(Float, nullable=True)  # Previous poll value
     
     # Trend indicators
-    error_rate_increasing: bool | None = Column(nullable=True)  # True if trending up
+    error_rate_increasing: bool | None = Column(Boolean, nullable=True)  # True if trending up
     error_rate_change_percent: float | None = Column(Float, nullable=True)  # % change from previous
     
     # Last update timestamp

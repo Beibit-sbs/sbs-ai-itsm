@@ -28,11 +28,11 @@ class MockEmailProvider(BaseEmailProvider):
             to_email=to_email,
             subject=subject,
             body=body,
-            status="SENT",
-            error_message=None,
+            status="SIMULATED",
+            error_message="Simulation only; no external email was sent",
             related_ticket_id=related_ticket_id,
             created_at=now,
-            sent_at=now,
+            sent_at=None,
         )
         db.add(log)
         return log

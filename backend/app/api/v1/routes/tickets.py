@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
+from difflib import SequenceMatcher
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import and_, asc, desc, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
@@ -14,11 +19,14 @@ from app.models.asset import Asset
 from app.models.sla import SlaPolicy
 from app.models.tenant import Tenant
 from app.models.ticket import Ticket
+from app.models.ticket_governance_action import TicketGovernanceAction
+from app.models.ticket_bulk_plan import TicketBulkPlan
 from app.models.ticket_category import TicketCategory
 from app.models.ticket_comment import TicketComment
 from app.models.ticket_history import TicketHistory
 from app.models.ticket_knowledge_link import TicketKnowledgeLink
 from app.models.ticket_priority import TicketPriority
+from app.models.ticket_participant import TicketParticipant
 from app.models.ticket_status import TicketStatus
 from app.models.user import User
 from app.models.knowledge_article import KnowledgeArticle
@@ -26,26 +34,33 @@ from app.models.knowledge_usage_log import KnowledgeUsageLog
 from app.services.asset_sla import calculate_ticket_sla_status
 from app.services.audit import log_audit
 from app.services.automation import build_ticket_context, trigger_automation_event
+from app.services.enterprise_sla import sync_ticket_sla
 from app.services.notifications import create_ticket_event_notification
-from app.services.rbac import require_permissions
+from app.services.rbac import (
+    can_read_ticket as rbac_can_read_ticket,
+    has_permission,
+    is_ticket_assigned_only,
+    is_ticket_requester_only,
+    require_permissions,
+    ticket_assigned_to_current,
+    ticket_is_unassigned,
+    ticket_requested_by_current,
+    ticket_visibility_scopes,
+)
 from app.services.service_desk import build_ticket_summary, calculate_response_minutes, next_ticket_number
 from app.services.sla import calculate_sla_state
+from app.services.ticket_lifecycle import (
+    RESOLUTION_COMPLETE_STATUSES,
+    TICKET_STATUS_TRANSITIONS,
+    TicketActorKind,
+    TicketLifecycleError,
+    allowed_ticket_transition,
+    canonical_ticket_status,
+    transition_ticket_status,
+    transition_ticket_status_path,
+)
 
 router = APIRouter(prefix="/tickets")
-
-STATUS_CANONICAL_MAP = {
-    "new": "NEW",
-    "triage": "TRIAGE",
-    "triaged": "TRIAGE",
-    "assigned": "ASSIGNED",
-    "in_progress": "IN_PROGRESS",
-    "waiting_user": "WAITING_USER",
-    "waiting_vendor": "WAITING_VENDOR",
-    "resolved": "RESOLVED",
-    "closed": "CLOSED",
-    "reopened": "REOPENED",
-    "cancelled": "CANCELLED",
-}
 
 STATUS_COMPAT_OUT = {
     "TRIAGED": "TRIAGE",
@@ -64,20 +79,8 @@ STATUS_LABELS_RU = {
     "CANCELLED": "Отменена",
 }
 
-STATUS_TRANSITIONS: dict[str, set[str]] = {
-    "NEW": {"TRIAGE", "ASSIGNED", "CANCELLED"},
-    "TRIAGE": {"ASSIGNED", "WAITING_USER", "CANCELLED"},
-    "ASSIGNED": {"IN_PROGRESS", "WAITING_USER", "WAITING_VENDOR"},
-    "IN_PROGRESS": {"RESOLVED", "WAITING_USER", "WAITING_VENDOR"},
-    "WAITING_USER": {"IN_PROGRESS", "CANCELLED"},
-    "WAITING_VENDOR": {"IN_PROGRESS"},
-    "RESOLVED": {"CLOSED", "REOPENED"},
-    "CLOSED": {"REOPENED"},
-    "REOPENED": {"TRIAGE", "ASSIGNED"},
-    "CANCELLED": set(),
-}
-
-CLOSED_STATUSES = {"RESOLVED", "CLOSED", "CANCELLED"}
+STATUS_TRANSITIONS = TICKET_STATUS_TRANSITIONS
+CLOSED_STATUSES = RESOLUTION_COMPLETE_STATUSES
 
 
 class TicketCommentResponse(BaseModel):
@@ -103,12 +106,24 @@ class TicketHistoryResponse(BaseModel):
 
 class TicketListResponse(BaseModel):
     id: str
+    tenant_id: str | None
     ticket_number: str | None
     title: str
     description: str | None
     requester_id: str | None = None
     requester_name: str
     requester_email: str
+    requester_contact: str | None = None
+    created_by_id: str | None = None
+    created_by_name: str | None = None
+    creation_channel: str = "LEGACY"
+    parent_ticket_id: str | None = None
+    merged_into_id: str | None = None
+    governance_version: int = 1
+    merge_reason: str | None = None
+    merged_by_id: str | None = None
+    merged_by_name: str | None = None
+    merged_at: datetime | None = None
     department: str
     location: str
     category: str
@@ -120,6 +135,7 @@ class TicketListResponse(BaseModel):
     status: str
     status_label: str
     status_color: str
+    allowed_transitions: list[str] = Field(default_factory=list)
     assignee_id: str | None = None
     assignee_name: str | None
     asset_id: str | None = None
@@ -165,6 +181,7 @@ class TicketCreateRequest(BaseModel):
     requester_name: str | None = None
     requester_email: str | None = None
     requester_contact: str | None = None
+    on_behalf_reason: str | None = Field(default=None, max_length=2_000)
     department: str
     location: str | None = None
     category: str
@@ -188,6 +205,8 @@ class TicketPatchRequest(BaseModel):
     assignee_name: str | None = None
     sla_due_at: datetime | None = None
     asset_id: str | None = None
+    expected_version: int | None = Field(default=None, ge=1)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=120)
 
 
 class CommentCreateRequest(BaseModel):
@@ -201,11 +220,61 @@ class TicketTransitionRequest(BaseModel):
     is_internal: bool = False
     satisfaction_score: int | None = Field(default=None, ge=1, le=5)
     reopen_reason: str | None = None
+    expected_version: int | None = Field(default=None, ge=1)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=120)
 
 
 class TicketAssignRequest(BaseModel):
     assignee_id: str | None = None
     comment: str | None = None
+
+
+class TicketBulkPreviewRequest(BaseModel):
+    ticket_ids: list[str] = Field(min_length=1, max_length=50)
+    status: str | None = None
+    assignee_id: str | None = None
+    comment: str | None = Field(default=None, max_length=500)
+
+
+class TicketBulkTargetPreview(BaseModel):
+    ticket_id: str
+    ticket_number: str | None
+    title: str
+    current_status: str
+    effective_status: str
+    target_status: str | None
+    current_assignee_name: str | None
+    target_assignee_name: str | None
+    eligible: bool
+    reason: str | None
+
+
+class TicketBulkPreviewResponse(BaseModel):
+    plan_id: str
+    status: str
+    revision: int
+    operation_sha256: str
+    targets_sha256: str
+    confirmation_phrase: str
+    eligible_count: int
+    skipped_count: int
+    expires_at: datetime
+    targets: list[TicketBulkTargetPreview]
+
+
+class TicketBulkExecuteRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    confirmation_phrase: str = Field(min_length=1, max_length=80)
+
+
+class TicketBulkExecuteResponse(BaseModel):
+    plan_id: str
+    status: str
+    revision: int
+    updated_count: int
+    skipped_count: int
+    already_executed: bool
+    executed_at: datetime
 
 
 class TicketKnowledgeLinkCreateRequest(BaseModel):
@@ -229,13 +298,137 @@ class TicketKnowledgeLinkResponse(BaseModel):
     created_at: datetime
 
 
+class TicketParticipantCreateRequest(BaseModel):
+    user_id: str | None = None
+    display_name: str | None = Field(default=None, max_length=200)
+    email: str | None = Field(default=None, max_length=255)
+    participant_role: str = Field(default="WATCHER", pattern=r"^(WATCHER|COLLABORATOR|REQUESTER_REPRESENTATIVE)$")
+    notification_scope: str = Field(default="PUBLIC_ONLY", pattern=r"^(ALL|PUBLIC_ONLY|STATUS_ONLY|NONE)$")
+    notify_in_app: bool = True
+    notify_email: bool = False
+    reason: str = Field(min_length=3, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "TicketParticipantCreateRequest":
+        if not self.user_id and (not self.display_name or not self.email):
+            raise ValueError("user_id or display_name and email are required")
+        return self
+
+
+class TicketParticipantPatchRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    participant_role: str | None = Field(default=None, pattern=r"^(WATCHER|COLLABORATOR|REQUESTER_REPRESENTATIVE)$")
+    notification_scope: str | None = Field(default=None, pattern=r"^(ALL|PUBLIC_ONLY|STATUS_ONLY|NONE)$")
+    notify_in_app: bool | None = None
+    notify_email: bool | None = None
+    reason: str = Field(min_length=3, max_length=2_000)
+
+
+class TicketWatchRequest(BaseModel):
+    notification_scope: str = Field(default="PUBLIC_ONLY", pattern=r"^(ALL|PUBLIC_ONLY|STATUS_ONLY|NONE)$")
+    notify_in_app: bool = True
+    notify_email: bool = False
+
+
+class TicketParticipantResponse(BaseModel):
+    id: str
+    ticket_id: str
+    user_id: str | None
+    display_name: str
+    email: str
+    participant_role: str
+    notification_scope: str
+    notify_in_app: bool
+    notify_email: bool
+    is_active: bool
+    version_number: int
+    added_by_id: str | None
+    removed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TicketParticipantCandidateResponse(BaseModel):
+    id: str
+    full_name: str
+    email: str
+    role: str
+
+
+class TicketRequesterCandidateResponse(BaseModel):
+    id: str
+    full_name: str
+    email: str
+    department: str | None
+    location: str | None
+    phone: str | None
+    role: str
+
+
+class TicketDuplicateCandidateResponse(BaseModel):
+    id: str
+    ticket_number: str | None
+    title: str
+    requester_name: str
+    requester_email: str
+    category: str
+    priority: str
+    status: str
+    created_at: datetime
+    governance_version: int
+    score: float
+    evidence: list[str]
+    pair_key: str
+
+
+class TicketDuplicateDismissRequest(BaseModel):
+    expected_ticket_version: int = Field(ge=1)
+    expected_candidate_version: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=2_000)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+
+class TicketMergeRequest(BaseModel):
+    target_ticket_id: str
+    expected_source_version: int = Field(ge=1)
+    expected_target_version: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=2_000)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+
+class TicketSplitRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=255)
+    description: str | None = Field(default=None, max_length=20_000)
+    category: str | None = None
+    priority: str | None = None
+    expected_source_version: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=2_000)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+
+class TicketGovernanceActionResponse(BaseModel):
+    id: str
+    action_type: str
+    source_ticket_id: str
+    target_ticket_id: str | None
+    reason: str
+    actor_name: str
+    score: float | None
+    evidence: dict[str, object] | None
+    created_at: datetime
+
+
+class TicketGovernanceResultResponse(BaseModel):
+    action: TicketGovernanceActionResponse
+    source_ticket_id: str
+    target_ticket_id: str | None
+    source_version: int
+    target_version: int | None
+    already_applied: bool = False
+
+
 def _canonical_status(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = value.strip().lower()
-    if not normalized:
-        return None
-    return STATUS_CANONICAL_MAP.get(normalized, value.strip().upper())
+    return canonical_ticket_status(value)
 
 
 def _status_for_output(value: str) -> str:
@@ -264,25 +457,43 @@ def _ensure_ticket_access(ticket: Ticket, current_user: AuthUserResponse) -> Non
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
 
 
+def _ticket_visibility_scopes(current_user: AuthUserResponse) -> frozenset[str]:
+    return ticket_visibility_scopes(current_user)
+
+
+def _is_requester_only(current_user: AuthUserResponse) -> bool:
+    return is_ticket_requester_only(current_user)
+
+
+def _is_assigned_only(current_user: AuthUserResponse) -> bool:
+    return is_ticket_assigned_only(current_user)
+
+
+def _ticket_requested_by_current(ticket: Ticket, current_user: AuthUserResponse) -> bool:
+    return ticket_requested_by_current(current_user, ticket)
+
+
+def _ticket_assigned_to_current(ticket: Ticket, current_user: AuthUserResponse) -> bool:
+    return ticket_assigned_to_current(current_user, ticket)
+
+
+def _ticket_is_unassigned(ticket: Ticket) -> bool:
+    return ticket_is_unassigned(ticket)
+
+
 def _can_read_ticket(current_user: AuthUserResponse, ticket: Ticket) -> bool:
-    if current_user.role == "saas_root":
-        return True
-    if current_user.tenant_id != ticket.tenant_id:
-        return False
-    if current_user.role == "requester":
-        return current_user.email.lower() == ticket.requester_email.lower()
-    if current_user.role == "it_agent":
-        if ticket.assignee_id == current_user.id:
-            return True
-        if ticket.assignee_name and ticket.assignee_name.lower() == current_user.full_name.lower():
-            return True
-        if ticket.assignee_id is None and not (ticket.assignee_name or "").strip():
-            return True
-    return True
+    return rbac_can_read_ticket(current_user, ticket)
 
 
 def _can_manage_all_tickets(current_user: AuthUserResponse) -> bool:
-    return current_user.role in {"saas_root", "organization_admin", "it_manager"}
+    return has_permission(current_user, "tickets.assign")
+
+
+def _can_self_assign_ticket(current_user: AuthUserResponse) -> bool:
+    return has_permission(
+        current_user,
+        "tickets.self_assign",
+    ) or _can_manage_all_tickets(current_user)
 
 
 def _lookup_maps(db: Session) -> tuple[dict[str, TicketCategory], dict[str, TicketPriority], dict[str, TicketStatus], dict[str, SlaPolicy], dict[str, Asset]]:
@@ -326,6 +537,17 @@ def _serialize_ticket(
     )
     payload["status"] = status_code
     payload["requester_id"] = ticket.requester_id
+    payload["requester_contact"] = ticket.requester_contact
+    payload["created_by_id"] = ticket.created_by_id
+    payload["created_by_name"] = ticket.created_by_name
+    payload["creation_channel"] = ticket.creation_channel
+    payload["parent_ticket_id"] = ticket.parent_ticket_id
+    payload["merged_into_id"] = ticket.merged_into_id
+    payload["governance_version"] = ticket.governance_version
+    payload["merge_reason"] = ticket.merge_reason
+    payload["merged_by_id"] = ticket.merged_by_id
+    payload["merged_by_name"] = ticket.merged_by_name
+    payload["merged_at"] = ticket.merged_at
     payload["assignee_id"] = ticket.assignee_id
     payload["closed_at"] = ticket.closed_at
     payload["reopened_at"] = ticket.reopened_at
@@ -334,6 +556,7 @@ def _serialize_ticket(
     sla_state = calculate_sla_state(ticket)
     return TicketListResponse(
         **payload,
+        allowed_transitions=sorted(TICKET_STATUS_TRANSITIONS[status_code]),
         category_color=category.color if category else "#8fa6bb",
         priority_color=priority.color if priority else "#8fa6bb",
         status_color=status_item.color if status_item else "#8fa6bb",
@@ -360,7 +583,7 @@ def _load_histories(db: Session, ticket_ids: list[str]) -> dict[str, list[Ticket
 
 def _comments_query_for_user(current_user: AuthUserResponse, ticket_id: str):
     statement = select(TicketComment).where(TicketComment.ticket_id == ticket_id)
-    if current_user.role == "requester":
+    if _is_requester_only(current_user):
         statement = statement.where(TicketComment.is_internal == False)  # noqa: E712
     return statement.order_by(TicketComment.created_at.asc())
 
@@ -391,31 +614,59 @@ def _ticket_base_query(current_user: AuthUserResponse):
 
 
 def _apply_role_scope(statement, current_user: AuthUserResponse):
-    if current_user.role == "requester":
-        return statement.where(func.lower(Ticket.requester_email) == current_user.email.lower())
-    if current_user.role == "it_agent":
-        return statement.where(
+    scopes = _ticket_visibility_scopes(current_user)
+    if "all" in scopes:
+        return statement
+    clauses = []
+    if "requester" in scopes:
+        clauses.append(
             or_(
-                Ticket.assignee_id == current_user.id,
-                func.lower(func.coalesce(Ticket.assignee_name, "")) == current_user.full_name.lower(),
-                and_(Ticket.assignee_id.is_(None), or_(Ticket.assignee_name.is_(None), func.length(func.trim(Ticket.assignee_name)) == 0)),
+                Ticket.requester_id == current_user.id,
+                func.lower(Ticket.requester_email) == current_user.email.lower(),
             )
         )
-    return statement
+    if "assigned" in scopes:
+        clauses.append(
+            or_(
+                Ticket.assignee_id == current_user.id,
+                func.lower(func.coalesce(Ticket.assignee_name, ""))
+                == current_user.full_name.lower(),
+                and_(
+                    Ticket.assignee_id.is_(None),
+                    or_(
+                        Ticket.assignee_name.is_(None),
+                        func.length(func.trim(Ticket.assignee_name)) == 0,
+                    ),
+                ),
+            )
+        )
+    if not clauses:
+        return statement.where(Ticket.id.is_(None))
+    return statement.where(or_(*clauses))
 
 
 def _apply_queue_scope(statement, queue: str, current_user: AuthUserResponse):
     now = datetime.now(UTC)
     queue_value = queue.lower()
     if queue_value == "mine":
-        if current_user.role == "requester":
-            return statement.where(func.lower(Ticket.requester_email) == current_user.email.lower())
-        return statement.where(
-            or_(
-                Ticket.assignee_id == current_user.id,
-                func.lower(func.coalesce(Ticket.assignee_name, "")) == current_user.full_name.lower(),
+        scopes = _ticket_visibility_scopes(current_user)
+        clauses = []
+        if "requester" in scopes and "all" not in scopes:
+            clauses.append(
+                or_(
+                    Ticket.requester_id == current_user.id,
+                    func.lower(Ticket.requester_email) == current_user.email.lower(),
+                )
             )
-        )
+        if "all" in scopes or "assigned" in scopes:
+            clauses.append(
+                or_(
+                Ticket.assignee_id == current_user.id,
+                    func.lower(func.coalesce(Ticket.assignee_name, ""))
+                    == current_user.full_name.lower(),
+                )
+            )
+        return statement.where(or_(*clauses)) if clauses else statement.where(Ticket.id.is_(None))
     if queue_value == "unassigned":
         return statement.where(and_(Ticket.assignee_id.is_(None), or_(Ticket.assignee_name.is_(None), func.length(func.trim(Ticket.assignee_name)) == 0)))
     if queue_value == "critical":
@@ -447,7 +698,7 @@ def _apply_queue_scope(statement, queue: str, current_user: AuthUserResponse):
 def _resolve_user_by_id(db: Session, user_id: str | None, tenant_id: str | None) -> User | None:
     if not user_id:
         return None
-    statement = select(User).where(User.id == user_id)
+    statement = select(User).where(User.id == user_id, User.is_active.is_(True))
     if tenant_id is not None:
         statement = statement.where(User.tenant_id == tenant_id)
     return db.scalar(statement)
@@ -455,6 +706,97 @@ def _resolve_user_by_id(db: Session, user_id: str | None, tenant_id: str | None)
 
 def _actor(db: Session, current_user: AuthUserResponse) -> User | None:
     return db.scalar(select(User).where(User.id == current_user.id))
+
+
+def _bulk_canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _bulk_sha256(value: object) -> str:
+    payload = value if isinstance(value, str) else _bulk_canonical_json(value)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _ticket_bulk_fingerprint(ticket: Ticket) -> str:
+    updated_at = ticket.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    return _bulk_sha256(
+        {
+            "id": ticket.id,
+            "tenant_id": ticket.tenant_id,
+            "status": _canonical_status(ticket.status),
+            "assignee_id": ticket.assignee_id,
+            "assignee_name": ticket.assignee_name,
+            "governance_version": ticket.governance_version,
+            "updated_at": updated_at.astimezone(UTC).isoformat(),
+        }
+    )
+
+
+def _bulk_expired(plan: TicketBulkPlan) -> bool:
+    expires_at = plan.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at <= datetime.now(UTC)
+
+
+def _bulk_target_preview(
+    ticket: Ticket,
+    current_user: AuthUserResponse,
+    *,
+    target_status: str | None,
+    target_assignee: User | None,
+) -> tuple[TicketBulkTargetPreview, dict[str, object] | None]:
+    reason: str | None = None
+    effective_status = _canonical_status(ticket.status) or ticket.status
+    if not _can_read_ticket(current_user, ticket):
+        reason = "Ticket is not visible to the current user"
+    if target_assignee is not None and not _can_manage_all_tickets(current_user):
+        reason = "Bulk assignment requires queue management scope"
+    if _is_assigned_only(current_user):
+        assigned_to_current = (
+            _ticket_assigned_to_current(ticket, current_user)
+        )
+        if not assigned_to_current:
+            reason = "Agent can bulk-transition only assigned tickets"
+    if target_assignee is not None and effective_status in {"NEW", "TRIAGE"}:
+        effective_status = "ASSIGNED"
+    if target_status is not None:
+        if target_status == effective_status:
+            reason = "Ticket is already in the target status"
+        elif not _allowed_transition(effective_status, target_status):
+            reason = (
+                f"Invalid transition {effective_status} -> {target_status}"
+            )
+    eligible = reason is None
+    preview = TicketBulkTargetPreview(
+        ticket_id=ticket.id,
+        ticket_number=ticket.ticket_number,
+        title=ticket.title,
+        current_status=_canonical_status(ticket.status) or ticket.status,
+        effective_status=effective_status,
+        target_status=target_status,
+        current_assignee_name=ticket.assignee_name,
+        target_assignee_name=(
+            target_assignee.full_name if target_assignee is not None else None
+        ),
+        eligible=eligible,
+        reason=reason,
+    )
+    if not eligible:
+        return preview, None
+    return preview, {
+        "ticket_id": ticket.id,
+        "fingerprint": _ticket_bulk_fingerprint(ticket),
+        "current_status": _canonical_status(ticket.status) or ticket.status,
+        "effective_status": effective_status,
+    }
 
 
 def _write_history(
@@ -484,10 +826,201 @@ def _write_history(
 
 
 def _allowed_transition(current_status: str, target_status: str) -> bool:
-    normalized_current = _canonical_status(current_status) or current_status
-    normalized_target = _canonical_status(target_status) or target_status
-    allowed = STATUS_TRANSITIONS.get(normalized_current, set())
-    return normalized_target in allowed
+    return allowed_ticket_transition(current_status, target_status)
+
+
+def _lifecycle_actor_kind(current_user: AuthUserResponse) -> TicketActorKind:
+    if _is_requester_only(current_user):
+        return "REQUESTER"
+    if _is_assigned_only(current_user):
+        return "ASSIGNED_AGENT"
+    return "MANAGER"
+
+
+def _raise_lifecycle_http(error: TicketLifecycleError) -> None:
+    if error.code == "not_found":
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    if error.code == "forbidden":
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    if error.code in {"version_conflict", "state_conflict", "idempotency_conflict"}:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if error.code == "validation_error":
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+def _duplicate_pair_key(first_ticket_id: str, second_ticket_id: str) -> str:
+    return ":".join(sorted((first_ticket_id, second_ticket_id)))
+
+
+def _normalized_duplicate_text(value: str | None) -> str:
+    return " ".join(re.sub(r"[^\w\s]", " ", value or "", flags=re.UNICODE).casefold().split())
+
+
+def _aware_datetime(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _duplicate_score(source: Ticket, candidate: Ticket) -> tuple[float, list[str]]:
+    source_title = _normalized_duplicate_text(source.title)
+    candidate_title = _normalized_duplicate_text(candidate.title)
+    title_similarity = SequenceMatcher(None, source_title, candidate_title).ratio()
+    score = title_similarity * 50
+    evidence: list[str] = []
+    if title_similarity >= 0.85:
+        evidence.append("very_similar_title")
+    elif title_similarity >= 0.60:
+        evidence.append("similar_title")
+
+    if source.requester_email.casefold() == candidate.requester_email.casefold():
+        score += 20
+        evidence.append("same_requester")
+    if source.category == candidate.category:
+        score += 15
+        evidence.append("same_category")
+    if source.asset_id and source.asset_id == candidate.asset_id:
+        score += 10
+        evidence.append("same_asset")
+
+    source_description = _normalized_duplicate_text(source.description)
+    candidate_description = _normalized_duplicate_text(candidate.description)
+    if source_description and candidate_description:
+        description_similarity = SequenceMatcher(
+            None, source_description, candidate_description
+        ).ratio()
+        score += description_similarity * 10
+        if description_similarity >= 0.70:
+            evidence.append("similar_description")
+
+    age = abs((_aware_datetime(source.created_at) - _aware_datetime(candidate.created_at)).total_seconds())
+    if age <= 24 * 60 * 60:
+        score += 10
+        evidence.append("created_within_24h")
+    elif age <= 7 * 24 * 60 * 60:
+        score += 5
+        evidence.append("created_within_7d")
+    return round(min(100.0, score), 1), evidence
+
+
+def _serialize_governance_action(
+    action: TicketGovernanceAction,
+) -> TicketGovernanceActionResponse:
+    return TicketGovernanceActionResponse(
+        id=action.id,
+        action_type=action.action_type,
+        source_ticket_id=action.source_ticket_id,
+        target_ticket_id=action.target_ticket_id,
+        reason=action.reason,
+        actor_name=action.actor_name,
+        score=action.score,
+        evidence=action.evidence_json,
+        created_at=action.created_at,
+    )
+
+
+def _governance_result(
+    action: TicketGovernanceAction,
+    source: Ticket,
+    target: Ticket | None,
+    *,
+    already_applied: bool,
+) -> TicketGovernanceResultResponse:
+    return TicketGovernanceResultResponse(
+        action=_serialize_governance_action(action),
+        source_ticket_id=source.id,
+        target_ticket_id=target.id if target is not None else action.target_ticket_id,
+        source_version=source.governance_version,
+        target_version=target.governance_version if target is not None else None,
+        already_applied=already_applied,
+    )
+
+
+def _visible_governance_ticket(
+    db: Session,
+    ticket_id: str,
+    current_user: AuthUserResponse,
+) -> Ticket:
+    ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id).with_for_update())
+    if ticket is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    _ensure_ticket_access(ticket, current_user)
+    if not _can_read_ticket(current_user, ticket):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    if ticket.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ticket must belong to a tenant before governance actions",
+        )
+    return ticket
+
+
+def _idempotent_action(
+    db: Session,
+    *,
+    tenant_id: str,
+    action_type: str,
+    idempotency_key: str,
+) -> TicketGovernanceAction | None:
+    return db.scalar(
+        select(TicketGovernanceAction).where(
+            TicketGovernanceAction.tenant_id == tenant_id,
+            TicketGovernanceAction.action_type == action_type,
+            TicketGovernanceAction.idempotency_key == idempotency_key,
+        )
+    )
+
+
+def _assert_idempotent_action_matches(
+    action: TicketGovernanceAction,
+    *,
+    source_ticket_id: str,
+    target_ticket_id: str | None,
+) -> None:
+    if (
+        action.source_ticket_id != source_ticket_id
+        or action.target_ticket_id != target_ticket_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency key was already used for another ticket operation",
+        )
+
+
+def _locked_governance_pair(
+    db: Session,
+    source_ticket_id: str,
+    target_ticket_id: str,
+    current_user: AuthUserResponse,
+) -> tuple[Ticket, Ticket]:
+    tickets = db.scalars(
+        select(Ticket)
+        .where(Ticket.id.in_([source_ticket_id, target_ticket_id]))
+        .order_by(Ticket.id.asc())
+        .with_for_update()
+    ).all()
+    by_id = {ticket.id: ticket for ticket in tickets}
+    source = by_id.get(source_ticket_id)
+    target = by_id.get(target_ticket_id)
+    if source is None or target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    for ticket in (source, target):
+        _ensure_ticket_access(ticket, current_user)
+        if not _can_read_ticket(current_user, ticket):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    if source.tenant_id is None or source.tenant_id != target.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tickets must belong to the same tenant",
+        )
+    return source, target
+
+
+def _assert_governance_version(ticket: Ticket, expected: int, label: str) -> None:
+    if ticket.governance_version != expected:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{label} governance version changed; refresh and retry",
+        )
 
 
 @router.get("", response_model=TicketPageResponse)
@@ -553,6 +1086,50 @@ def list_tickets(
     return TicketPageResponse(items=items, total=total, page=page, page_size=page_size)
 
 
+@router.get(
+    "/requester-candidates",
+    response_model=list[TicketRequesterCandidateResponse],
+)
+def list_ticket_requester_candidates(
+    q: str | None = Query(default=None, min_length=1, max_length=120),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[TicketRequesterCandidateResponse]:
+    require_permissions(current_user, "tickets.create.on_behalf")
+    _ensure_access(current_user)
+    tenant_id = _resolve_tenant_id(db, current_user)
+    if tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unable to resolve tenant")
+
+    statement = select(User).where(
+        User.tenant_id == tenant_id,
+        User.is_active.is_(True),
+    )
+    if q and q.strip():
+        pattern = f"%{q.strip()}%"
+        statement = statement.where(
+            or_(
+                User.full_name.ilike(pattern),
+                User.email.ilike(pattern),
+                User.department.ilike(pattern),
+            )
+        )
+    users = db.scalars(statement.order_by(User.full_name.asc()).limit(limit)).all()
+    return [
+        TicketRequesterCandidateResponse(
+            id=user.id,
+            full_name=user.full_name,
+            email=user.email,
+            department=user.department,
+            location=user.location,
+            phone=user.phone,
+            role=user.role.code if user.role is not None else "custom",
+        )
+        for user in users
+    ]
+
+
 @router.get("/{ticket_id}", response_model=TicketDetailResponse)
 def get_ticket(ticket_id: str, current_user: AuthUserResponse = Depends(get_current_user), db: Session = Depends(get_db)) -> TicketDetailResponse:
     require_permissions(current_user, "tickets.read")
@@ -609,19 +1186,48 @@ def create_ticket(
     if tenant_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unable to resolve tenant")
 
+    actor_user = _actor(db, current_user)
+    if actor_user is None or not actor_user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active creator account required")
+
     requester_user: User | None = None
     assignee_user: User | None = None
+    requester_only = _is_requester_only(current_user)
 
-    if current_user.role == "requester":
-        requester_user = db.scalar(select(User).where(User.id == current_user.id))
-        if requester_user is None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester account not found")
+    submitted_email = (request.requester_email or "").strip().lower()
+    actor_email = actor_user.email.strip().lower()
+    if requester_only:
+        if request.requester_id and request.requester_id != actor_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester cannot create on behalf of another user")
+        if submitted_email and submitted_email != actor_email:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester identity cannot be overridden")
+        requester_user = actor_user
         if request.assignee_id or (request.assignee_name or "").strip():
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester cannot set assignee")
     else:
-        requester_user = _resolve_user_by_id(db, request.requester_id, tenant_id)
-        if request.requester_id and requester_user is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown requester")
+        if request.requester_id:
+            requester_user = _resolve_user_by_id(db, request.requester_id, tenant_id)
+            if requester_user is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown or inactive requester")
+        elif not submitted_email or submitted_email == actor_email:
+            if actor_user.tenant_id == tenant_id:
+                requester_user = actor_user
+
+    is_on_behalf = requester_user is None or requester_user.id != actor_user.id
+    on_behalf_reason = (request.on_behalf_reason or "").strip()
+    if is_on_behalf:
+        require_permissions(current_user, "tickets.create.on_behalf")
+        if len(on_behalf_reason) < 3:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="On-behalf registration reason must contain at least 3 characters",
+            )
+        if requester_user is None:
+            if not (request.requester_name or "").strip() or not submitted_email or "@" not in submitted_email:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="External requester name and valid email are required",
+                )
 
     if request.assignee_id:
         if not _can_manage_all_tickets(current_user):
@@ -629,22 +1235,34 @@ def create_ticket(
         assignee_user = _resolve_user_by_id(db, request.assignee_id, tenant_id)
         if assignee_user is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown assignee")
+    elif (request.assignee_name or "").strip() and not _can_manage_all_tickets(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only manager/admin can assign on create")
 
-    requester_name = requester_user.full_name if requester_user is not None else (request.requester_name or current_user.full_name)
-    requester_email = requester_user.email if requester_user is not None else (request.requester_email or current_user.email)
+    requester_name = requester_user.full_name if requester_user is not None else (request.requester_name or "").strip()
+    requester_email = requester_user.email if requester_user is not None else submitted_email
+    requester_contact = (request.requester_contact or "").strip() or (
+        requester_user.phone if requester_user is not None else None
+    )
     assignee_name = assignee_user.full_name if assignee_user is not None else request.assignee_name
 
     created_at = datetime.now(UTC)
-    initial_status = "NEW"
+    # Creation starts in exactly one canonical state. This is initialization,
+    # not a lifecycle mutation; later assignment changes use the lifecycle service.
+    initial_status = "ASSIGNED" if assignee_name else "NEW"
     ticket = Ticket(
         id=str(uuid.uuid4()),
         tenant_id=tenant_id,
         ticket_number=next_ticket_number(db),
         title=request.title,
         description=request.description,
-        requester_id=requester_user.id if requester_user is not None else (current_user.id if current_user.role == "requester" else None),
+        requester_id=requester_user.id if requester_user is not None else None,
         requester_name=requester_name,
         requester_email=requester_email,
+        requester_contact=requester_contact,
+        created_by_id=actor_user.id,
+        created_by_name=actor_user.full_name,
+        creation_channel="ON_BEHALF" if is_on_behalf else "SELF_SERVICE",
+        on_behalf_reason=on_behalf_reason if is_on_behalf else None,
         department=request.department,
         location=request.location or "Не указано",
         category=request.category,
@@ -657,15 +1275,19 @@ def create_ticket(
         updated_at=created_at,
     )
 
-    if assignee_name:
-        ticket.status = "ASSIGNED"
-
     sla_policy = sla_policies.get(request.priority)
     if sla_policy is not None:
         _apply_ticket_sla(ticket, sla_policy, created_at)
 
     db.add(ticket)
     db.flush()
+    sync_ticket_sla(
+        db,
+        ticket,
+        old_status=None,
+        actor=_actor(db, current_user),
+        at=created_at,
+    )
 
     _write_history(
         db,
@@ -677,6 +1299,17 @@ def create_ticket(
         new_value=request.title,
         message=f"Заявка {ticket.ticket_number} создана.",
     )
+    if is_on_behalf:
+        _write_history(
+            db,
+            ticket_id=ticket.id,
+            actor_name=current_user.full_name,
+            event_type="created_on_behalf",
+            field_name="requester",
+            old_value=None,
+            new_value=requester_name,
+            message=f"Заявка зарегистрирована сотрудником от имени {requester_name}.",
+        )
     _write_history(
         db,
         ticket_id=ticket.id,
@@ -704,11 +1337,30 @@ def create_ticket(
         action="ticket_created",
         entity_type="ticket",
         entity_id=ticket.id,
-        actor_user=_actor(db, current_user),
+        actor_user=actor_user,
         ip_address=http_request.client.host if http_request.client else None,
         user_agent=http_request.headers.get("user-agent"),
-        metadata={"ticket_number": ticket.ticket_number},
+        metadata={
+            "ticket_number": ticket.ticket_number,
+            "creation_channel": ticket.creation_channel,
+            "requester_id": ticket.requester_id,
+        },
     )
+    if is_on_behalf:
+        log_audit(
+            db,
+            action="ticket_created_on_behalf",
+            entity_type="ticket",
+            entity_id=ticket.id,
+            actor_user=actor_user,
+            ip_address=http_request.client.host if http_request.client else None,
+            user_agent=http_request.headers.get("user-agent"),
+            metadata={
+                "ticket_number": ticket.ticket_number,
+                "requester_id": ticket.requester_id,
+                "reason": on_behalf_reason,
+            },
+        )
 
     trigger_automation_event(
         db,
@@ -733,7 +1385,9 @@ def patch_ticket(
 ) -> TicketDetailResponse:
     require_permissions(current_user, "tickets.update")
     _ensure_access(current_user)
-    ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id))
+    ticket = db.scalar(
+        select(Ticket).where(Ticket.id == ticket_id).with_for_update()
+    )
     if ticket is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
 
@@ -743,8 +1397,12 @@ def patch_ticket(
 
     categories, priorities, statuses, sla_policies, assets = _lookup_maps(db)
     updates = request.model_dump(exclude_unset=True)
+    expected_version = updates.pop("expected_version", None)
+    idempotency_key = updates.pop("idempotency_key", None)
+    old_status_before_update = ticket.status
+    target_status: str | None = None
 
-    if current_user.role == "it_agent":
+    if _is_assigned_only(current_user):
         forbidden_fields = {"priority", "category", "sla_due_at"}
         if any(field in updates for field in forbidden_fields):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent cannot update priority/category/sla")
@@ -758,9 +1416,7 @@ def patch_ticket(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown ticket status")
         if target_status not in statuses and target_status not in STATUS_LABELS_RU:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown ticket status")
-        if not _allowed_transition(ticket.status, target_status) and not _can_manage_all_tickets(current_user):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status transition")
-        updates["status"] = target_status
+        updates.pop("status")
 
     if "category" in updates and updates["category"] not in categories:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown ticket category")
@@ -779,8 +1435,6 @@ def patch_ticket(
         updates["assignee_id"] = assignee.id if assignee else None
 
     changes: list[TicketHistory] = []
-    old_values = {field_name: getattr(ticket, field_name) for field_name in updates.keys()}
-
     for field_name, new_value in updates.items():
         old_value = getattr(ticket, field_name)
         if old_value == new_value:
@@ -803,22 +1457,47 @@ def patch_ticket(
     if "priority" in updates and updates["priority"] in sla_policies:
         _apply_ticket_sla(ticket, sla_policies[updates["priority"]], ticket.created_at)
 
-    if "status" in updates:
-        if ticket.status == "RESOLVED" and ticket.resolved_at is None:
-            ticket.resolved_at = datetime.now(UTC)
-        if ticket.status == "CLOSED":
-            ticket.closed_at = datetime.now(UTC)
-        if ticket.status == "REOPENED":
-            ticket.reopened_at = datetime.now(UTC)
-            ticket.closed_at = None
-
-    ticket.updated_at = datetime.now(UTC)
-    ticket.sla_status = calculate_ticket_sla_status(ticket)
+    if changes:
+        ticket.updated_at = datetime.now(UTC)
 
     if changes:
         db.add_all(changes)
 
     actor_user = _actor(db, current_user)
+    status_transition_applied = False
+    if target_status is not None:
+        try:
+            transition_result = transition_ticket_status(
+                db,
+                ticket,
+                target_status,
+                actor_name=current_user.full_name,
+                actor_kind=_lifecycle_actor_kind(current_user),
+                actor_user=actor_user,
+                actor_email=current_user.email,
+                allow_cross_tenant_actor=current_user.role == "saas_root",
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
+                source="ticket_patch",
+                priority_changed="priority" in updates,
+                ip_address=http_request.client.host if http_request.client else None,
+                user_agent=http_request.headers.get("user-agent"),
+            )
+            status_transition_applied = not transition_result.already_applied
+        except TicketLifecycleError as error:
+            _raise_lifecycle_http(error)
+    elif (
+        sync_ticket_sla(
+            db,
+            ticket,
+            old_status=old_status_before_update,
+            actor=actor_user,
+            priority_changed="priority" in updates,
+            at=ticket.updated_at,
+        )
+        is None
+    ):
+        ticket.sla_status = calculate_ticket_sla_status(ticket)
     if "assignee_id" in updates or "assignee_name" in updates:
         log_audit(
             db,
@@ -832,24 +1511,8 @@ def patch_ticket(
         )
         create_ticket_event_notification(db, event_code="ticket_assigned", ticket=ticket, actor_name=current_user.full_name)
 
-    if "status" in updates:
-        status_event = "ticket_reopened" if ticket.status == "REOPENED" else "ticket_closed" if ticket.status == "CLOSED" else "ticket_status_changed"
-        log_audit(
-            db,
-            action=status_event,
-            entity_type="ticket",
-            entity_id=ticket.id,
-            actor_user=actor_user,
-            ip_address=http_request.client.host if http_request.client else None,
-            user_agent=http_request.headers.get("user-agent"),
-            metadata={"status": _status_for_output(ticket.status)},
-        )
-        create_ticket_event_notification(db, event_code="ticket_status_changed", ticket=ticket, actor_name=current_user.full_name)
-        if ticket.status in {"RESOLVED", "CLOSED"}:
-            create_ticket_event_notification(db, event_code="ticket_resolved", ticket=ticket, actor_name=current_user.full_name)
-
     context = build_ticket_context(ticket)
-    if "status" in updates:
+    if target_status is not None and status_transition_applied:
         trigger_automation_event(
             db,
             tenant_id=ticket.tenant_id,
@@ -865,7 +1528,7 @@ def patch_ticket(
             context=context,
             actor_email=current_user.email,
         )
-    if "status" not in updates and "priority" not in updates:
+    if target_status is None and "priority" not in updates:
         trigger_automation_event(
             db,
             tenant_id=ticket.tenant_id,
@@ -887,12 +1550,15 @@ def transition_ticket(
     current_user: AuthUserResponse = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TicketDetailResponse:
-    if current_user.role == "requester":
+    requester_only = _is_requester_only(current_user)
+    if requester_only:
         require_permissions(current_user, "tickets.comment")
     else:
         require_permissions(current_user, "tickets.update")
     _ensure_access(current_user)
-    ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id))
+    ticket = db.scalar(
+        select(Ticket).where(Ticket.id == ticket_id).with_for_update()
+    )
     if ticket is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
 
@@ -903,97 +1569,41 @@ def transition_ticket(
     target_status = _canonical_status(request.status)
     if target_status is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown ticket status")
-    if not _allowed_transition(ticket.status, target_status):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status transition")
-
-    if current_user.role == "requester" and target_status not in {"CLOSED", "REOPENED"}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester can only close or reopen ticket")
-
-    if target_status == "CLOSED" and request.satisfaction_score is None and current_user.role == "requester":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Requester must provide satisfaction_score when closing ticket")
-
-    reopen_reason = (request.reopen_reason or "").strip()
-    if target_status == "REOPENED" and not reopen_reason and current_user.role == "requester":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Requester must provide reopen_reason when reopening ticket")
-
-    if current_user.role == "it_agent":
-        assigned_to_current = ticket.assignee_id == current_user.id or (ticket.assignee_name and ticket.assignee_name.lower() == current_user.full_name.lower())
-        if not assigned_to_current:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent can transition only own tickets")
-
-    old_status = ticket.status
-    ticket.status = target_status
-    now = datetime.now(UTC)
-    if target_status == "RESOLVED" and ticket.resolved_at is None:
-        ticket.resolved_at = now
-    if target_status == "CLOSED":
-        ticket.closed_at = now
-        ticket.satisfaction_score = request.satisfaction_score if request.satisfaction_score is not None else ticket.satisfaction_score
-    if target_status == "REOPENED":
-        ticket.reopened_at = now
-        ticket.closed_at = None
-        ticket.reopen_reason = reopen_reason or request.comment or ticket.reopen_reason
-    ticket.updated_at = now
-    ticket.sla_status = calculate_ticket_sla_status(ticket)
-
-    _write_history(
-        db,
-        ticket_id=ticket.id,
-        actor_name=current_user.full_name,
-        event_type="status_changed",
-        field_name="status",
-        old_value=_status_for_output(old_status),
-        new_value=_status_for_output(target_status),
-        message=f"Статус изменен на {_status_for_output(target_status)}.",
-    )
-
-    if request.comment and request.comment.strip():
-        if request.is_internal and current_user.role == "requester":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester cannot add internal comment")
-        comment = TicketComment(
-            id=str(uuid.uuid4()),
-            ticket_id=ticket.id,
-            author_id=current_user.id,
-            author_name=current_user.full_name,
-            author_role=current_user.role,
-            body=request.comment.strip(),
-            is_internal=request.is_internal,
-        )
-        db.add(comment)
-        _write_history(
-            db,
-            ticket_id=ticket.id,
-            actor_name=current_user.full_name,
-            event_type="comment_added",
-            field_name="comment",
-            old_value=None,
-            new_value=request.comment.strip(),
-            message="Добавлен комментарий к переходу статуса.",
-        )
-
+    if request.is_internal and requester_only:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester cannot add internal comment")
     actor_user = _actor(db, current_user)
-    action = "ticket_reopened" if target_status == "REOPENED" else "ticket_closed" if target_status == "CLOSED" else "ticket_status_changed"
-    log_audit(
-        db,
-        action=action,
-        entity_type="ticket",
-        entity_id=ticket.id,
-        actor_user=actor_user,
-        ip_address=http_request.client.host if http_request.client else None,
-        user_agent=http_request.headers.get("user-agent"),
-        metadata={"old_status": _status_for_output(old_status), "new_status": _status_for_output(target_status)},
-    )
+    try:
+        transition_result = transition_ticket_status(
+            db,
+            ticket,
+            target_status,
+            actor_name=current_user.full_name,
+            actor_kind=_lifecycle_actor_kind(current_user),
+            actor_user=actor_user,
+            actor_email=current_user.email,
+            allow_cross_tenant_actor=current_user.role == "saas_root",
+            expected_version=request.expected_version,
+            idempotency_key=request.idempotency_key,
+            comment=request.comment,
+            is_internal_comment=request.is_internal,
+            satisfaction_score=request.satisfaction_score,
+            reopen_reason=request.reopen_reason,
+            source="ticket_transition_api",
+            reason=f"Статус изменен на {_status_for_output(target_status)}.",
+            ip_address=http_request.client.host if http_request.client else None,
+            user_agent=http_request.headers.get("user-agent"),
+        )
+    except TicketLifecycleError as error:
+        _raise_lifecycle_http(error)
 
-    notification_history: list[TicketHistory] = []
-    status_notification = create_ticket_event_notification(db, event_code="ticket_status_changed", ticket=ticket, actor_name=current_user.full_name)
-    if status_notification is not None:
-        notification_history.append(_record_notification_history(ticket.id, current_user.full_name, "ticket_status_changed"))
-    if target_status in {"RESOLVED", "CLOSED"}:
-        resolved_notification = create_ticket_event_notification(db, event_code="ticket_resolved", ticket=ticket, actor_name=current_user.full_name)
-        if resolved_notification is not None:
-            notification_history.append(_record_notification_history(ticket.id, current_user.full_name, "ticket_resolved"))
-    if notification_history:
-        db.add_all(notification_history)
+    if not transition_result.already_applied:
+        trigger_automation_event(
+            db,
+            tenant_id=ticket.tenant_id,
+            trigger_type="ticket_status_changed",
+            context=build_ticket_context(ticket),
+            actor_email=current_user.email,
+        )
 
     db.commit()
     db.refresh(ticket)
@@ -1010,7 +1620,9 @@ def assign_ticket(
 ) -> TicketDetailResponse:
     require_permissions(current_user, "tickets.update")
     _ensure_access(current_user)
-    ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id))
+    ticket = db.scalar(
+        select(Ticket).where(Ticket.id == ticket_id).with_for_update()
+    )
     if ticket is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
 
@@ -1024,7 +1636,9 @@ def assign_ticket(
             target_assignee = _resolve_user_by_id(db, request.assignee_id, ticket.tenant_id)
             if target_assignee is None:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown assignee")
-    elif current_user.role == "it_agent":
+        elif _can_self_assign_ticket(current_user):
+            target_assignee = db.scalar(select(User).where(User.id == current_user.id))
+    elif _can_self_assign_ticket(current_user):
         if ticket.assignee_id is not None or (ticket.assignee_name or "").strip():
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent can take only unassigned ticket")
         target_assignee = db.scalar(select(User).where(User.id == current_user.id))
@@ -1035,11 +1649,39 @@ def assign_ticket(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Assignee is required")
 
     old_assignee = ticket.assignee_name
+    old_status = ticket.status
     ticket.assignee_id = target_assignee.id
     ticket.assignee_name = target_assignee.full_name
-    if _canonical_status(ticket.status) in {"NEW", "TRIAGE"}:
-        ticket.status = "ASSIGNED"
-    ticket.updated_at = datetime.now(UTC)
+    now = datetime.now(UTC)
+    ticket.updated_at = now
+    actor_user = _actor(db, current_user)
+    if _canonical_status(old_status) in {"NEW", "TRIAGE"}:
+        try:
+            transition_ticket_status(
+                db,
+                ticket,
+                "ASSIGNED",
+                actor_name=current_user.full_name,
+                actor_kind=_lifecycle_actor_kind(current_user),
+                actor_user=actor_user,
+                actor_email=current_user.email,
+                allow_cross_tenant_actor=current_user.role == "saas_root",
+                at=now,
+                source="ticket_assignment",
+                reason=f"Ticket assigned to {target_assignee.full_name}.",
+                ip_address=http_request.client.host if http_request.client else None,
+                user_agent=http_request.headers.get("user-agent"),
+            )
+        except TicketLifecycleError as error:
+            _raise_lifecycle_http(error)
+    else:
+        sync_ticket_sla(
+            db,
+            ticket,
+            old_status=old_status,
+            actor=actor_user,
+            at=now,
+        )
 
     _write_history(
         db,
@@ -1060,7 +1702,7 @@ def assign_ticket(
             author_name=current_user.full_name,
             author_role=current_user.role,
             body=request.comment.strip(),
-            is_internal=current_user.role != "requester",
+            is_internal=not _is_requester_only(current_user),
         )
         db.add(comment)
 
@@ -1069,7 +1711,7 @@ def assign_ticket(
         action="ticket_assigned",
         entity_type="ticket",
         entity_id=ticket.id,
-        actor_user=_actor(db, current_user),
+        actor_user=actor_user,
         ip_address=http_request.client.host if http_request.client else None,
         user_agent=http_request.headers.get("user-agent"),
         metadata={"assignee_id": target_assignee.id, "assignee_name": target_assignee.full_name},
@@ -1082,6 +1724,532 @@ def assign_ticket(
     db.commit()
     db.refresh(ticket)
     return get_ticket(ticket.id, current_user, db)
+
+
+@router.post(
+    "/bulk/preview",
+    response_model=TicketBulkPreviewResponse,
+)
+def preview_ticket_bulk_action(
+    payload: TicketBulkPreviewRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketBulkPreviewResponse:
+    require_permissions(
+        current_user,
+        "tickets.read",
+        "tickets.update",
+        "tickets.bulk.execute",
+    )
+    _ensure_access(current_user)
+    if _is_requester_only(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requester cannot execute bulk ticket actions",
+        )
+    if payload.status is None and payload.assignee_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Bulk action requires status or assignee",
+        )
+    target_status = _canonical_status(payload.status)
+    if payload.status is not None and (
+        target_status is None
+        or target_status not in set(STATUS_TRANSITIONS) | set(STATUS_LABELS_RU)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unknown target status",
+        )
+    if payload.assignee_id is not None:
+        require_permissions(current_user, "tickets.assign")
+        if not _can_manage_all_tickets(current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bulk assignment requires queue management scope",
+            )
+
+    ticket_ids = list(dict.fromkeys(payload.ticket_ids))
+    statement = select(Ticket).where(Ticket.id.in_(ticket_ids))
+    if current_user.role != "saas_root":
+        statement = statement.where(Ticket.tenant_id == current_user.tenant_id)
+    tickets = list(db.scalars(statement).all())
+    tenant_ids = {ticket.tenant_id for ticket in tickets}
+    if len(tenant_ids) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A bulk plan must contain tickets from one tenant",
+        )
+    plan_tenant_id = (
+        next(iter(tenant_ids))
+        if tenant_ids
+        else current_user.tenant_id
+    )
+    target_assignee: User | None = None
+    if payload.assignee_id is not None:
+        target_assignee = _resolve_user_by_id(
+            db,
+            payload.assignee_id,
+            plan_tenant_id,
+        )
+        if target_assignee is None or not target_assignee.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Assignee is unknown, inactive, or outside plan tenant",
+            )
+
+    by_id = {ticket.id: ticket for ticket in tickets}
+    previews: list[TicketBulkTargetPreview] = []
+    eligible_targets: list[dict[str, object]] = []
+    for ticket_id in ticket_ids:
+        ticket = by_id.get(ticket_id)
+        if ticket is None:
+            previews.append(
+                TicketBulkTargetPreview(
+                    ticket_id=ticket_id,
+                    ticket_number=None,
+                    title="Unavailable ticket",
+                    current_status="UNKNOWN",
+                    effective_status="UNKNOWN",
+                    target_status=target_status,
+                    current_assignee_name=None,
+                    target_assignee_name=(
+                        target_assignee.full_name
+                        if target_assignee is not None
+                        else None
+                    ),
+                    eligible=False,
+                    reason="Ticket was not found in the permitted tenant scope",
+                )
+            )
+            continue
+        preview, target = _bulk_target_preview(
+            ticket,
+            current_user,
+            target_status=target_status,
+            target_assignee=target_assignee,
+        )
+        previews.append(preview)
+        if target is not None:
+            eligible_targets.append(target)
+
+    operation = {
+        "status": target_status,
+        "assignee_id": (
+            target_assignee.id if target_assignee is not None else None
+        ),
+        "assignee_name": (
+            target_assignee.full_name if target_assignee is not None else None
+        ),
+        "comment": (payload.comment or "").strip() or None,
+    }
+    targets_evidence = {
+        "eligible": eligible_targets,
+        "skipped": [
+            {
+                "ticket_id": item.ticket_id,
+                "reason": item.reason,
+            }
+            for item in previews
+            if not item.eligible
+        ],
+    }
+    operation_json = _bulk_canonical_json(operation)
+    targets_json = _bulk_canonical_json(targets_evidence)
+    expires_at = datetime.now(UTC) + timedelta(minutes=10)
+    plan = TicketBulkPlan(
+        id=str(uuid.uuid4()),
+        tenant_id=plan_tenant_id,
+        actor_user_id=current_user.id,
+        status="PREVIEWED",
+        operation_json=operation_json,
+        operation_sha256=_bulk_sha256(operation_json),
+        targets_json=targets_json,
+        targets_sha256=_bulk_sha256(targets_json),
+        eligible_count=len(eligible_targets),
+        skipped_count=len(previews) - len(eligible_targets),
+        revision=1,
+        expires_at=expires_at,
+    )
+    db.add(plan)
+    log_audit(
+        db,
+        action="ticket.bulk_previewed",
+        entity_type="ticket_bulk_plan",
+        entity_id=plan.id,
+        actor_user=_actor(db, current_user),
+        tenant_id=plan_tenant_id,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={
+            "operation_sha256": plan.operation_sha256,
+            "targets_sha256": plan.targets_sha256,
+            "eligible_count": plan.eligible_count,
+            "skipped_count": plan.skipped_count,
+            "expires_at": expires_at.isoformat(),
+        },
+    )
+    db.commit()
+    db.refresh(plan)
+    return TicketBulkPreviewResponse(
+        plan_id=plan.id,
+        status=plan.status,
+        revision=plan.revision,
+        operation_sha256=plan.operation_sha256,
+        targets_sha256=plan.targets_sha256,
+        confirmation_phrase=f"APPLY {plan.eligible_count}",
+        eligible_count=plan.eligible_count,
+        skipped_count=plan.skipped_count,
+        expires_at=plan.expires_at,
+        targets=previews,
+    )
+
+
+@router.post(
+    "/bulk/{plan_id}/execute",
+    response_model=TicketBulkExecuteResponse,
+)
+def execute_ticket_bulk_action(
+    plan_id: str,
+    payload: TicketBulkExecuteRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketBulkExecuteResponse:
+    require_permissions(
+        current_user,
+        "tickets.read",
+        "tickets.update",
+        "tickets.bulk.execute",
+    )
+    _ensure_access(current_user)
+    plan = db.get(TicketBulkPlan, plan_id, with_for_update=True)
+    if (
+        plan is None
+        or plan.actor_user_id != current_user.id
+        or (
+            current_user.role != "saas_root"
+            and plan.tenant_id != current_user.tenant_id
+        )
+    ):
+        raise HTTPException(status_code=404, detail="Bulk plan not found")
+    if plan.status == "EXECUTED":
+        executed_at = plan.executed_at or plan.updated_at
+        return TicketBulkExecuteResponse(
+            plan_id=plan.id,
+            status=plan.status,
+            revision=plan.revision,
+            updated_count=plan.eligible_count,
+            skipped_count=plan.skipped_count,
+            already_executed=True,
+            executed_at=executed_at,
+        )
+    if plan.status != "PREVIEWED":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bulk plan cannot execute from {plan.status}",
+        )
+    if _bulk_expired(plan):
+        plan.status = "EXPIRED"
+        plan.revision += 1
+        db.commit()
+        raise HTTPException(status_code=409, detail="Bulk plan expired")
+    if plan.revision != payload.expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Revision conflict: current revision is {plan.revision}",
+        )
+    confirmation_phrase = f"APPLY {plan.eligible_count}"
+    if payload.confirmation_phrase.strip() != confirmation_phrase:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Confirmation phrase must be {confirmation_phrase}",
+        )
+    if plan.eligible_count == 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Bulk plan has no eligible tickets",
+        )
+
+    operation = json.loads(plan.operation_json)
+    evidence = json.loads(plan.targets_json)
+    eligible_targets = list(evidence.get("eligible") or [])
+    if _bulk_sha256(plan.operation_json) != plan.operation_sha256 or (
+        _bulk_sha256(plan.targets_json) != plan.targets_sha256
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Bulk plan evidence integrity check failed",
+        )
+    target_status = operation.get("status")
+    target_assignee: User | None = None
+    if operation.get("assignee_id"):
+        require_permissions(current_user, "tickets.assign")
+        if not _can_manage_all_tickets(current_user):
+            raise HTTPException(
+                status_code=403,
+                detail="Bulk assignment requires queue management scope",
+            )
+        target_assignee = _resolve_user_by_id(
+            db,
+            str(operation["assignee_id"]),
+            plan.tenant_id,
+        )
+        if target_assignee is None or not target_assignee.is_active:
+            raise HTTPException(
+                status_code=409,
+                detail="Planned assignee is no longer eligible",
+            )
+
+    locked_tickets: list[Ticket] = []
+    drift: list[dict[str, str]] = []
+    for target in eligible_targets:
+        ticket_id = str(target.get("ticket_id") or "")
+        ticket = db.get(Ticket, ticket_id, with_for_update=True)
+        if (
+            ticket is None
+            or ticket.tenant_id != plan.tenant_id
+            or not _can_read_ticket(current_user, ticket)
+        ):
+            drift.append(
+                {"ticket_id": ticket_id, "reason": "no longer accessible"}
+            )
+            continue
+        preview, refreshed_target = _bulk_target_preview(
+            ticket,
+            current_user,
+            target_status=target_status,
+            target_assignee=target_assignee,
+        )
+        if (
+            refreshed_target is None
+            or preview.eligible is False
+            or _ticket_bulk_fingerprint(ticket) != target.get("fingerprint")
+        ):
+            drift.append(
+                {
+                    "ticket_id": ticket.id,
+                    "reason": preview.reason or "state changed after preview",
+                }
+            )
+            continue
+        locked_tickets.append(ticket)
+    if drift:
+        log_audit(
+            db,
+            action="ticket.bulk_execute_denied_drift",
+            entity_type="ticket_bulk_plan",
+            entity_id=plan.id,
+            actor_user=_actor(db, current_user),
+            tenant_id=plan.tenant_id,
+            ip_address=http_request.client.host if http_request.client else None,
+            user_agent=http_request.headers.get("user-agent"),
+            metadata={
+                "operation_sha256": plan.operation_sha256,
+                "targets_sha256": plan.targets_sha256,
+                "drift": drift,
+            },
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Ticket state changed after preview",
+                "targets": drift,
+            },
+        )
+
+    actor = _actor(db, current_user)
+    now = datetime.now(UTC)
+    comment_body = str(operation.get("comment") or "").strip()
+    for ticket in locked_tickets:
+        old_status = _canonical_status(ticket.status) or ticket.status
+        assignment_changed = False
+        status_changed = False
+        if target_assignee is not None and (
+            ticket.assignee_id != target_assignee.id
+        ):
+            old_assignee = ticket.assignee_name
+            ticket.assignee_id = target_assignee.id
+            ticket.assignee_name = target_assignee.full_name
+            if old_status in {"NEW", "TRIAGE"}:
+                try:
+                    transition_ticket_status(
+                        db,
+                        ticket,
+                        "ASSIGNED",
+                        actor_name=current_user.full_name,
+                        actor_kind=_lifecycle_actor_kind(current_user),
+                        actor_user=actor,
+                        actor_email=current_user.email,
+                        allow_cross_tenant_actor=current_user.role == "saas_root",
+                        expected_status=old_status,
+                        idempotency_key=f"bulk:{plan.id}:{ticket.id}:assign",
+                        at=now,
+                        source="ticket_bulk_assignment",
+                        reason=(
+                            f"Ticket assigned to {target_assignee.full_name} "
+                            "by governed bulk plan."
+                        ),
+                        notify=target_status is None,
+                        ip_address=(
+                            http_request.client.host if http_request.client else None
+                        ),
+                        user_agent=http_request.headers.get("user-agent"),
+                    )
+                    status_changed = True
+                except TicketLifecycleError as error:
+                    raise HTTPException(status_code=409, detail=str(error)) from error
+            assignment_changed = True
+            _write_history(
+                db,
+                ticket_id=ticket.id,
+                actor_name=current_user.full_name,
+                event_type="assigned",
+                field_name="assignee",
+                old_value=old_assignee,
+                new_value=target_assignee.full_name,
+                message=f"Назначено на {target_assignee.full_name} массовым планом.",
+            )
+        effective_status = _canonical_status(ticket.status) or ticket.status
+        if target_status is not None and target_status != effective_status:
+            try:
+                transition_ticket_status(
+                    db,
+                    ticket,
+                    target_status,
+                    actor_name=current_user.full_name,
+                    actor_kind=_lifecycle_actor_kind(current_user),
+                    actor_user=actor,
+                    actor_email=current_user.email,
+                    allow_cross_tenant_actor=current_user.role == "saas_root",
+                    expected_status=effective_status,
+                    idempotency_key=f"bulk:{plan.id}:{ticket.id}:status",
+                    at=now,
+                    source="ticket_bulk_transition",
+                    reason=(
+                        f"Ticket status changed to {target_status} "
+                        "by governed bulk plan."
+                    ),
+                    ip_address=(
+                        http_request.client.host if http_request.client else None
+                    ),
+                    user_agent=http_request.headers.get("user-agent"),
+                )
+            except TicketLifecycleError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            status_changed = True
+        if comment_body:
+            db.add(
+                TicketComment(
+                    id=str(uuid.uuid4()),
+                    ticket_id=ticket.id,
+                    author_id=current_user.id,
+                    author_name=current_user.full_name,
+                    author_role=current_user.role,
+                    body=comment_body,
+                    is_internal=True,
+                )
+            )
+            _write_history(
+                db,
+                ticket_id=ticket.id,
+                actor_name=current_user.full_name,
+                event_type="comment_added",
+                field_name="comment",
+                old_value=None,
+                new_value=comment_body,
+                message="Добавлен внутренний комментарий массового плана.",
+            )
+        ticket.updated_at = now
+        if not status_changed:
+            sync_ticket_sla(
+                db,
+                ticket,
+                old_status=old_status,
+                actor=actor,
+                at=now,
+            )
+        log_audit(
+            db,
+            action="ticket.bulk_item_executed",
+            entity_type="ticket",
+            entity_id=ticket.id,
+            actor_user=actor,
+            tenant_id=ticket.tenant_id,
+            ip_address=http_request.client.host if http_request.client else None,
+            user_agent=http_request.headers.get("user-agent"),
+            metadata={
+                "plan_id": plan.id,
+                "operation_sha256": plan.operation_sha256,
+                "assignment_changed": assignment_changed,
+                "status_changed": status_changed,
+            },
+        )
+        context = build_ticket_context(ticket)
+        if assignment_changed:
+            trigger_automation_event(
+                db,
+                tenant_id=ticket.tenant_id,
+                trigger_type="ticket_assigned",
+                context=context,
+                actor_email=current_user.email,
+            )
+            notification = create_ticket_event_notification(
+                db,
+                event_code="ticket_assigned",
+                ticket=ticket,
+                actor_name=current_user.full_name,
+            )
+            if notification is not None:
+                db.add(
+                    _record_notification_history(
+                        ticket.id,
+                        current_user.full_name,
+                        "ticket_assigned",
+                    )
+                )
+        if status_changed:
+            trigger_automation_event(
+                db,
+                tenant_id=ticket.tenant_id,
+                trigger_type="ticket_status_changed",
+                context=context,
+                actor_email=current_user.email,
+            )
+
+    plan.status = "EXECUTED"
+    plan.revision += 1
+    plan.executed_at = now
+    log_audit(
+        db,
+        action="ticket.bulk_executed",
+        entity_type="ticket_bulk_plan",
+        entity_id=plan.id,
+        actor_user=actor,
+        tenant_id=plan.tenant_id,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={
+            "operation_sha256": plan.operation_sha256,
+            "targets_sha256": plan.targets_sha256,
+            "updated_count": len(locked_tickets),
+            "skipped_count": plan.skipped_count,
+            "revision": plan.revision,
+        },
+    )
+    db.commit()
+    db.refresh(plan)
+    return TicketBulkExecuteResponse(
+        plan_id=plan.id,
+        status=plan.status,
+        revision=plan.revision,
+        updated_count=len(locked_tickets),
+        skipped_count=plan.skipped_count,
+        already_executed=False,
+        executed_at=plan.executed_at or now,
+    )
 
 
 @router.post("/{ticket_id}/comments", response_model=TicketCommentResponse, status_code=status.HTTP_201_CREATED)
@@ -1102,7 +2270,7 @@ def add_comment(
     if not _can_read_ticket(current_user, ticket):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
 
-    if current_user.role == "requester" and request.is_internal:
+    if _is_requester_only(current_user) and request.is_internal:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester cannot add internal comments")
 
     comment = TicketComment(
@@ -1131,6 +2299,7 @@ def add_comment(
         ticket=ticket,
         actor_name=current_user.full_name,
         extra_context={"comment": request.body},
+        is_internal=request.is_internal,
     )
     if comment_notification is not None:
         db.add(_record_notification_history(ticket.id, current_user.full_name, "ticket_comment_added"))
@@ -1251,7 +2420,7 @@ def add_ticket_knowledge_link(
     article = db.scalar(select(KnowledgeArticle).where(KnowledgeArticle.id == request.article_id))
     if article is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown article")
-    if current_user.role == "requester" and article.visibility == "internal":
+    if _is_requester_only(current_user) and article.visibility == "internal":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester cannot attach internal article")
 
     existing = db.scalar(
@@ -1332,3 +2501,869 @@ def remove_ticket_knowledge_link(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found")
     db.delete(link)
     db.commit()
+
+
+def _participant_ticket(
+    db: Session,
+    ticket_id: str,
+    current_user: AuthUserResponse,
+) -> Ticket:
+    _ensure_access(current_user)
+    ticket = db.get(Ticket, ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    _ensure_ticket_access(ticket, current_user)
+    if not _can_read_ticket(current_user, ticket):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+    if ticket.tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ticket has no tenant scope")
+    return ticket
+
+
+def _participant_response(item: TicketParticipant) -> TicketParticipantResponse:
+    return TicketParticipantResponse(
+        id=item.id,
+        ticket_id=item.ticket_id,
+        user_id=item.user_id,
+        display_name=item.display_name,
+        email=item.email,
+        participant_role=item.participant_role,
+        notification_scope=item.notification_scope,
+        notify_in_app=item.notify_in_app,
+        notify_email=item.notify_email,
+        is_active=item.is_active,
+        version_number=item.version_number,
+        added_by_id=item.added_by_id,
+        removed_at=item.removed_at,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def _participant_item(
+    db: Session,
+    ticket: Ticket,
+    participant_id: str,
+) -> TicketParticipant:
+    item = db.scalar(
+        select(TicketParticipant).where(
+            TicketParticipant.id == participant_id,
+            TicketParticipant.ticket_id == ticket.id,
+            TicketParticipant.tenant_id == ticket.tenant_id,
+        )
+    )
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket participant not found")
+    return item
+
+
+def _participant_can_manage(
+    current_user: AuthUserResponse,
+    item: TicketParticipant | None = None,
+) -> bool:
+    return has_permission(current_user, "tickets.participants.manage") or (
+        item is not None
+        and item.user_id == current_user.id
+        and has_permission(current_user, "tickets.watch")
+    )
+
+
+@router.get(
+    "/{ticket_id}/participant-candidates",
+    response_model=list[TicketParticipantCandidateResponse],
+)
+def list_ticket_participant_candidates(
+    ticket_id: str,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[TicketParticipantCandidateResponse]:
+    require_permissions(current_user, "tickets.participants.manage")
+    ticket = _participant_ticket(db, ticket_id, current_user)
+    users = db.scalars(
+        select(User)
+        .where(
+            User.tenant_id == ticket.tenant_id,
+            User.is_active.is_(True),
+        )
+        .order_by(User.full_name.asc())
+        .limit(500)
+    ).all()
+    return [
+        TicketParticipantCandidateResponse(
+            id=user.id,
+            full_name=user.full_name,
+            email=user.email,
+            role=user.role.code if user.role is not None else "custom",
+        )
+        for user in users
+    ]
+
+
+@router.get(
+    "/{ticket_id}/participants",
+    response_model=list[TicketParticipantResponse],
+)
+def list_ticket_participants(
+    ticket_id: str,
+    include_inactive: bool = Query(default=False),
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[TicketParticipantResponse]:
+    require_permissions(current_user, "tickets.participants.read")
+    ticket = _participant_ticket(db, ticket_id, current_user)
+    statement = select(TicketParticipant).where(
+        TicketParticipant.ticket_id == ticket.id,
+        TicketParticipant.tenant_id == ticket.tenant_id,
+    )
+    if not include_inactive:
+        statement = statement.where(TicketParticipant.is_active.is_(True))
+    rows = db.scalars(
+        statement.order_by(TicketParticipant.is_active.desc(), TicketParticipant.created_at.asc())
+    ).all()
+    return [_participant_response(item) for item in rows]
+
+
+@router.post(
+    "/{ticket_id}/participants",
+    response_model=TicketParticipantResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_ticket_participant(
+    ticket_id: str,
+    payload: TicketParticipantCreateRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketParticipantResponse:
+    require_permissions(current_user, "tickets.participants.manage")
+    ticket = _participant_ticket(db, ticket_id, current_user)
+    linked_user: User | None = None
+    if payload.user_id:
+        linked_user = db.get(User, payload.user_id)
+        if linked_user is None or linked_user.tenant_id != ticket.tenant_id or not linked_user.is_active:
+            raise HTTPException(status_code=422, detail="Participant user is unavailable in this tenant")
+        display_name = linked_user.full_name
+        email = linked_user.email.strip().lower()
+        identity_key = f"user:{linked_user.id}"
+    else:
+        display_name = (payload.display_name or "").strip()
+        email = (payload.email or "").strip().lower()
+        if "@" not in email or email.startswith("@") or email.endswith("@"):
+            raise HTTPException(status_code=422, detail="Participant email is invalid")
+        identity_key = f"email:{email}"
+    existing = db.scalar(
+        select(TicketParticipant).where(
+            TicketParticipant.ticket_id == ticket.id,
+            TicketParticipant.identity_key == identity_key,
+        )
+    )
+    if existing is not None and existing.is_active:
+        raise HTTPException(status_code=409, detail="Participant already watches this ticket")
+    actor = _actor(db, current_user)
+    if existing is None:
+        item = TicketParticipant(
+            id=str(uuid.uuid4()),
+            tenant_id=ticket.tenant_id,
+            ticket_id=ticket.id,
+            user_id=linked_user.id if linked_user else None,
+            identity_key=identity_key,
+            display_name=display_name,
+            email=email,
+            participant_role=payload.participant_role,
+            notification_scope=payload.notification_scope,
+            notify_in_app=payload.notify_in_app,
+            notify_email=payload.notify_email,
+            added_by_id=current_user.id,
+        )
+        db.add(item)
+        action = "ticket_participant_added"
+    else:
+        item = existing
+        item.user_id = linked_user.id if linked_user else None
+        item.display_name = display_name
+        item.email = email
+        item.participant_role = payload.participant_role
+        item.notification_scope = payload.notification_scope
+        item.notify_in_app = payload.notify_in_app
+        item.notify_email = payload.notify_email
+        item.is_active = True
+        item.removal_reason = None
+        item.removed_by_id = None
+        item.removed_at = None
+        item.version_number += 1
+        action = "ticket_participant_reactivated"
+    _write_history(
+        db,
+        ticket_id=ticket.id,
+        actor_name=current_user.full_name,
+        event_type=action,
+        field_name="participants",
+        old_value=None,
+        new_value=email,
+        message=f"Участник {display_name} добавлен к заявке.",
+    )
+    log_audit(
+        db,
+        action=action,
+        entity_type="ticket_participant",
+        entity_id=item.id,
+        actor_user=actor,
+        tenant_id=ticket.tenant_id,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={
+            "ticket_id": ticket.id,
+            "participant_role": item.participant_role,
+            "notification_scope": item.notification_scope,
+            "reason": payload.reason,
+        },
+    )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Participant already watches this ticket") from exc
+    db.refresh(item)
+    return _participant_response(item)
+
+
+@router.put(
+    "/{ticket_id}/participants/self",
+    response_model=TicketParticipantResponse,
+)
+def watch_ticket(
+    ticket_id: str,
+    payload: TicketWatchRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketParticipantResponse:
+    require_permissions(current_user, "tickets.watch")
+    ticket = _participant_ticket(db, ticket_id, current_user)
+    user = db.get(User, current_user.id)
+    if user is None or user.tenant_id != ticket.tenant_id:
+        raise HTTPException(status_code=422, detail="Watcher account is unavailable")
+    identity_key = f"user:{user.id}"
+    item = db.scalar(
+        select(TicketParticipant).where(
+            TicketParticipant.ticket_id == ticket.id,
+            TicketParticipant.identity_key == identity_key,
+        )
+    )
+    created = item is None
+    if item is None:
+        item = TicketParticipant(
+            id=str(uuid.uuid4()),
+            tenant_id=ticket.tenant_id,
+            ticket_id=ticket.id,
+            user_id=user.id,
+            identity_key=identity_key,
+            display_name=user.full_name,
+            email=user.email.strip().lower(),
+            participant_role="WATCHER",
+            added_by_id=user.id,
+        )
+        db.add(item)
+    else:
+        item.is_active = True
+        item.removal_reason = None
+        item.removed_by_id = None
+        item.removed_at = None
+        item.version_number += 1
+    item.notification_scope = payload.notification_scope
+    item.notify_in_app = payload.notify_in_app
+    item.notify_email = payload.notify_email
+    log_audit(
+        db,
+        action="ticket_watcher_subscribed" if created else "ticket_watcher_preferences_updated",
+        entity_type="ticket_participant",
+        entity_id=item.id,
+        actor_user=user,
+        tenant_id=ticket.tenant_id,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={"ticket_id": ticket.id, "notification_scope": item.notification_scope},
+    )
+    db.commit()
+    db.refresh(item)
+    return _participant_response(item)
+
+
+@router.patch(
+    "/{ticket_id}/participants/{participant_id}",
+    response_model=TicketParticipantResponse,
+)
+def update_ticket_participant(
+    ticket_id: str,
+    participant_id: str,
+    payload: TicketParticipantPatchRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketParticipantResponse:
+    ticket = _participant_ticket(db, ticket_id, current_user)
+    item = _participant_item(db, ticket, participant_id)
+    if not _participant_can_manage(current_user, item):
+        raise HTTPException(status_code=403, detail="Missing permission to update this participant")
+    if item.version_number != payload.expected_version:
+        raise HTTPException(status_code=409, detail="Participant was changed; reload and retry")
+    changes = payload.model_dump(exclude_unset=True, exclude={"expected_version", "reason"})
+    if not has_permission(current_user, "tickets.participants.manage"):
+        changes.pop("participant_role", None)
+    for key, value in changes.items():
+        setattr(item, key, value)
+    item.version_number += 1
+    actor = _actor(db, current_user)
+    log_audit(
+        db,
+        action="ticket_participant_updated",
+        entity_type="ticket_participant",
+        entity_id=item.id,
+        actor_user=actor,
+        tenant_id=ticket.tenant_id,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={"ticket_id": ticket.id, "changed_fields": sorted(changes), "reason": payload.reason},
+    )
+    db.commit()
+    db.refresh(item)
+    return _participant_response(item)
+
+
+@router.delete(
+    "/{ticket_id}/participants/{participant_id}",
+    response_model=TicketParticipantResponse,
+)
+def remove_ticket_participant(
+    ticket_id: str,
+    participant_id: str,
+    http_request: Request,
+    reason: str = Query(min_length=3, max_length=2_000),
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketParticipantResponse:
+    ticket = _participant_ticket(db, ticket_id, current_user)
+    item = _participant_item(db, ticket, participant_id)
+    if not _participant_can_manage(current_user, item):
+        raise HTTPException(status_code=403, detail="Missing permission to remove this participant")
+    if not item.is_active:
+        return _participant_response(item)
+    now = datetime.now(UTC)
+    item.is_active = False
+    item.removal_reason = reason
+    item.removed_by_id = current_user.id
+    item.removed_at = now
+    item.version_number += 1
+    actor = _actor(db, current_user)
+    _write_history(
+        db,
+        ticket_id=ticket.id,
+        actor_name=current_user.full_name,
+        event_type="ticket_participant_removed",
+        field_name="participants",
+        old_value=item.email,
+        new_value=None,
+        message=f"Участник {item.display_name} удалён из заявки.",
+    )
+    log_audit(
+        db,
+        action="ticket_participant_removed",
+        entity_type="ticket_participant",
+        entity_id=item.id,
+        actor_user=actor,
+        tenant_id=ticket.tenant_id,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={"ticket_id": ticket.id, "reason": reason},
+    )
+    db.commit()
+    db.refresh(item)
+    return _participant_response(item)
+
+
+@router.get(
+    "/{ticket_id}/duplicate-candidates",
+    response_model=list[TicketDuplicateCandidateResponse],
+)
+def list_ticket_duplicate_candidates(
+    ticket_id: str,
+    min_score: float = Query(default=45.0, ge=0, le=100),
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[TicketDuplicateCandidateResponse]:
+    require_permissions(current_user, "tickets.duplicates.read")
+    _ensure_access(current_user)
+    source = _visible_governance_ticket(db, ticket_id, current_user)
+    if source.merged_into_id is not None:
+        return []
+
+    statement = select(Ticket).where(
+        Ticket.tenant_id == source.tenant_id,
+        Ticket.id != source.id,
+        Ticket.merged_into_id.is_(None),
+        Ticket.status != "CANCELLED",
+    )
+    statement = _apply_role_scope(statement, current_user)
+    candidates = db.scalars(statement.order_by(Ticket.created_at.desc()).limit(500)).all()
+
+    suppressed_pairs = set(
+        db.scalars(
+            select(TicketGovernanceAction.pair_key).where(
+                TicketGovernanceAction.tenant_id == source.tenant_id,
+                TicketGovernanceAction.pair_key.is_not(None),
+                TicketGovernanceAction.action_type.in_(["DUPLICATE_DISMISSED", "MERGED"]),
+                or_(
+                    TicketGovernanceAction.source_ticket_id == source.id,
+                    TicketGovernanceAction.target_ticket_id == source.id,
+                ),
+            )
+        ).all()
+    )
+    ranked: list[TicketDuplicateCandidateResponse] = []
+    for candidate in candidates:
+        pair_key = _duplicate_pair_key(source.id, candidate.id)
+        if pair_key in suppressed_pairs:
+            continue
+        score, evidence = _duplicate_score(source, candidate)
+        if score < min_score:
+            continue
+        ranked.append(
+            TicketDuplicateCandidateResponse(
+                id=candidate.id,
+                ticket_number=candidate.ticket_number,
+                title=candidate.title,
+                requester_name=candidate.requester_name,
+                requester_email=candidate.requester_email,
+                category=candidate.category,
+                priority=candidate.priority,
+                status=_status_for_output(candidate.status),
+                created_at=candidate.created_at,
+                governance_version=candidate.governance_version,
+                score=score,
+                evidence=evidence,
+                pair_key=pair_key,
+            )
+        )
+    ranked.sort(key=lambda item: (-item.score, item.created_at, item.id))
+    return ranked[:limit]
+
+
+@router.post(
+    "/{ticket_id}/duplicate-candidates/{candidate_id}/dismiss",
+    response_model=TicketGovernanceResultResponse,
+)
+def dismiss_ticket_duplicate_candidate(
+    ticket_id: str,
+    candidate_id: str,
+    request: TicketDuplicateDismissRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketGovernanceResultResponse:
+    require_permissions(current_user, "tickets.duplicates.manage")
+    _ensure_access(current_user)
+    if ticket_id == candidate_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A ticket cannot be compared with itself",
+        )
+    source, candidate = _locked_governance_pair(db, ticket_id, candidate_id, current_user)
+    assert source.tenant_id is not None
+    existing = _idempotent_action(
+        db,
+        tenant_id=source.tenant_id,
+        action_type="DUPLICATE_DISMISSED",
+        idempotency_key=request.idempotency_key,
+    )
+    if existing is not None:
+        _assert_idempotent_action_matches(
+            existing, source_ticket_id=source.id, target_ticket_id=candidate.id
+        )
+        return _governance_result(existing, source, candidate, already_applied=True)
+
+    _assert_governance_version(source, request.expected_ticket_version, "Source ticket")
+    _assert_governance_version(candidate, request.expected_candidate_version, "Candidate ticket")
+    if source.merged_into_id is not None or candidate.merged_into_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Merged tickets cannot be reviewed as duplicate candidates",
+        )
+
+    score, signals = _duplicate_score(source, candidate)
+    now = datetime.now(UTC)
+    source.governance_version += 1
+    candidate.governance_version += 1
+    source.updated_at = now
+    candidate.updated_at = now
+    action = TicketGovernanceAction(
+        id=str(uuid.uuid4()),
+        tenant_id=source.tenant_id,
+        action_type="DUPLICATE_DISMISSED",
+        source_ticket_id=source.id,
+        target_ticket_id=candidate.id,
+        actor_user_id=current_user.id,
+        actor_name=current_user.full_name,
+        reason=request.reason.strip(),
+        pair_key=_duplicate_pair_key(source.id, candidate.id),
+        score=score,
+        evidence_json={"signals": signals},
+        idempotency_key=request.idempotency_key,
+        created_at=now,
+    )
+    db.add(action)
+    for ticket, other in ((source, candidate), (candidate, source)):
+        _write_history(
+            db,
+            ticket_id=ticket.id,
+            actor_name=current_user.full_name,
+            event_type="duplicate_candidate_dismissed",
+            field_name="duplicate_candidate",
+            old_value=other.id,
+            new_value=None,
+            message=f"Кандидат {other.ticket_number or other.id} отклонён как ложный дубликат.",
+        )
+    actor_user = _actor(db, current_user)
+    log_audit(
+        db,
+        action="ticket_duplicate_candidate_dismissed",
+        entity_type="ticket_governance_action",
+        entity_id=action.id,
+        actor_user=actor_user,
+        tenant_id=source.tenant_id,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={
+            "source_ticket_id": source.id,
+            "candidate_ticket_id": candidate.id,
+            "score": score,
+            "reason": request.reason.strip(),
+        },
+    )
+    db.commit()
+    db.refresh(action)
+    db.refresh(source)
+    db.refresh(candidate)
+    return _governance_result(action, source, candidate, already_applied=False)
+
+
+@router.post(
+    "/{source_ticket_id}/merge",
+    response_model=TicketGovernanceResultResponse,
+)
+def merge_ticket(
+    source_ticket_id: str,
+    request: TicketMergeRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketGovernanceResultResponse:
+    require_permissions(current_user, "tickets.merge")
+    _ensure_access(current_user)
+    if source_ticket_id == request.target_ticket_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A ticket cannot be merged into itself",
+        )
+    source, target = _locked_governance_pair(
+        db, source_ticket_id, request.target_ticket_id, current_user
+    )
+    assert source.tenant_id is not None
+    existing = _idempotent_action(
+        db,
+        tenant_id=source.tenant_id,
+        action_type="MERGED",
+        idempotency_key=request.idempotency_key,
+    )
+    if existing is not None:
+        _assert_idempotent_action_matches(
+            existing, source_ticket_id=source.id, target_ticket_id=target.id
+        )
+        return _governance_result(existing, source, target, already_applied=True)
+
+    _assert_governance_version(source, request.expected_source_version, "Source ticket")
+    _assert_governance_version(target, request.expected_target_version, "Target ticket")
+    if source.merged_into_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Source ticket is already merged",
+        )
+    if target.merged_into_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Target ticket is already merged",
+        )
+    if source.status in CLOSED_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an active source ticket can be merged",
+        )
+    if target.status == "CANCELLED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A cancelled ticket cannot be a merge target",
+        )
+
+    now = datetime.now(UTC)
+    old_status = source.status
+    score, signals = _duplicate_score(source, target)
+    actor_user = _actor(db, current_user)
+    try:
+        transition_ticket_status_path(
+            db,
+            source,
+            "CANCELLED",
+            actor_name=current_user.full_name,
+            actor_kind="MANAGER",
+            actor_user=actor_user,
+            actor_email=current_user.email,
+            allow_cross_tenant_actor=current_user.role == "saas_root",
+            expected_version=request.expected_source_version,
+            idempotency_key=f"merge:{request.idempotency_key}"[-120:],
+            at=now,
+            source="ticket_merge",
+            reason=(
+                f"Source ticket merged into {target.ticket_number or target.id}; "
+                "lifecycle closed as CANCELLED."
+            ),
+            ip_address=http_request.client.host if http_request.client else None,
+            user_agent=http_request.headers.get("user-agent"),
+        )
+    except TicketLifecycleError as error:
+        _raise_lifecycle_http(error)
+    source.merged_into_id = target.id
+    source.merge_reason = request.reason.strip()
+    source.merged_by_id = current_user.id
+    source.merged_by_name = current_user.full_name
+    source.merged_at = now
+    source.updated_at = now
+    target.governance_version += 1
+    target.updated_at = now
+    action = TicketGovernanceAction(
+        id=str(uuid.uuid4()),
+        tenant_id=source.tenant_id,
+        action_type="MERGED",
+        source_ticket_id=source.id,
+        target_ticket_id=target.id,
+        actor_user_id=current_user.id,
+        actor_name=current_user.full_name,
+        reason=request.reason.strip(),
+        pair_key=_duplicate_pair_key(source.id, target.id),
+        score=score,
+        evidence_json={"signals": signals, "source_previous_status": old_status},
+        idempotency_key=request.idempotency_key,
+        created_at=now,
+    )
+    db.add(action)
+    _write_history(
+        db,
+        ticket_id=source.id,
+        actor_name=current_user.full_name,
+        event_type="ticket_merged",
+        field_name="merged_into_id",
+        old_value=None,
+        new_value=target.id,
+        message=f"Заявка объединена с {target.ticket_number or target.id}; исходная запись сохранена.",
+    )
+    _write_history(
+        db,
+        ticket_id=target.id,
+        actor_name=current_user.full_name,
+        event_type="ticket_merge_received",
+        field_name="merged_source_id",
+        old_value=None,
+        new_value=source.id,
+        message=f"В заявку объединена {source.ticket_number or source.id}.",
+    )
+    log_audit(
+        db,
+        action="ticket_merged",
+        entity_type="ticket_governance_action",
+        entity_id=action.id,
+        actor_user=actor_user,
+        tenant_id=source.tenant_id,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={
+            "source_ticket_id": source.id,
+            "target_ticket_id": target.id,
+            "source_previous_status": old_status,
+            "reason": request.reason.strip(),
+        },
+    )
+    db.commit()
+    db.refresh(action)
+    db.refresh(source)
+    db.refresh(target)
+    return _governance_result(action, source, target, already_applied=False)
+
+
+@router.post(
+    "/{source_ticket_id}/split",
+    response_model=TicketGovernanceResultResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def split_ticket(
+    source_ticket_id: str,
+    request: TicketSplitRequest,
+    http_request: Request,
+    current_user: AuthUserResponse = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TicketGovernanceResultResponse:
+    require_permissions(current_user, "tickets.split")
+    _ensure_access(current_user)
+    source = _visible_governance_ticket(db, source_ticket_id, current_user)
+    assert source.tenant_id is not None
+    existing = _idempotent_action(
+        db,
+        tenant_id=source.tenant_id,
+        action_type="SPLIT",
+        idempotency_key=request.idempotency_key,
+    )
+    if existing is not None:
+        _assert_idempotent_action_matches(
+            existing,
+            source_ticket_id=source.id,
+            target_ticket_id=existing.target_ticket_id,
+        )
+        child = db.scalar(select(Ticket).where(Ticket.id == existing.target_ticket_id))
+        return _governance_result(existing, source, child, already_applied=True)
+
+    source = db.scalar(
+        select(Ticket).where(Ticket.id == source.id).with_for_update()
+    )
+    assert source is not None
+    existing = _idempotent_action(
+        db,
+        tenant_id=source.tenant_id,
+        action_type="SPLIT",
+        idempotency_key=request.idempotency_key,
+    )
+    if existing is not None:
+        _assert_idempotent_action_matches(
+            existing,
+            source_ticket_id=source.id,
+            target_ticket_id=existing.target_ticket_id,
+        )
+        child = db.scalar(select(Ticket).where(Ticket.id == existing.target_ticket_id))
+        return _governance_result(existing, source, child, already_applied=True)
+    _assert_governance_version(source, request.expected_source_version, "Source ticket")
+    if source.merged_into_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A merged ticket cannot be split",
+        )
+    categories, priorities, _, sla_policies, _ = _lookup_maps(db)
+    category = request.category or source.category
+    priority = request.priority or source.priority
+    if category not in categories:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown ticket category")
+    if priority not in priorities:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown ticket priority")
+
+    actor_user = _actor(db, current_user)
+    if actor_user is None or not actor_user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active creator account required")
+    now = datetime.now(UTC)
+    created_on_behalf = source.requester_id != actor_user.id
+    child = Ticket(
+        id=str(uuid.uuid4()),
+        tenant_id=source.tenant_id,
+        ticket_number=next_ticket_number(db),
+        title=request.title.strip(),
+        description=request.description,
+        requester_id=source.requester_id,
+        requester_name=source.requester_name,
+        requester_email=source.requester_email,
+        requester_contact=source.requester_contact,
+        created_by_id=actor_user.id,
+        created_by_name=actor_user.full_name,
+        creation_channel="ON_BEHALF" if created_on_behalf else "SELF_SERVICE",
+        on_behalf_reason=request.reason.strip() if created_on_behalf else None,
+        parent_ticket_id=source.id,
+        governance_version=1,
+        department=source.department,
+        location=source.location,
+        category=category,
+        priority=priority,
+        status="NEW",
+        asset_id=source.asset_id,
+        created_at=now,
+        updated_at=now,
+    )
+    sla_policy = sla_policies.get(priority)
+    if sla_policy is not None:
+        _apply_ticket_sla(child, sla_policy, now)
+    source.governance_version += 1
+    source.updated_at = now
+    db.add(child)
+    db.flush()
+    sync_ticket_sla(db, child, old_status=None, actor=actor_user, at=now)
+    action = TicketGovernanceAction(
+        id=str(uuid.uuid4()),
+        tenant_id=source.tenant_id,
+        action_type="SPLIT",
+        source_ticket_id=source.id,
+        target_ticket_id=child.id,
+        actor_user_id=current_user.id,
+        actor_name=current_user.full_name,
+        reason=request.reason.strip(),
+        pair_key=None,
+        score=None,
+        evidence_json={"child_ticket_number": child.ticket_number},
+        idempotency_key=request.idempotency_key,
+        created_at=now,
+    )
+    db.add(action)
+    _write_history(
+        db,
+        ticket_id=source.id,
+        actor_name=current_user.full_name,
+        event_type="ticket_split",
+        field_name="child_ticket_id",
+        old_value=None,
+        new_value=child.id,
+        message=f"Создана отдельная дочерняя заявка {child.ticket_number}.",
+    )
+    _write_history(
+        db,
+        ticket_id=child.id,
+        actor_name=current_user.full_name,
+        event_type="created_from_split",
+        field_name="parent_ticket_id",
+        old_value=None,
+        new_value=source.id,
+        message=f"Заявка выделена из {source.ticket_number or source.id}.",
+    )
+    notification = create_ticket_event_notification(
+        db, event_code="ticket_created", ticket=child, actor_name=current_user.full_name
+    )
+    if notification is not None:
+        db.add(_record_notification_history(child.id, current_user.full_name, "ticket_created"))
+    log_audit(
+        db,
+        action="ticket_split",
+        entity_type="ticket_governance_action",
+        entity_id=action.id,
+        actor_user=actor_user,
+        tenant_id=source.tenant_id,
+        ip_address=http_request.client.host if http_request.client else None,
+        user_agent=http_request.headers.get("user-agent"),
+        metadata={
+            "source_ticket_id": source.id,
+            "child_ticket_id": child.id,
+            "reason": request.reason.strip(),
+        },
+    )
+    trigger_automation_event(
+        db,
+        tenant_id=child.tenant_id,
+        trigger_type="ticket_created",
+        context=build_ticket_context(child),
+        actor_email=current_user.email,
+    )
+    db.commit()
+    db.refresh(action)
+    db.refresh(source)
+    db.refresh(child)
+    return _governance_result(action, source, child, already_applied=False)

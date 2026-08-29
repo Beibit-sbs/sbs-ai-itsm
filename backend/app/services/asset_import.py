@@ -17,9 +17,33 @@ from sqlalchemy.orm import Session
 from app.models.asset import Asset
 from app.models.asset_import_batch import AssetImportBatch
 from app.models.asset_import_row import AssetImportRow
+from app.models.ci_class import (
+    ConfigurationItemClass,
+    ConfigurationItemClassVersion,
+)
+from app.models.cmdb_reconciliation import (
+    CMDBReconciliationRecord,
+    CMDBReconciliationRun,
+    CMDBSource,
+)
+from app.models.user import User
+from app.services.cmdb_bootstrap import ensure_standard_cmdb_model
+from app.services.cmdb_reconciliation import (
+    ReconciliationConflict,
+    apply_reconciliation,
+    preview_reconciliation,
+)
 
 FILE_SIZE_LIMIT_BYTES = 5 * 1024 * 1024
 DEFAULT_IMPORT_SOURCE = "excel_import"
+LIFECYCLE_BY_ASSET_STATUS = {
+    "disposed": "DISPOSED",
+    "in_stock": "IN_STOCK",
+    "in_repair": "MAINTENANCE",
+    "maintenance": "MAINTENANCE",
+    "inactive": "RETIRED",
+    "active": "ACTIVE",
+}
 
 TYPE_MAPPING = {
     "МОНИТОР": "monitor",
@@ -174,8 +198,7 @@ class AssetImportService:
                     row_status = "duplicate"
                     error_message = "duplicate_inventory_number_in_file"
                 elif inventory_number in existing_inventory:
-                    row_status = "duplicate"
-                    error_message = "duplicate_inventory_number_existing"
+                    row_status = "update_candidate"
                 seen_inventory.add(inventory_number)
 
             db.add(
@@ -193,55 +216,205 @@ class AssetImportService:
 
         db.flush()
         rows = db.scalars(select(AssetImportRow).where(AssetImportRow.batch_id == batch.id).order_by(AssetImportRow.row_number.asc())).all()
+        source, actor = self._reconciliation_source(db, batch)
+        reconciliation_records = [
+            self._to_reconciliation_record(
+                self._parse_json(row.normalized_json)
+            )
+            for row in rows
+            if row.status not in {"error", "duplicate"}
+        ]
+        runs: list[CMDBReconciliationRun] = []
+        outcomes: dict[str, CMDBReconciliationRecord] = {}
+        for chunk_index, offset in enumerate(
+            range(0, len(reconciliation_records), 500),
+            start=1,
+        ):
+            run = preview_reconciliation(
+                db,
+                source=source,
+                idempotency_key=f"excel-import:{batch.id}:{chunk_index}",
+                records=reconciliation_records[offset : offset + 500],
+                actor_id=actor.id,
+            )
+            runs.append(run)
+            outcomes.update(
+                {
+                    record.external_id: record
+                    for record in db.scalars(
+                        select(CMDBReconciliationRecord).where(
+                            CMDBReconciliationRecord.run_id == run.id
+                        )
+                    ).all()
+                }
+            )
+        for row in rows:
+            if row.status in {"error", "duplicate"}:
+                continue
+            normalized = self._parse_json(row.normalized_json)
+            external_id = str(normalized.get("inventory_number", ""))
+            record = outcomes.get(external_id)
+            if record is None:
+                row.status = "error"
+                row.error_message = "cmdb_reconciliation_record_missing"
+                continue
+            if record.outcome == "CREATE":
+                row.status = "valid"
+                row.error_message = None
+            elif record.outcome in {
+                "UPDATE",
+                "UNCHANGED",
+                "SKIPPED",
+                "APPLIED_CREATED",
+                "APPLIED_UPDATED",
+            }:
+                row.status = "update_candidate"
+                details = self._parse_json(record.normalized_json)
+                blocked = details.get("_blocked_fields") or []
+                row.error_message = (
+                    f"protected_fields:{','.join(str(item) for item in blocked)}"
+                    if blocked
+                    else None
+                )
+            else:
+                row.status = "error"
+                errors = self._parse_list(record.errors_json)
+                candidates = self._parse_list(record.candidate_ids_json)
+                messages = [str(item) for item in errors]
+                if candidates:
+                    messages.append(
+                        "ambiguous_candidates:"
+                        + ",".join(str(item) for item in candidates)
+                    )
+                row.error_message = ";".join(messages) or (
+                    f"cmdb_reconciliation_{record.outcome.lower()}"
+                )
         summary = self.build_summary(rows)
         summary["dry_run"] = dry_run
         summary["batch_id"] = batch.id
+        run_ids = [run.id for run in runs]
+        summary["cmdb_reconciliation_run_id"] = run_ids[0] if run_ids else None
+        summary["cmdb_reconciliation_run_ids"] = run_ids
+        summary["cmdb_reconciliation_status"] = (
+            "PREVIEWED" if runs else "NO_VALID_RECORDS"
+        )
+        summary["cmdb_ambiguous_rows"] = sum(
+            run.ambiguous_count for run in runs
+        )
+        summary["cmdb_invalid_rows"] = sum(run.invalid_count for run in runs)
 
         metadata = self._parse_summary(batch.summary_json)
         metadata["preview"] = summary
+        metadata["cmdb_reconciliation_run_id"] = run_ids[0] if run_ids else None
+        metadata["cmdb_reconciliation_run_ids"] = run_ids
         batch.summary_json = json.dumps(metadata, ensure_ascii=False)
         batch.status = "preview_ready"
         batch.total_rows = summary["total_rows"]
         batch.valid_rows = summary["valid_rows"]
         batch.error_rows = summary["error_rows"]
         batch.skipped_rows = summary["duplicate_rows"]
-        db.commit()
+        db.flush()
         return summary
 
     def commit_import(self, db: Session, *, batch: AssetImportBatch, dry_run: bool) -> dict[str, Any]:
         rows = db.scalars(select(AssetImportRow).where(AssetImportRow.batch_id == batch.id).order_by(AssetImportRow.row_number.asc())).all()
         imported_rows = 0
-        skipped_rows = 0
-        error_rows = 0
+        skipped_rows = sum(row.status == "duplicate" for row in rows)
+        metadata = self._parse_summary(batch.summary_json)
+        raw_run_ids = metadata.get("cmdb_reconciliation_run_ids")
+        if isinstance(raw_run_ids, list):
+            run_ids = [str(item) for item in raw_run_ids if str(item)]
+        else:
+            fallback_id = str(
+                metadata.get("cmdb_reconciliation_run_id") or ""
+            )
+            run_ids = [fallback_id] if fallback_id else []
+        runs = [
+            run
+            for run_id in run_ids
+            if (run := db.get(CMDBReconciliationRun, run_id)) is not None
+        ]
+        if (
+            not runs
+            or len(runs) != len(run_ids)
+            or any(run.tenant_id != batch.tenant_id for run in runs)
+        ):
+            raise ValueError("asset_import_reconciliation_preview_required")
+        if any(run.invalid_count or run.ambiguous_count for run in runs):
+            raise ReconciliationConflict(
+                "asset import contains invalid or ambiguous CMDB records"
+            )
 
-        for row in rows:
-            if row.status == "error":
-                error_rows += 1
-                continue
-            normalized = self._parse_json(row.normalized_json)
-            if not normalized:
-                row.status = "error"
-                row.error_message = "normalization_failed"
-                error_rows += 1
-                continue
-            if dry_run:
-                if row.status in {"valid", "duplicate"}:
+        if dry_run:
+            imported_rows = sum(
+                row.status in {"valid", "update_candidate"}
+                for row in rows
+            )
+        else:
+            _, actor = self._reconciliation_source(db, batch)
+            applied_runs = [
+                apply_reconciliation(
+                    db,
+                    run_id=run.id,
+                    actor_id=actor.id,
+                )
+                for run in runs
+            ]
+            outcomes: dict[str, CMDBReconciliationRecord] = {}
+            for run in applied_runs:
+                outcomes.update(
+                    {
+                        record.external_id: record
+                        for record in db.scalars(
+                            select(CMDBReconciliationRecord).where(
+                                CMDBReconciliationRecord.run_id == run.id
+                            )
+                        ).all()
+                    }
+                )
+            runs = applied_runs
+            for row in rows:
+                if row.status in {"error", "duplicate"}:
+                    continue
+                normalized = self._parse_json(row.normalized_json)
+                external_id = str(normalized.get("inventory_number", ""))
+                record = outcomes.get(external_id)
+                if record is None:
+                    row.status = "error"
+                    row.error_message = "cmdb_reconciliation_record_missing"
+                    continue
+                row.asset_id = record.matched_ci_id
+                row.error_message = None
+                if record.outcome == "APPLIED_CREATED":
+                    row.status = "imported"
                     imported_rows += 1
-                else:
+                elif record.outcome == "APPLIED_UPDATED":
+                    row.status = "updated"
+                    imported_rows += 1
+                elif record.outcome == "UNCHANGED":
+                    row.status = "unchanged"
                     skipped_rows += 1
-                continue
-
-            asset, action = self.upsert_asset(db, batch=batch, normalized=normalized)
-            row.asset_id = asset.id
-            row.status = "imported" if action == "created" else "updated"
-            row.error_message = None
-            imported_rows += 1
+                elif record.outcome == "SKIPPED":
+                    row.status = "protected"
+                    skipped_rows += 1
+                else:
+                    row.status = "error"
+                    row.error_message = (
+                        f"cmdb_reconciliation_{record.outcome.lower()}"
+                    )
 
         summary = self.build_summary(rows)
         summary["dry_run"] = dry_run
         summary["imported_rows"] = imported_rows
-        summary["skipped_rows"] = skipped_rows + summary["duplicate_rows"]
-        summary["error_rows"] = error_rows + summary["error_rows"]
+        summary["skipped_rows"] = skipped_rows
+        summary["error_rows"] = summary["error_rows"]
+        summary["cmdb_reconciliation_run_id"] = runs[0].id
+        summary["cmdb_reconciliation_run_ids"] = [run.id for run in runs]
+        summary["cmdb_reconciliation_status"] = (
+            "COMPLETED"
+            if all(run.status == "COMPLETED" for run in runs)
+            else "COMPLETED_WITH_ERRORS"
+        )
 
         if not dry_run:
             batch.status = "committed"
@@ -249,14 +422,104 @@ class AssetImportService:
             batch.skipped_rows = summary["skipped_rows"]
             batch.error_rows = summary["error_rows"]
             batch.completed_at = datetime.now(UTC)
-            metadata = self._parse_summary(batch.summary_json)
             metadata["commit"] = summary
             batch.summary_json = json.dumps(metadata, ensure_ascii=False)
-            db.commit()
+            db.flush()
         else:
             batch.status = "preview_ready"
             db.rollback()
         return summary
+
+    def _reconciliation_source(
+        self,
+        db: Session,
+        batch: AssetImportBatch,
+    ) -> tuple[CMDBSource, User]:
+        if not batch.tenant_id:
+            raise ValueError("asset_import_tenant_required")
+        source = db.scalar(
+            select(CMDBSource).where(
+                CMDBSource.tenant_id == batch.tenant_id,
+                CMDBSource.code == "EXCEL_ASSET_IMPORT",
+            )
+        )
+        if source is None:
+            ensure_standard_cmdb_model(db, batch.tenant_id)
+            source = db.scalar(
+                select(CMDBSource).where(
+                    CMDBSource.tenant_id == batch.tenant_id,
+                    CMDBSource.code == "EXCEL_ASSET_IMPORT",
+                )
+            )
+        if source is None:
+            raise ValueError("asset_import_cmdb_source_unavailable")
+        actor = (
+            db.scalar(
+                select(User).where(
+                    User.tenant_id == batch.tenant_id,
+                    User.email == batch.created_by,
+                    User.is_active.is_(True),
+                )
+            )
+            if batch.created_by
+            else None
+        )
+        if actor is None:
+            actor = db.scalar(
+                select(User)
+                .where(
+                    User.tenant_id == batch.tenant_id,
+                    User.is_active.is_(True),
+                    User.is_root.is_(False),
+                )
+                .order_by(User.created_at, User.id)
+            )
+        if actor is None:
+            raise ValueError("asset_import_actor_unavailable")
+        return source, actor
+
+    def _to_reconciliation_record(
+        self,
+        normalized: dict[str, Any],
+    ) -> dict[str, Any]:
+        inventory_number = self._clean_str(normalized.get("inventory_number"))
+        if not inventory_number:
+            raise ValueError("asset_import_inventory_number_required")
+        return {
+            "external_id": inventory_number,
+            "name": self._clean_str(normalized.get("name")) or "Imported asset",
+            "inventory_number": inventory_number,
+            "original_type": self._clean_str(normalized.get("original_type")),
+            "lifecycle_status": LIFECYCLE_BY_ASSET_STATUS.get(
+                self._clean_str(normalized.get("status")) or "active",
+                "ACTIVE",
+            ),
+            "location": self._clean_str(normalized.get("location"))
+            or "Location unknown",
+            "assigned_to_name": self._clean_str(
+                normalized.get("assigned_to_name")
+            ),
+            "purchase_date": normalized.get("accepted_at"),
+            "purchase_cost": self._parse_float(
+                normalized.get("purchase_cost")
+            ),
+            "current_cost": self._parse_float(
+                normalized.get("current_cost")
+            ),
+            "depreciation_amount": self._parse_float(
+                normalized.get("depreciation_amount")
+            ),
+            "residual_value": self._parse_float(
+                normalized.get("residual_value")
+            ),
+            "purchase_year": self._parse_year(
+                normalized.get("purchase_year")
+            ),
+            "verification_status": self._clean_str(
+                normalized.get("verification_status")
+            ),
+            "attributes": {},
+        }
 
     def upsert_asset(self, db: Session, *, batch: AssetImportBatch, normalized: dict[str, Any]) -> tuple[Asset, str]:
         inventory_number = str(normalized["inventory_number"])
@@ -268,11 +531,31 @@ class AssetImportService:
         assigned_to_name = self._clean_str(normalized.get("assigned_to_name"))
         location = self._clean_str(normalized.get("location")) or "Location unknown"
         status = self._clean_str(normalized.get("status")) or "active"
+        generic_class, generic_version = self._generic_class_snapshot(
+            db,
+            batch.tenant_id,
+        )
 
         if existing is None:
             asset = Asset(
                 id=self._uuid(),
                 tenant_id=batch.tenant_id,
+                ci_class_id=generic_class.id,
+                ci_class_version_id=generic_version.id,
+                ci_class_code=generic_class.code,
+                ci_class_name=generic_class.name,
+                ci_schema_version=generic_version.version,
+                ci_schema_hash=generic_version.schema_hash,
+                ci_attributes_json="{}",
+                lifecycle_status=LIFECYCLE_BY_ASSET_STATUS.get(
+                    status,
+                    "ACTIVE",
+                ),
+                owner_user_id=None,
+                support_group="Service Desk",
+                criticality="MEDIUM",
+                environment="OTHER",
+                ci_version=1,
                 asset_tag=f"IMP-{self._uuid()[:8].upper()}",
                 name=self._clean_str(normalized.get("name")) or "Imported asset",
                 asset_type=self._clean_str(normalized.get("asset_type")) or "other",
@@ -307,11 +590,35 @@ class AssetImportService:
             db.flush()
             return asset, "created"
 
+        governed_class = bool(
+            existing.ci_class_id
+            and existing.ci_class_code
+            and existing.ci_class_code != "GENERIC_ASSET"
+        )
+        if not existing.ci_class_id:
+            existing.ci_class_id = generic_class.id
+            existing.ci_class_version_id = generic_version.id
+            existing.ci_class_code = generic_class.code
+            existing.ci_class_name = generic_class.name
+            existing.ci_schema_version = generic_version.version
+            existing.ci_schema_hash = generic_version.schema_hash
+            existing.ci_attributes_json = "{}"
         existing.name = self._clean_str(normalized.get("name")) or existing.name
-        existing.asset_type = self._clean_str(normalized.get("asset_type")) or existing.asset_type
-        existing.type = self._clean_str(normalized.get("asset_type")) or existing.type
+        if not governed_class:
+            existing.asset_type = (
+                self._clean_str(normalized.get("asset_type"))
+                or existing.asset_type
+            )
+            existing.type = (
+                self._clean_str(normalized.get("asset_type"))
+                or existing.type
+            )
         existing.original_type = self._clean_str(normalized.get("original_type")) or existing.original_type
         existing.status = status
+        existing.lifecycle_status = LIFECYCLE_BY_ASSET_STATUS.get(
+            status,
+            existing.lifecycle_status,
+        )
         existing.assigned_to_name = assigned_to_name or existing.assigned_to_name
         existing.owner_name = assigned_to_name or existing.owner_name
         existing.location = location
@@ -326,16 +633,85 @@ class AssetImportService:
         existing.source = DEFAULT_IMPORT_SOURCE
         existing.source_batch_id = batch.id
         existing.imported_at = datetime.now(UTC)
+        existing.ci_version += 1
+        existing.updated_at = datetime.now(UTC)
         db.flush()
         return existing, "updated"
+
+    def _generic_class_snapshot(
+        self,
+        db: Session,
+        tenant_id: str | None,
+    ) -> tuple[ConfigurationItemClass, ConfigurationItemClassVersion]:
+        if not tenant_id:
+            raise ValueError("asset_import_tenant_required")
+        cache_key = f"cmdb_generic_snapshot:{tenant_id}"
+        cached = db.info.get(cache_key)
+        if (
+            isinstance(cached, tuple)
+            and len(cached) == 2
+            and isinstance(cached[0], ConfigurationItemClass)
+            and isinstance(cached[1], ConfigurationItemClassVersion)
+        ):
+            return cached
+        generic_class = db.scalar(
+            select(ConfigurationItemClass).where(
+                ConfigurationItemClass.tenant_id == tenant_id,
+                ConfigurationItemClass.code == "GENERIC_ASSET",
+            )
+        )
+        if generic_class is None:
+            ensure_standard_cmdb_model(db, tenant_id)
+            generic_class = db.scalar(
+                select(ConfigurationItemClass).where(
+                    ConfigurationItemClass.tenant_id == tenant_id,
+                    ConfigurationItemClass.code == "GENERIC_ASSET",
+                )
+            )
+        if generic_class is None:
+            raise ValueError("asset_import_generic_ci_class_unavailable")
+        version = db.scalar(
+            select(ConfigurationItemClassVersion)
+            .where(
+                ConfigurationItemClassVersion.ci_class_id == generic_class.id,
+                ConfigurationItemClassVersion.status == "PUBLISHED",
+            )
+            .order_by(ConfigurationItemClassVersion.version.desc())
+        )
+        if version is None:
+            raise ValueError("asset_import_generic_ci_schema_unavailable")
+        snapshot = (generic_class, version)
+        db.info[cache_key] = snapshot
+        return snapshot
 
     def build_summary(self, rows: list[AssetImportRow]) -> dict[str, Any]:
         normalized_rows = [self._parse_json(row.normalized_json) for row in rows]
         return {
             "total_rows": len(rows),
-            "valid_rows": sum(1 for row in rows if row.status == "valid"),
+            "valid_rows": sum(
+                1
+                for row in rows
+                if row.status in {
+                    "valid",
+                    "update_candidate",
+                    "imported",
+                    "updated",
+                    "unchanged",
+                    "protected",
+                }
+            ),
             "error_rows": sum(1 for row in rows if row.status == "error"),
             "duplicate_rows": sum(1 for row in rows if row.status == "duplicate"),
+            "update_rows": sum(
+                1
+                for row in rows
+                if row.status in {
+                    "update_candidate",
+                    "updated",
+                    "unchanged",
+                    "protected",
+                }
+            ),
             "disposed_rows": sum(1 for item in normalized_rows if isinstance(item, dict) and item.get("status") == "disposed"),
             "in_stock_rows": sum(1 for item in normalized_rows if isinstance(item, dict) and item.get("status") == "in_stock"),
             "missing_location_rows": sum(
@@ -443,6 +819,15 @@ class AssetImportService:
         except json.JSONDecodeError:
             return {}
         return parsed if isinstance(parsed, dict) else {}
+
+    def _parse_list(self, raw: str | None) -> list[Any]:
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
 
     def _uuid(self) -> str:
         return str(uuid.uuid4())

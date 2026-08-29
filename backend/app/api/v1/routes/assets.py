@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, asc, desc, func, or_, select
+from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.routes.auth import AuthUserResponse, get_current_user
@@ -26,7 +26,11 @@ from app.services.asset_import import FILE_SIZE_LIMIT_BYTES, AssetImportService
 from app.services.asset_sla import calculate_asset_health
 from app.services.audit import log_audit
 from app.services.notifications import create_domain_event_notification
-from app.services.rbac import ensure_same_tenant_or_root, require_permissions
+from app.services.rbac import (
+    ensure_same_tenant_or_root,
+    has_permission,
+    require_permissions,
+)
 
 router = APIRouter(prefix="/assets")
 import_service = AssetImportService()
@@ -34,6 +38,19 @@ import_service = AssetImportService()
 
 class AssetResponse(BaseModel):
     id: str
+    ci_class_id: str | None
+    ci_class_version_id: str | None
+    ci_class_code: str | None
+    ci_class_name: str | None
+    ci_schema_version: int | None
+    ci_schema_hash: str | None
+    ci_attributes: dict[str, Any]
+    lifecycle_status: str
+    owner_user_id: str | None
+    support_group: str | None
+    criticality: str
+    environment: str
+    ci_version: int
     asset_tag: str
     name: str
     type: str | None
@@ -267,17 +284,15 @@ def _ensure_access(current_user: AuthUserResponse) -> None:
 
 
 def _require_asset_read(current_user: AuthUserResponse) -> None:
-    if current_user.role == "requester":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requester cannot access assets registry")
     require_permissions(current_user, "assets.read")
 
 
 def _can_manage_assets(current_user: AuthUserResponse) -> bool:
-    return current_user.role in {"saas_root", "organization_admin", "it_manager"}
+    return has_permission(current_user, "assets.update")
 
 
 def _allow_agent_limited_update(current_user: AuthUserResponse) -> bool:
-    return current_user.role == "it_agent"
+    return has_permission(current_user, "assets.verify")
 
 
 def _asset_query(current_user: AuthUserResponse):
@@ -367,6 +382,19 @@ def _compose_location(asset: Asset) -> str:
 def _asset_response(asset: Asset, tenant_name: str | None) -> AssetResponse:
     return AssetResponse(
         id=asset.id,
+        ci_class_id=asset.ci_class_id,
+        ci_class_version_id=asset.ci_class_version_id,
+        ci_class_code=asset.ci_class_code,
+        ci_class_name=asset.ci_class_name,
+        ci_schema_version=asset.ci_schema_version,
+        ci_schema_hash=asset.ci_schema_hash,
+        ci_attributes=_parse_json(asset.ci_attributes_json),
+        lifecycle_status=asset.lifecycle_status,
+        owner_user_id=asset.owner_user_id,
+        support_group=asset.support_group,
+        criticality=asset.criticality,
+        environment=asset.environment,
+        ci_version=asset.ci_version,
         asset_tag=asset.asset_tag,
         name=asset.name,
         type=asset.type or asset.asset_type,
@@ -684,6 +712,14 @@ def patch_asset(
     updates = request.model_dump(exclude_unset=True)
     if not updates:
         return get_asset(asset.id, current_user, db)
+    if asset.ci_class_id and {"asset_type", "status"}.intersection(updates):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Classified CI type and lifecycle must be changed through "
+                "/api/v1/cmdb/items/{asset_id}"
+            ),
+        )
 
     if _can_manage_assets(current_user):
         require_permissions(current_user, "assets.update")
@@ -747,8 +783,6 @@ def assign_asset(
     _ensure_access(current_user)
     _require_asset_read(current_user)
     require_permissions(current_user, "assets.assign")
-    if not _can_manage_assets(current_user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only manager/admin/root can assign assets")
 
     asset = _asset_or_404(db, current_user, asset_id)
     before = {
@@ -807,8 +841,6 @@ def move_asset(
     _ensure_access(current_user)
     _require_asset_read(current_user)
     require_permissions(current_user, "assets.move")
-    if not _can_manage_assets(current_user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only manager/admin/root can move assets")
 
     asset = _asset_or_404(db, current_user, asset_id)
     before = {
@@ -957,12 +989,12 @@ def dispose_asset(
     _ensure_access(current_user)
     _require_asset_read(current_user)
     require_permissions(current_user, "assets.dispose")
-    if not _can_manage_assets(current_user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only manager/admin/root can dispose assets")
 
     asset = _asset_or_404(db, current_user, asset_id)
     before = {
         "status": asset.status,
+        "lifecycle_status": asset.lifecycle_status,
+        "ci_version": asset.ci_version,
         "disposed_at": asset.disposed_at,
         "writeoff_date": asset.writeoff_date,
         "writeoff_reason": asset.writeoff_reason,
@@ -970,6 +1002,9 @@ def dispose_asset(
 
     now = datetime.now(UTC)
     asset.status = "disposed"
+    if asset.ci_class_id:
+        asset.lifecycle_status = "DISPOSED"
+        asset.ci_version += 1
     asset.disposed_at = now
     asset.writeoff_date = now
     asset.writeoff_reason = request.writeoff_reason
@@ -984,6 +1019,8 @@ def dispose_asset(
         old_value=before,
         new_value={
             "status": asset.status,
+            "lifecycle_status": asset.lifecycle_status,
+            "ci_version": asset.ci_version,
             "disposed_at": asset.disposed_at.isoformat(),
             "writeoff_date": asset.writeoff_date.isoformat(),
             "writeoff_reason": asset.writeoff_reason,
@@ -1037,13 +1074,19 @@ def restore_asset(
     _ensure_access(current_user)
     _require_asset_read(current_user)
     require_permissions(current_user, "assets.restore")
-    if not _can_manage_assets(current_user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only manager/admin/root can restore assets")
 
     asset = _asset_or_404(db, current_user, asset_id)
-    before = {"status": asset.status, "disposed_at": asset.disposed_at}
+    before = {
+        "status": asset.status,
+        "lifecycle_status": asset.lifecycle_status,
+        "ci_version": asset.ci_version,
+        "disposed_at": asset.disposed_at,
+    }
 
     asset.status = "active"
+    if asset.ci_class_id:
+        asset.lifecycle_status = "ACTIVE"
+        asset.ci_version += 1
     asset.disposed_at = None
     asset.updated_at = datetime.now(UTC)
 
@@ -1054,7 +1097,12 @@ def restore_asset(
         actor_id=current_user.id,
         action="asset_restored",
         old_value=before,
-        new_value={"status": asset.status, "disposed_at": None},
+        new_value={
+            "status": asset.status,
+            "lifecycle_status": asset.lifecycle_status,
+            "ci_version": asset.ci_version,
+            "disposed_at": None,
+        },
         comment=request.comment,
     )
     log_audit(
@@ -1121,7 +1169,7 @@ def upload_asset_import(
 
     payload = file.file.read(FILE_SIZE_LIMIT_BYTES + 1)
     if len(payload) > FILE_SIZE_LIMIT_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File is too large")
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="File is too large")
 
     batch = AssetImportBatch(
         id=str(uuid.uuid4()),
@@ -1211,7 +1259,17 @@ def commit_asset_import(
     if batch.status not in {"preview_ready", "committed"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Preview must be generated before commit")
 
-    summary = import_service.commit_import(db, batch=batch, dry_run=payload.dry_run)
+    try:
+        summary = import_service.commit_import(
+            db,
+            batch=batch,
+            dry_run=payload.dry_run,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     actor = _current_actor(db, current_user)
 
     if not payload.dry_run:

@@ -1,0 +1,158 @@
+{
+  "source": {
+    "type": "file_system",
+    "file_system": {
+      "name": "frontend",
+      "path": "C:\\projects\\sbs-ai-itsm-foundation-001\\frontend",
+      "size": 203265324
+    }
+  },
+  "attestations": null,
+  "artifacts": [
+    {
+      "type": "npm",
+      "namespace": "@tanstack",
+      "name": "query-core",
+      "version": "5.101.2",
+      "purl": "pkg:npm/%40tanstack/query-core@5.101.2",
+      "licenses": [
+        "MIT"
+      ],
+      "locations": [
+        {
+          "path": "\\package-lock.json"
+        }
+      ]
+    },
+    {
+      "type": "npm",
+      "namespace": "@tanstack",
+      "name": "react-query",
+      "version": "5.101.2",
+      "purl": "pkg:npm/%40tanstack/react-query@5.101.2",
+      "licenses": [
+        "MIT"
+      ],
+      "locations": [
+        {
+          "path": "\\package-lock.json"
+        }
+      ]
+    },
+    {
+      "type": "npm",
+      "name": "cookie",
+      "version": "1.1.1",
+      "purl": "pkg:npm/cookie@1.1.1",
+      "licenses": [
+        "MIT"
+      ],
+      "locations": [
+        {
+          "path": "\\package-lock.json"
+        }
+      ]
+    },
+    {
+      "type": "npm",
+      "name": "react-dom",
+      "version": "19.2.7",
+      "purl": "pkg:npm/react-dom@19.2.7",
+      "licenses": [
+        "MIT"
+      ],
+      "locations": [
+        {
+          "path": "\\package-lock.json"
+        }
+      ]
+    },
+    {
+      "type": "npm",
+      "name": "react-router-dom",
+      "version": "7.18.2",
+      "purl": "pkg:npm/react-router-dom@7.18.2",
+      "licenses": [
+        "MIT"
+      ],
+      "locations": [
+        {
+          "path": "\\package-lock.json"
+        }
+      ]
+    },
+    {
+      "type": "npm",
+      "name": "react-router",
+      "version": "7.18.2",
+      "purl": "pkg:npm/react-router@7.18.2",
+      "licenses": [
+        "MIT"
+      ],
+      "locations": [
+        {
+          "path": "\\package-lock.json"
+        }
+      ]
+    },
+    {
+      "type": "npm",
+      "name": "react",
+      "version": "19.2.7",
+      "purl": "pkg:npm/react@19.2.7",
+      "licenses": [
+        "MIT"
+      ],
+      "locations": [
+        {
+          "path": "\\package-lock.json"
+        }
+      ]
+    },
+    {
+      "type": "npm",
+      "name": "sbs-ai-itsm-frontend",
+      "version": "0.1.0",
+      "purl": "pkg:npm/sbs-ai-itsm-frontend@0.1.0",
+      "locations": [
+        {
+          "path": "\\package-lock.json"
+        }
+      ]
+    },
+    {
+      "type": "npm",
+      "name": "scheduler",
+      "version": "0.27.0",
+      "purl": "pkg:npm/scheduler@0.27.0",
+      "licenses": [
+        "MIT"
+      ],
+      "locations": [
+        {
+          "path": "\\package-lock.json"
+        }
+      ]
+    },
+    {
+      "type": "npm",
+      "name": "set-cookie-parser",
+      "version": "2.7.2",
+      "purl": "pkg:npm/set-cookie-parser@2.7.2",
+      "licenses": [
+        "MIT"
+      ],
+      "locations": [
+        {
+          "path": "\\package-lock.json"
+        }
+      ]
+    }
+  ],
+  "descriptor": {
+    "name": "docker-scout",
+    "version": "1.23.1",
+    "sbom_version": "11"
+  }
+}
+

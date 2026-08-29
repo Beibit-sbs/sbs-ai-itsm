@@ -1,7 +1,5 @@
 """Unit tests for policy metrics monitoring and auto-rollback (Stage 028)."""
-import json
 
-import pytest
 
 from app.services.jobs.policy_metrics_monitoring import (
     estimate_auto_rollback_confidence,
@@ -112,20 +110,20 @@ def test_estimate_auto_rollback_confidence_no_change():
 
 
 def test_estimate_auto_rollback_confidence_no_data():
-    """Test confidence scoring with missing data."""
+    """Missing evidence is represented as maximum risk, never as safe."""
     confidence = estimate_auto_rollback_confidence(
         baseline_error_rate=None,
         current_error_rate=0.5,
     )
     
-    assert confidence == 0.0  # Default to safe when no baseline
+    assert confidence == 1.0
     
     confidence = estimate_auto_rollback_confidence(
         baseline_error_rate=0.5,
         current_error_rate=None,
     )
     
-    assert confidence == 0.0  # Default to safe when no current
+    assert confidence == 1.0
 
 
 def test_estimate_auto_rollback_confidence_from_zero_baseline_small_rise():

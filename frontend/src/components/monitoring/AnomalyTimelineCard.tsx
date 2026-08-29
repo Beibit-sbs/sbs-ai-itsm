@@ -3,7 +3,10 @@
  * Shows anomalies with severity, scores, and resolution status
  */
 
+import type { ReactNode } from 'react'
 import type { AnomalyTimelineItem } from '../../api/client'
+import { localizeTree } from '../../experience/LocalizedContent'
+import { useTenantExperience } from '../../experience/TenantExperienceContext'
 
 interface AnomalyTimelineCardProps {
   anomalies: AnomalyTimelineItem[]
@@ -16,6 +19,8 @@ export default function AnomalyTimelineCard({
   isLoading = false,
   error,
 }: AnomalyTimelineCardProps) {
+  const { formatDateTime, translate } = useTenantExperience()
+  const localize = (node: ReactNode) => localizeTree(node, translate)
   const getSeverityColor = (severity: string) => {
     switch (severity) {
       case 'critical':
@@ -37,26 +42,14 @@ export default function AnomalyTimelineCard({
     return 'text-yellow-700 font-semibold'
   }
 
-  const formatTimestamp = (timestamp: string) => {
-    try {
-      const date = new Date(timestamp)
-      return date.toLocaleString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    } catch {
-      return timestamp
-    }
-  }
+  const formatTimestamp = (timestamp: string) => formatDateTime(timestamp)
 
   const formatDeviation = (percent: number) => {
     return percent > 0 ? `+${percent.toFixed(0)}%` : `${percent.toFixed(0)}%`
   }
 
   if (isLoading) {
-    return (
+    return localize(
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <h3 className="mb-4 text-lg font-semibold">Anomaly Timeline</h3>
         <div className="animate-pulse space-y-2">
@@ -69,7 +62,7 @@ export default function AnomalyTimelineCard({
   }
 
   if (error) {
-    return (
+    return localize(
       <div className="rounded-lg border border-red-200 bg-red-50 p-6">
         <h3 className="mb-2 text-lg font-semibold text-red-900">Anomaly Timeline</h3>
         <p className="text-sm text-red-700">{error}</p>
@@ -77,7 +70,7 @@ export default function AnomalyTimelineCard({
     )
   }
 
-  return (
+  return localize(
     <div className="rounded-lg border border-gray-200 bg-white p-6">
       <h3 className="mb-4 text-lg font-semibold">
         Anomaly Timeline ({anomalies.length})

@@ -24,7 +24,6 @@ from app.services.audit import log_audit
 from app.services.automation import (
     AutomationEngine,
     approve_request,
-    build_ticket_context,
     collect_automation_overview,
     execute_rule,
     reject_request,
@@ -67,31 +66,41 @@ class AutomationRulePageResponse(BaseModel):
 
 
 class AutomationRuleCreateRequest(BaseModel):
-    tenant_id: str | None = None
-    code: str
-    name: str
-    description: str | None = None
-    trigger_type: str
+    tenant_id: str | None = Field(default=None, max_length=36)
+    code: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=4000)
+    trigger_type: str = Field(min_length=1, max_length=80)
     conditions_json: dict[str, Any] | list[Any] = Field(default_factory=dict)
-    actions_json: list[dict[str, Any]] = Field(default_factory=list)
+    actions_json: list[dict[str, Any]] = Field(
+        default_factory=list,
+        max_length=50,
+    )
     is_active: bool = True
     requires_approval: bool = False
-    approval_role: str | None = None
-    cooldown_minutes: int = 0
-    priority: int = 100
+    approval_role: str | None = Field(default=None, max_length=80)
+    cooldown_minutes: int = Field(default=0, ge=0, le=10080)
+    priority: int = Field(default=100, ge=0, le=10000)
 
 
 class AutomationRulePatchRequest(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    trigger_type: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=4000)
+    trigger_type: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+    )
     conditions_json: dict[str, Any] | list[Any] | None = None
-    actions_json: list[dict[str, Any]] | None = None
+    actions_json: list[dict[str, Any]] | None = Field(
+        default=None,
+        max_length=50,
+    )
     is_active: bool | None = None
     requires_approval: bool | None = None
-    approval_role: str | None = None
-    cooldown_minutes: int | None = None
-    priority: int | None = None
+    approval_role: str | None = Field(default=None, max_length=80)
+    cooldown_minutes: int | None = Field(default=None, ge=0, le=10080)
+    priority: int | None = Field(default=None, ge=0, le=10000)
 
 
 class AutomationRunResponse(BaseModel):
@@ -137,12 +146,12 @@ class AutomationActionLogResponse(BaseModel):
 
 
 class DryRunRequest(BaseModel):
-    trigger_type: str = "manual_run"
+    trigger_type: str = Field(default="manual_run", max_length=80)
     context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ManualRunRequest(BaseModel):
-    trigger_type: str = "manual_run"
+    trigger_type: str = Field(default="manual_run", max_length=80)
     context: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -175,27 +184,41 @@ class RunbookPageResponse(BaseModel):
 
 
 class RunbookCreateRequest(BaseModel):
-    tenant_id: str | None = None
-    name: str | None = None
-    code: str
-    title: str
-    description: str | None = None
-    category: str
-    severity: str
-    steps_json: list[dict[str, Any]] = Field(default_factory=list)
-    estimated_minutes: int = 15
+    tenant_id: str | None = Field(default=None, max_length=36)
+    name: str | None = Field(default=None, max_length=255)
+    code: str = Field(min_length=1, max_length=120)
+    title: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=4000)
+    category: str = Field(min_length=1, max_length=80)
+    severity: str = Field(min_length=1, max_length=40)
+    steps_json: list[dict[str, Any]] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    estimated_minutes: int = Field(default=15, ge=1, le=1440)
     is_active: bool = True
     requires_approval: bool = False
 
 
 class RunbookPatchRequest(BaseModel):
-    name: str | None = None
-    title: str | None = None
-    description: str | None = None
-    category: str | None = None
-    severity: str | None = None
-    steps_json: list[dict[str, Any]] | None = None
-    estimated_minutes: int | None = None
+    name: str | None = Field(default=None, max_length=255)
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=4000)
+    category: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+    )
+    severity: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=40,
+    )
+    steps_json: list[dict[str, Any]] | None = Field(
+        default=None,
+        max_length=100,
+    )
+    estimated_minutes: int | None = Field(default=None, ge=1, le=1440)
     is_active: bool | None = None
     requires_approval: bool | None = None
 
@@ -215,13 +238,16 @@ class RunbookExecutionResponse(BaseModel):
 
 
 class StartRunbookExecutionRequest(BaseModel):
-    ticket_id: str | None = None
+    ticket_id: str | None = Field(default=None, max_length=36)
 
 
 class PatchRunbookExecutionRequest(BaseModel):
-    status: str | None = None
-    current_step: int | None = None
-    result_summary: str | None = None
+    status: str | None = Field(
+        default=None,
+        pattern="^(running|completed|failed|cancelled)$",
+    )
+    current_step: int | None = Field(default=None, ge=1, le=100)
+    result_summary: str | None = Field(default=None, max_length=4000)
 
 
 class ApprovalRequestResponse(BaseModel):
@@ -252,8 +278,8 @@ class ApprovalRequestPageResponse(BaseModel):
 
 
 class ApprovalDecisionRequest(BaseModel):
-    decision: str | None = None
-    comment: str | None = None
+    decision: str | None = Field(default=None, max_length=16)
+    comment: str | None = Field(default=None, max_length=4000)
 
 
 class SuggestionResponse(BaseModel):
@@ -639,6 +665,18 @@ def run_rule(
     db: Session = Depends(get_db),
 ):
     _require_any_permission(current_user, "automation.run", "automation.rules.execute")
+    rule = db.scalar(
+        _filter_by_tenant(
+            select(AutomationRule).where(AutomationRule.id == rule_id),
+            AutomationRule,
+            current_user,
+        )
+    )
+    if rule is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Rule not found",
+        )
     actor = _actor(db, current_user)
     if actor is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
@@ -755,6 +793,18 @@ def retry_failed_execution(
     db: Session = Depends(get_db),
 ) -> AutomationRunResponse:
     _require_any_permission(current_user, "automation.executions.retry", "automation.executions.manage")
+    source_execution = db.scalar(
+        _filter_by_tenant(
+            select(AutomationRun).where(AutomationRun.id == execution_id),
+            AutomationRun,
+            current_user,
+        )
+    )
+    if source_execution is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Execution not found",
+        )
     actor = _actor(db, current_user)
     if actor is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
@@ -907,6 +957,18 @@ def dry_run_runbook(
     db: Session = Depends(get_db),
 ) -> AutomationRunResponse:
     _require_any_permission(current_user, "automation.dry_run", "automation.runbooks.run", "automation.runbooks.manage", "automation.rules.execute")
+    runbook = db.scalar(
+        _filter_by_tenant(
+            select(Runbook).where(Runbook.id == runbook_id),
+            Runbook,
+            current_user,
+        )
+    )
+    if runbook is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Runbook not found",
+        )
     actor = _actor(db, current_user)
     if actor is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
@@ -927,6 +989,18 @@ def run_runbook_endpoint(
     db: Session = Depends(get_db),
 ) -> AutomationRunResponse:
     _require_any_permission(current_user, "automation.runbooks.run", "automation.executions.manage", "automation.runbooks.manage", "automation.rules.execute")
+    runbook = db.scalar(
+        _filter_by_tenant(
+            select(Runbook).where(Runbook.id == runbook_id),
+            Runbook,
+            current_user,
+        )
+    )
+    if runbook is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Runbook not found",
+        )
     actor = _actor(db, current_user)
     if actor is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Actor not found")
@@ -958,6 +1032,13 @@ def start_runbook_execution(
     runbook = db.scalar(_filter_by_tenant(select(Runbook).where(Runbook.id == runbook_id), Runbook, current_user))
     if runbook is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runbook not found")
+    runbook_steps = _parse_json(runbook.steps_json, [])
+    if not isinstance(runbook_steps, list) or not runbook_steps:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Runbook has no executable checklist steps",
+        )
+    execution_tenant_id = runbook.tenant_id or current_user.tenant_id
 
     if request.ticket_id is not None:
         ticket = db.get(Ticket, request.ticket_id)
@@ -965,11 +1046,20 @@ def start_runbook_execution(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
         if not is_saas_root(current_user) and ticket.tenant_id != current_user.tenant_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
+        if (
+            execution_tenant_id is not None
+            and ticket.tenant_id != execution_tenant_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found",
+            )
+        execution_tenant_id = execution_tenant_id or ticket.tenant_id
 
     now = _now()
     item = RunbookExecution(
         id=str(uuid.uuid4()),
-        tenant_id=runbook.tenant_id,
+        tenant_id=execution_tenant_id,
         runbook_id=runbook.id,
         ticket_id=request.ticket_id,
         status="running",
@@ -977,7 +1067,7 @@ def start_runbook_execution(
         started_by=current_user.email,
         started_at=now,
         completed_at=None,
-        result_summary="Runbook started in demo mode.",
+        result_summary="Runbook checklist started; completion is pending operator confirmation.",
         created_at=now,
     )
     db.add(item)
@@ -1008,8 +1098,38 @@ def patch_runbook_execution(
     item = db.scalar(_filter_by_tenant(select(RunbookExecution).where(RunbookExecution.id == execution_id), RunbookExecution, current_user))
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution not found")
+    if item.status in {"completed", "failed", "cancelled"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Terminal runbook execution is immutable",
+        )
+    runbook = db.scalar(
+        _filter_by_tenant(
+            select(Runbook).where(Runbook.id == item.runbook_id),
+            Runbook,
+            current_user,
+        )
+    )
+    if runbook is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Runbook not found",
+        )
+    runbook_steps = _parse_json(runbook.steps_json, [])
+    step_count = len(runbook_steps) if isinstance(runbook_steps, list) else 0
 
     updates = request.model_dump(exclude_unset=True)
+    target_step = int(updates.get("current_step", item.current_step))
+    if step_count <= 0 or target_step > step_count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Runbook step exceeds the governed checklist",
+        )
+    if updates.get("status") == "completed" and target_step < step_count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="All runbook checklist steps must be reached before completion",
+        )
     for field_name, value in updates.items():
         setattr(item, field_name, value)
     if item.status in {"completed", "failed", "cancelled"} and item.completed_at is None:

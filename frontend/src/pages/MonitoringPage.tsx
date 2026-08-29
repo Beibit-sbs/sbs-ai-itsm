@@ -13,6 +13,7 @@ import ActiveAlertsTable from '../components/monitoring/ActiveAlertsTable'
 import RolloutComparisonTable from '../components/monitoring/RolloutComparisonTable'
 import AnomalyTimelineCard from '../components/monitoring/AnomalyTimelineCard'
 import CorrelationMatrixCard from '../components/monitoring/CorrelationMatrixCard'
+import QueryFailureNotice from '../components/QueryFailureNotice'
 import {
   API_BASE_URL,
   fetchDashboardSummary,
@@ -23,9 +24,11 @@ import {
   fetchCorrelationMatrix,
 } from '../api/client'
 import { useDashboardWebSocket, type DashboardStreamListener } from '../api/websocket'
+import { useTenantExperience } from '../experience/TenantExperienceContext'
 
 export default function MonitoringPage() {
   const { session } = useAuth()
+  const { uiLocale } = useTenantExperience()
   const accessToken = session?.access_token ?? ''
   const queryClient = useQueryClient()
 
@@ -52,17 +55,14 @@ export default function MonitoringPage() {
   })
 
   // Active Rollouts - needed for metrics and comparison
-  const activeRollouts = useMemo(() => {
-    // Mock: In production, get from backend or from summary data
-    return ['crl-1', 'crl-2', 'crl-3']
-  }, [])
+  const activeRollouts = summaryQuery.data?.active_rollout_ids ?? []
 
-  const primaryRollout = activeRollouts[0] || 'crl-1'
+  const primaryRollout = activeRollouts[0]
 
   // Metrics Timeline Query
   const metricsQuery = useQuery({
     queryKey: ['monitoring-metrics', accessToken, primaryRollout, selectedMetric, timeWindow],
-    queryFn: () => fetchMetricsTimeline(accessToken, primaryRollout, selectedMetric, timeWindow),
+    queryFn: () => fetchMetricsTimeline(accessToken, primaryRollout!, selectedMetric, timeWindow),
     enabled: !!accessToken && !!primaryRollout,
   })
 
@@ -90,7 +90,7 @@ export default function MonitoringPage() {
   // Correlation Matrix Query
   const correlationQuery = useQuery({
     queryKey: ['monitoring-correlation', accessToken, primaryRollout],
-    queryFn: () => fetchCorrelationMatrix(accessToken, primaryRollout, timeWindow),
+    queryFn: () => fetchCorrelationMatrix(accessToken, primaryRollout!, timeWindow),
     enabled: !!accessToken && !!primaryRollout,
   })
 
@@ -153,14 +153,7 @@ export default function MonitoringPage() {
     anomaliesQuery.isLoading ||
     correlationQuery.isLoading
 
-  const error =
-    summaryQuery.error ||
-    metricsQuery.error ||
-    alertsQuery.error ||
-    comparisonQuery.error ||
-    anomaliesQuery.error ||
-    correlationQuery.error ||
-    (realtimeError ? new Error(realtimeError) : null)
+  const error = realtimeError ? new Error(realtimeError) : null
 
   return (
     <AppShell
@@ -168,6 +161,17 @@ export default function MonitoringPage() {
       subtitle="Monitor your canary rollouts, metrics, and system health"
     >
       <div className="space-y-6 p-6">
+        <QueryFailureNotice
+          title="Часть данных мониторинга недоступна."
+          sources={[
+            { label: 'system summary', query: summaryQuery },
+            { label: 'metrics timeline', query: metricsQuery },
+            { label: 'active alerts', query: alertsQuery },
+            { label: 'rollout comparison', query: comparisonQuery },
+            { label: 'anomalies', query: anomaliesQuery },
+            { label: 'correlation matrix', query: correlationQuery },
+          ]}
+        />
         {/* Page Header */}
         <div className="flex items-center justify-between">
           <div>
@@ -177,7 +181,7 @@ export default function MonitoringPage() {
             </p>
           </div>
           <div className="text-right text-xs text-gray-500">
-            {summary?.timestamp && new Date(summary.timestamp).toLocaleTimeString()}
+            {summary?.timestamp && new Date(summary.timestamp).toLocaleTimeString(uiLocale)}
             <p className={isRealtimeConnected ? 'animate-pulse text-emerald-600' : 'text-amber-600'}>
               ● {isRealtimeConnected ? 'Real-time connected' : 'Real-time reconnecting'}
             </p>
@@ -319,7 +323,7 @@ export default function MonitoringPage() {
 
         {/* Error State */}
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-6">
+          <div className="rounded-lg border border-red-200 bg-red-50 p-6" role="alert">
             <h3 className="text-lg font-semibold text-red-900">Error Loading Dashboard</h3>
             <p className="mt-2 text-sm text-red-700">{(error as Error).message}</p>
           </div>

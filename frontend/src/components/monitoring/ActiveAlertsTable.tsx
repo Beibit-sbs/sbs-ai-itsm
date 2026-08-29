@@ -3,7 +3,10 @@
  * Shows alert details, duration, and breach information
  */
 
+import type { ReactNode } from 'react'
 import type { AlertSummaryItem } from '../../api/client'
+import { localizeTree } from '../../experience/LocalizedContent'
+import { useTenantExperience } from '../../experience/TenantExperienceContext'
 
 interface ActiveAlertsTableProps {
   alerts: AlertSummaryItem[]
@@ -16,6 +19,8 @@ export default function ActiveAlertsTable({
   isLoading = false,
   error,
 }: ActiveAlertsTableProps) {
+  const { formatDateTime, translate } = useTenantExperience()
+  const localize = (node: ReactNode) => localizeTree(node, translate)
   const getSeverityColor = (severity: string) => {
     switch (severity) {
       case 'critical':
@@ -32,26 +37,15 @@ export default function ActiveAlertsTable({
   }
 
   const formatDuration = (seconds: number) => {
-    if (seconds < 60) return `${Math.round(seconds)}s`
-    if (seconds < 3600) return `${Math.round(seconds / 60)}m`
-    return `${Math.round(seconds / 3600)}h`
+    if (seconds < 60) return `${Math.round(seconds)} ${translate('s')}`
+    if (seconds < 3600) return `${Math.round(seconds / 60)} ${translate('min')}`
+    return `${Math.round(seconds / 3600)} ${translate('h')}`
   }
 
-  const formatTimestamp = (timestamp: string) => {
-    try {
-      return new Date(timestamp).toLocaleString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    } catch {
-      return timestamp
-    }
-  }
+  const formatTimestamp = (timestamp: string) => formatDateTime(timestamp)
 
   if (isLoading) {
-    return (
+    return localize(
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <h3 className="mb-4 text-lg font-semibold">Active Alerts</h3>
         <div className="animate-pulse space-y-2">
@@ -64,7 +58,7 @@ export default function ActiveAlertsTable({
   }
 
   if (error) {
-    return (
+    return localize(
       <div className="rounded-lg border border-red-200 bg-red-50 p-6">
         <h3 className="mb-2 text-lg font-semibold text-red-900">Active Alerts</h3>
         <p className="text-sm text-red-700">{error}</p>
@@ -72,7 +66,7 @@ export default function ActiveAlertsTable({
     )
   }
 
-  return (
+  return localize(
     <div className="rounded-lg border border-gray-200 bg-white p-6">
       <h3 className="mb-4 text-lg font-semibold">
         Active Alerts ({alerts.length})

@@ -13,13 +13,12 @@ Core Functions:
 - analyze_rollout_health() - Overall health assessment
 """
 
-import asyncio
 import logging
-from datetime import datetime, timedelta
-from statistics import mean, stdev, variance
+from datetime import UTC, datetime, timedelta
+from statistics import mean, stdev
 from sqlalchemy.orm import Session
 
-from app.models import PolicyCanaryRollout, PolicyRolloutMetricsHistory
+from app.models import PolicyRolloutMetricsHistory
 
 logger = logging.getLogger(__name__)
 
@@ -667,7 +666,7 @@ def analyze_rollout_health(
     """
     try:
         # Get historical data
-        cutoff_time = datetime.utcnow() - timedelta(minutes=minutes_back)
+        cutoff_time = datetime.now(UTC) - timedelta(minutes=minutes_back)
         history = (
             db.query(PolicyRolloutMetricsHistory)
             .filter(

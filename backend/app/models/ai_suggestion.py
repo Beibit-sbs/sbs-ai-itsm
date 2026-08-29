@@ -12,6 +12,10 @@ class AiSuggestion(Base):
     __tablename__ = "ai_suggestions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     ticket_id: Mapped[str | None] = mapped_column(ForeignKey("tickets.id", ondelete="CASCADE"), nullable=True)
     asset_id: Mapped[str | None] = mapped_column(ForeignKey("assets.id", ondelete="SET NULL"), nullable=True)
     article_id: Mapped[str | None] = mapped_column(ForeignKey("knowledge_articles.id", ondelete="SET NULL"), nullable=True)

@@ -1,0 +1,16 @@
+title = "SBS AI ITSM secret scanning policy"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Local runtime secrets, verified backups and generated artifacts are outside source control"
+paths = [
+  '''^\.env\.production$''',
+  '''^\.env\.rehearsal\.local$''',
+  '''^secrets\.rehearsal/''',
+  '''^backups/''',
+  '''(^|/)\.pytest-tmp[^/]*/''',
+  '''(^|/)node_modules/''',
+  '''^frontend/dist/''',
+]
